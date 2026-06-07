@@ -218,11 +218,12 @@ def optimize_tsk_coefficients(
     Optimize TSK coefficients for different polynomial orders.
 
     Args:
-        order: One of '0th', '1st', '2nd', or 'full-2nd'
+        order: One of '0th', '1st', '2nd', '3rd', or 'full-2nd'
             - '0th': Only constant terms
             - '1st': Constant + linear terms
             - '2nd': Constant + linear + squared terms (no cross-products)
             - 'full-2nd': Constant + linear + squared + cross-product terms
+            - '3rd': Constant + linear + sqquared + cubic terms (no cross-products)
     """
     # Optimize coefficients based on order
     print(f"\nOptimizing {order.capitalize()} Order TSK Coefficients...")
@@ -260,44 +261,33 @@ def optimize_tsk_coefficients(
     else:
         raise ValueError(f"Unknown order: {order}")
 
-    # Flatten initial coefficients
+    # Use basic linear regression to fit coefficients
     if order == "0th":
-        initial_coeffs_flat = y_bucket_mean.copy()
-    else:
-        assert initial_corr_terms is not None
-        initial_coeffs = np.column_stack([y_bucket_mean, initial_corr_terms])
-        initial_coeffs_flat = initial_coeffs.flatten()
-
-    def predict(coeffs_flat, X_data, norm_fs, rule_labels, n_rules, n_feat_terms):
-        """Compute predictions from flattened coefficients."""
-        if order == "0th":
-            # Only constant terms
-            y_pred = np.dot(norm_fs, coeffs_flat[rule_labels])
-        else:
-            coeffs = coeffs_flat.reshape(n_rules, n_feat_terms + 1)
-            y_pred = np.zeros(X_data.shape[0])
-            for ij, y_id in enumerate(rule_labels):
-                y_pred[:] += (coeffs[y_id, 0] + X_data @ coeffs[y_id, 1:]) * norm_fs[:, ij]
-        return y_pred
-
-    def objective(coeffs_flat):
-        """RMSE objective function."""
-        y_pred = predict(
-            coeffs_flat, X_train_features, norm_firing_strength_train, labels_train, n_output_buckets, n_terms
-        )
-        return _mse(y_train["y_value"].values, y_pred)
-
-    # Optimize using L-BFGS-B
-    result = minimize(objective, initial_coeffs_flat, method="L-BFGS-B", options={"maxiter": 1000})
-
-    # Extract optimized coefficients
-    if order == "0th":
-        y_bucket_mean_opt = result.x
+        y_bucket_mean_opt = y_bucket_mean.copy()
         corr_terms_opt = np.zeros((n_output_buckets, 0))
     else:
-        optimized_coeffs = result.x.reshape(n_output_buckets, n_terms + 1)
+        # Build design matrix for linear regression
+        # Each row corresponds to a training sample
+        # Columns correspond to: [rule1_const, rule1_feat1, ..., rule1_featN, rule2_const, ...]
+        n_samples = X_train_features.shape[0]
+        n_coeffs_per_rule = n_terms + 1
+        A = np.zeros((n_samples, n_output_buckets * n_coeffs_per_rule))
+
+        for i in range(n_samples):
+            for j, rule_id in enumerate(labels_train):
+                base_idx = rule_id * n_coeffs_per_rule
+                # Constant term
+                A[i, base_idx] = norm_firing_strength_train[i, j]
+                # Feature terms
+                for k in range(n_terms):
+                    A[i, base_idx + 1 + k] = norm_firing_strength_train[i, j] * X_train_features[i, k]
+
+        # Solve least squares: A @ coeffs = y_train
+        b = y_train["y_value"].values
+        coeffs_flat = np.linalg.lstsq(A, b, rcond=None)[0]
+
+        # Reshape coefficients
+        optimized_coeffs = coeffs_flat.reshape(n_output_buckets, n_coeffs_per_rule)
         y_bucket_mean_opt = optimized_coeffs[:, 0]
         corr_terms_opt = optimized_coeffs[:, 1:]
-
-    print(f"Optimization completed. Final RMSE on training set: {result.fun:.4f}")
     return corr_terms_opt, y_bucket_mean_opt

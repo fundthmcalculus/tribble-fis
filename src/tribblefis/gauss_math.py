@@ -8,6 +8,7 @@ from scipy.spatial.distance import jensenshannon
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from sklearn.mixture import GaussianMixture
+from tribbleclustering import IVATMeans, FuzzyCMeans
 
 from .gauss_data import *  # noqa: F401, F403
 
@@ -29,15 +30,21 @@ def find_optimal_gaussians(data, max_gaussians: int = 4):
     bics = []
     n_components_range = range(1, max_components + 1)
 
-    for n in n_components_range:
-        gmm = GaussianMixture(n_components=n, random_state=42)
-        gmm.fit(data)
-        if not gmm.converged_:
-            continue
-        bics.append(gmm.bic(data))
+    # Use IVat Means to estimate optimal number of Gaussians?
+    ivat_means = IVATMeans(random_state=42)
+    ivat_means.fit(data.copy())
+    return ivat_means.cluster_centers_.shape[0]
 
-    optimal_n = n_components_range[np.argmin(bics)]
-    return optimal_n
+    # for n in n_components_range:
+    #     # TO DO - Use Fuzzy C Means to pick the mu and then compute the sigma
+    #     gmm = GaussianMixture(n_components=n, random_state=42)
+    #     gmm.fit(data)
+    #     if not gmm.converged_:
+    #         continue
+    #     bics.append(gmm.bic(data))
+    #
+    # optimal_n = n_components_range[np.argmin(bics)]
+    # return optimal_n
 
 
 def fit_gaussians(X, y, column: str, label_value: int, n_gaussians: int = 0, max_samples: int = 20_000):
@@ -75,9 +82,14 @@ def fit_gaussians(X, y, column: str, label_value: int, n_gaussians: int = 0, max
         n_gaussians = find_optimal_gaussians(data)
         print(f"  Automatically selected {n_gaussians} Gaussians for {column} (label {label_value})")
 
-    # Use K-means to find cluster centers
-    kmeans = KMeans(n_clusters=min(n_gaussians, len(data)), random_state=42, n_init=10)
-    cluster_labels = kmeans.fit_predict(data)
+    # Use Fuzzy C Means to find cluster centers
+    # TODO - Buffer source array is read-only
+    n_clusters = min(n_gaussians, len(data))
+    kmeans = FuzzyCMeans(n_clusters=n_clusters, random_state=42)
+    cluster_labels_fcmeans = kmeans.fit_predict(data.copy())
+    ivat_means = IVATMeans(random_state=42, n_clusters=n_clusters)
+    cluster_labels_ivat = ivat_means.fit_predict(data.copy())
+    cluster_labels = cluster_labels_ivat
 
     # Fit Gaussian to each cluster
     gaussians = []
@@ -180,7 +192,6 @@ def calculate_gaussian_correlation(X, y):
         if max_score > 0:
             feature_differentiators = [(col, diff_s / max_score) for (col, diff_s) in feature_differentiators]
 
-    # print("\n" + "=" * 80)
     print("\nFeatures Ranked by Differentiation Strength:")
     print("=" * 80)
     for rank, (feature, score) in enumerate(feature_differentiators, 1):
@@ -188,26 +199,6 @@ def calculate_gaussian_correlation(X, y):
     print("=" * 80)
 
     return feature_differentiators
-
-
-def perform_kmeans_clustering(X, n_clusters):
-    """Perform K-means clustering with specified number of clusters"""
-    print(f"\nPerforming K-means clustering with k={n_clusters}")
-    print("=" * 80)
-
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-    labels = kmeans.fit_predict(X)
-
-    silhouette = silhouette_score(X, labels)
-    inertia = kmeans.inertia_
-
-    print(f"K-means Results:")
-    print(f"  Inertia: {inertia:.2f}")
-    print(f"  Silhouette Score: {silhouette:.4f}")
-    print(f"  Cluster sizes: {np.bincount(labels)}")
-    print("=" * 80)
-
-    return kmeans, labels
 
 
 def create_gaussian_membership_dict(
