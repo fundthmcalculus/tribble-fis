@@ -4,7 +4,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_X_y, check_is_fitted
 from sklearn.utils.multiclass import check_classification_targets
 
-from gauss_math import (
+from .gauss_math import (
     calculate_gaussian_correlation,
     take_top_features,
     create_gaussian_membership_dict,

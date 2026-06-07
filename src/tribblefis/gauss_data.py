@@ -1,6 +1,6 @@
 import uuid
 from math import prod
-from typing import NamedTuple, Literal
+from typing import NamedTuple, Literal, Optional
 
 import numpy as np
 
@@ -8,7 +8,7 @@ import numpy as np
 NormConorm = Literal["min/max", "probability", "luk", "hamacher"]
 MemberFunction = Literal["gaussian", "triangular", "trap"]
 DefaultNormCornorm: NormConorm = "min/max"
-DefaultMemberFunction = "gaussian"
+DefaultMemberFunction: MemberFunction = "gaussian"
 
 
 class AnomalyParameters(NamedTuple):
@@ -25,7 +25,7 @@ class GaussianMembership(NamedTuple):
     """A single Gaussian membership function."""
     mu: float
     sigma: float
-    id: uuid.UUID = None
+    id: Optional[uuid.UUID] = None
 
     @staticmethod
     def create(mu: float, sigma: float) -> "GaussianMembership":
@@ -44,7 +44,7 @@ class SimpleGaussianClassifierModel(NamedTuple):
 
     input_mfs: list[GaussianMembership]
     rules: list[Rule]
-    anomaly_params: AnomalyParameters = None
+    anomaly_params: Optional[AnomalyParameters] = None
 
     @property
     def n_rules(self) -> int:
@@ -101,7 +101,7 @@ class GaussianMixtureModel(NamedTuple):
     """A collection of FeatureModels mapping feature names to their models."""
 
     feature_models: dict[str, FeatureModel]
-    anomaly_params: AnomalyParameters = None
+    anomaly_params: Optional[AnomalyParameters] = None
 
     @property
     def n_rules(self) -> int:
@@ -130,7 +130,7 @@ class GaussianMixtureModel(NamedTuple):
 
     @property
     def n_classes(self) -> int:
-        return self.feature_models.values()[0].ordered_keys[-1] + 1
+        return list(self.feature_models.values())[0].ordered_keys[-1] + 1
 
     @property
     def all_membership_fcns(self) -> list[GaussianMembership]:
@@ -199,12 +199,12 @@ class GaussianMixtureModel(NamedTuple):
         rules: list[Rule] = []
 
         for label in self.all_output_labels:
-            antecedent_ids = {}
+            antecedent_ids: dict[str, list[uuid.UUID]] = {}
             for feature_name, feature_model in self.feature_models.items():
                 label_model = feature_model.label_models.get(label, None)
                 if label_model is None:
                     continue
-                antecedent_ids[feature_name] = [dedup_mfs.get(mf, mf).id for mf in label_model.gaussians]
+                antecedent_ids[feature_name] = [dedup_mfs.get(mf, mf).id for mf in label_model.gaussians]  # type: ignore[misc]
             rules.append(Rule(antecedents=antecedent_ids, consequent=label))
 
         # Get the input membership functions from the rules
@@ -217,7 +217,7 @@ class GaussianMixtureModel(NamedTuple):
         )
 
 def _is_close(g1: GaussianMembership, g2: GaussianMembership, rtol: float = 1e-2, atol: float = 1e-3) -> bool:
-    return (
+    return bool(
         np.isclose(g1.mu, g2.mu, rtol=rtol, atol=atol)
         and np.isclose(g1.sigma, g2.sigma, rtol=rtol, atol=atol)
     )

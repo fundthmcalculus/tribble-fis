@@ -7,8 +7,8 @@ import pandas as pd
 from scipy import stats
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 import seaborn as sns
-from gauss_data import GaussianMixtureModel, AnomalyParameters, SimpleGaussianClassifierModel
-from gauss_math import tsk_firing_strengths, calculate_top_k_accuracy
+from .gauss_data import GaussianMixtureModel, AnomalyParameters, SimpleGaussianClassifierModel
+from .gauss_math import tsk_firing_strengths, calculate_top_k_accuracy
 
 
 def plot_fit_gaussians(column: str, data, gaussians: list[dict], label_value: int, n_gaussians: int):
@@ -46,7 +46,7 @@ def plot_fit_gaussians(column: str, data, gaussians: list[dict], label_value: in
     plt.show()
 
 
-def plot_var_gauss_dist(X: pd.DataFrame, y, features_to_plot: list[str] = None, model: GaussianMixtureModel = None):
+def plot_var_gauss_dist(X: pd.DataFrame, y, features_to_plot: list[str] | None = None, model: GaussianMixtureModel | None = None):
     """Plots Gaussian distributions for each feature column based upon label selections"""
     if not features_to_plot:
         features_to_plot = list(X.columns)
@@ -139,7 +139,7 @@ def plot_membership_functions(model: GaussianMixtureModel | SimpleGaussianClassi
                 feature_name,
                 sorted(
                     [
-                        (label, g)
+                        (str(label), g)
                         for label, label_model in feature_model.label_models.items()
                         for g in label_model.gaussians
                     ],
@@ -251,7 +251,7 @@ def plot_confusion_matrix(y_true, y_pred, title="Confusion Matrix"):
     plt.show()
 
 
-def plot_top_k_accuracy(top_k_accuracies: dict[int, float], title: str = "Top-k Accuracy", n_classes: int = None):
+def plot_top_k_accuracy(top_k_accuracies: dict[int, float], title: str = "Top-k Accuracy", n_classes: Optional[int] = None):
     """Plot the top-k accuracy as a bar chart."""
     ks = list(top_k_accuracies.keys())
     accuracies = [top_k_accuracies[k] for k in ks]
@@ -293,7 +293,7 @@ def plot_anomaly_threshold_sweep(
     model: GaussianMixtureModel,
     top_n_todo: list[Any],
     anomaly_label: str = "anomaly",
-    thresholds: np.ndarray = None,
+    thresholds: Optional[np.ndarray] = None,
 ):
     """Plot FPR and FNR as a function of the anomaly threshold.
 
@@ -363,7 +363,7 @@ def report_figures_of_merit(
     start_time: float,
     top_n_todo: list[Any],
     label: str = "test",
-    anomaly_details: AnomalyParameters = None,
+    anomaly_details: Optional[AnomalyParameters] = None,
 ) -> tuple[np.ndarray, list, dict]:
     # Create the actual fuzzy model and predict
     print(f"\nEvaluating Zeroth-Order TSK Model on {label.upper()} set:")

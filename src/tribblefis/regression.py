@@ -264,6 +264,7 @@ def optimize_tsk_coefficients(
     if order == "0th":
         initial_coeffs_flat = y_bucket_mean.copy()
     else:
+        assert initial_corr_terms is not None
         initial_coeffs = np.column_stack([y_bucket_mean, initial_corr_terms])
         initial_coeffs_flat = initial_coeffs.flatten()
 

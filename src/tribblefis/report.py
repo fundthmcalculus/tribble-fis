@@ -13,7 +13,7 @@ def print_membership_details(model: GaussianMixtureModel):
     print(f"Total possible AND-rules: {np.prod(np.array(list(per_var_membership_fcns.values())), dtype=float)}")
 
     # Get all unique labels from the model structure
-    all_labels = set()
+    all_labels: set[int] = set()
     for feature_model in model.feature_models.values():
         all_labels.update(feature_model.label_models.keys())
 

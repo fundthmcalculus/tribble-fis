@@ -1,6 +1,7 @@
 from concurrent.futures.thread import ThreadPoolExecutor
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from scipy import stats
 from scipy.spatial.distance import jensenshannon
@@ -8,7 +9,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from sklearn.mixture import GaussianMixture
 
-from gauss_data import *
+from .gauss_data import *  # noqa: F401, F403
 
 
 def log_transform(X, column: str | list[str], offset=0):
@@ -311,20 +312,20 @@ def t_complement(x):
 
 
 def membership(x, mu, sigma, default_member: MemberFunction | None = None):
-    default_member = default_member or DefaultMemberFunction
+    member_fn: MemberFunction = default_member or DefaultMemberFunction
     # Add a small epsilon to sigma to avoid division by zero
     sigma = max(sigma, 1e-6)
     """Membership function for fuzzy logic operations."""
-    if default_member == "gaussian":
+    if member_fn == "gaussian":
         return np.exp(-0.5 * ((x - mu) / sigma) ** 2)
-    elif default_member == "triangular":
+    elif member_fn == "triangular":
         return np.maximum(0, 1 - np.abs((x - mu) / (2.3756 * sigma)))
     else:
-        raise ValueError(f"Invalid MEMBER_FCN value: {default_member}")
+        raise ValueError(f"Invalid MEMBER_FCN value: {member_fn}")
 
 
 def tsk_firing_strengths(
-    X: pd.DataFrame, model: GaussianMixtureModel, anomaly_details: AnomalyParameters = None
+    X: pd.DataFrame, model: GaussianMixtureModel, anomaly_details: AnomalyParameters | None = None
 ) -> tuple[np.ndarray, list[Any]]:
     """Calculate firing strengths for each label in a Zeroth-order TSK fuzzy model.
 
@@ -341,7 +342,7 @@ def tsk_firing_strengths(
     n_samples = len(X)
     # Get unique labels from any of the feature models
     first_feature_model = next(iter(model.feature_models.values()))
-    unique_labels = first_feature_model.ordered_keys
+    unique_labels: list[int | str] = list(first_feature_model.ordered_keys)
     if anomaly_details and anomaly_details.include_anomaly:
         unique_labels = unique_labels + [anomaly_details.label]
 
@@ -509,7 +510,7 @@ def generate_synthetic_data(
     y: pd.Series,
     model: GaussianMixtureModel,
     target_count: int = -1,
-    classes_to_augment: list[Any] = None,
+    classes_to_augment: list[Any] | None = None,
 ) -> tuple[pd.DataFrame, pd.Series]:
     """Generate synthetic data to improve parity for underrepresented classes.
 
