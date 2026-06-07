@@ -1,9 +1,9 @@
 """
-Test double pendulum simulation with Gaussian mixture classifier prediction.
+Test double pendulum simulation with Gaussian mixture regressor prediction.
 
 Simulates double pendulum using Lagrangian mechanics, generates datasets
-with random initial conditions, trains fuzzy classifiers to predict state
-transitions, and evaluates prediction accuracy.
+with random initial conditions, trains fuzzy regressors to predict state
+transitions, and evaluates prediction accuracy on continuous outputs.
 """
 
 import numpy as np
@@ -12,15 +12,18 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from scipy.integrate import odeint
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
 
-N_BINS = 10
-OUTPUT_FEATURES = ['theta_2']
+
+# Comparison set: https://arxiv.org/pdf/2504.13453
+N_BINS = 15
+OUTPUT_FEATURES = ['theta_1']
+INPUT_FEATURES = ['omega_1', 'alpha_1', 'omega_2', 'alpha_2']
 
 class DoublePendulum:
     """Double pendulum simulator using Lagrangian mechanics."""
@@ -66,7 +69,7 @@ class DoublePendulum:
 
         return [omega1, alpha1, omega2, alpha2]
 
-    def simulate(self, theta1_0, omega1_0, theta2_0, omega2_0, duration=10.0, dt=0.01):
+    def simulate(self, theta1_0, omega1_0, theta2_0, omega2_0, duration=10.0, dt=0.001):
         """
         Simulate double pendulum from initial conditions.
 
@@ -123,22 +126,19 @@ def generate_simulation_data(output_dir, num_simulations=50, duration=10.0, dt=0
     pendulum = DoublePendulum()
 
     print(f"Generating {num_simulations} simulations...")
-    for i in range(num_simulations):
-        # Random initial conditions
-        theta1_0 = np.random.uniform(-np.pi, np.pi)
-        omega1_0 = np.random.uniform(-2, 2)
-        theta2_0 = np.random.uniform(-np.pi, np.pi)
-        omega2_0 = np.random.uniform(-2, 2)
-
+    # Sourced from: https://arxiv.org/pdf/2504.13453
+    theta2s = np.arange(0, 3.00001, 0.1)
+    for ij in range(len(theta2s)):
+        theta2 = theta2s[ij]
+        theta1 = 120 * np.pi / 180
+        theta2 *= np.pi / 180
+        omega1 = 0.0
+        omega2 = 0.0
         # Simulate
-        df = pendulum.simulate(theta1_0, omega1_0, theta2_0, omega2_0, duration, dt)
-
+        df = pendulum.simulate(theta1, omega1, theta2, omega2, duration, dt)
         # Save
-        filepath = output_path / f"simulation_{i:04d}.csv"
+        filepath = output_path / f"simulation_{ij:04d}.csv"
         df.to_csv(filepath, index=False)
-
-        if (i + 1) % 10 == 0:
-            print(f"  Generated {i + 1}/{num_simulations}")
 
     print(f"Data saved to {output_path}")
     return output_path
@@ -166,26 +166,23 @@ def load_and_prepare_data(data_dir, window_size=1):
     all_X = []
     all_y = []
 
-    feature_cols = ['omega_1', 'alpha_1', 'omega_2', 'alpha_2']
-    output_cols = ['theta_2']
-
     for filepath in files:
         df = pd.read_csv(filepath)
 
         if window_size == 1:
             # Single timestep: current state -> next state
-            X = df[feature_cols].iloc[:-1].values
-            y = df[output_cols].iloc[1:].values
+            X = df[INPUT_FEATURES].iloc[:-1].values
+            y = df[OUTPUT_FEATURES].iloc[1:].values
         else:
             # Multi-step window
             X = []
             y = []
             for j in range(len(df) - window_size):
                 # Take last window_size timesteps as features
-                window = df[feature_cols].iloc[j:j+window_size].values.flatten()
+                window = df[INPUT_FEATURES].iloc[j:j+window_size].values.flatten()
                 X.append(window)
                 # Next timestep as target
-                y.append(df[output_cols].iloc[j+window_size].values)
+                y.append(df[OUTPUT_FEATURES].iloc[j+window_size].values)
 
             if X:
                 X = np.array(X)
@@ -204,11 +201,11 @@ def load_and_prepare_data(data_dir, window_size=1):
 
 def train_and_evaluate_single_step(X, y, test_size=0.2):
     """
-    Train classifier for single-step prediction (current state -> next state).
+    Train regressor for single-step prediction (current state -> next state).
 
     Args:
         X: features (current state)
-        y: targets (next state)
+        y: targets (next state, continuous)
         test_size: fraction of data for testing
 
     Returns:
@@ -222,76 +219,51 @@ def train_and_evaluate_single_step(X, y, test_size=0.2):
         X, y, test_size=test_size, random_state=42
     )
 
-    # For classification, we need to discretize the continuous targets
-    # Create bins for each output feature
-    n_bins = N_BINS
+    # Train regressor on continuous target (first output feature)
+    y_train_scalar = y_train[:, 0] if y_train.ndim > 1 else y_train
+    y_test_scalar = y_test[:, 0] if y_test.ndim > 1 else y_test
 
-    # Discretize targets into classes based on bins
-    y_train_binned = np.zeros((len(y_train), len(feature_names)), dtype=int)
-    y_test_binned = np.zeros((len(y_test), len(feature_names)), dtype=int)
-
-    for feat_idx, feat_name in enumerate(feature_names):
-        bins = np.percentile(y_train[:, feat_idx], np.linspace(0, 100, n_bins+1))
-        y_train_binned[:, feat_idx] = np.digitize(y_train[:, feat_idx], bins) - 1
-        y_test_binned[:, feat_idx] = np.digitize(y_test[:, feat_idx], bins) - 1
-
-    # Create a composite class from feature bins
-    y_train_class = y_train_binned[:, 0] * (n_bins**3) + y_train_binned[:, 1] * (n_bins**2) + \
-                    y_train_binned[:, 2] * n_bins + y_train_binned[:, 3]
-    y_test_class = y_test_binned[:, 0] * (n_bins**3) + y_test_binned[:, 1] * (n_bins**2) + \
-                   y_test_binned[:, 2] * n_bins + y_test_binned[:, 3]
-
-    # Train classifier
-    clf = MixtureOfGaussiansFuzzyClassifier(
-        top_n=3, n_gaussians=2, log_transform=False, random_state=42
+    regressor = MixtureOfGaussiansFuzzyRegressor(
+        n_output_buckets=N_BINS, tsk_order="2nd", optimize_coefficients=True,
+        random_state=42
     )
-    clf.fit(X_train, y_train_class)
+    regressor.fit(X_train, y_train_scalar)
 
-    # Predict
-    y_pred_class = clf.predict(X_test)
+    # Predict continuous values
+    y_pred = regressor.predict(X_test)
 
-    # Decode predictions back to feature values
-    y_pred_decoded = np.zeros((len(y_pred_class), len(OUTPUT_FEATURES)))
-    for i, cls in enumerate(y_pred_class):
-        y_pred_decoded[i, 0] = cls // (n_bins**3)
-        y_pred_decoded[i, 1] = (cls % (n_bins**3)) // (n_bins**2)
-        y_pred_decoded[i, 2] = (cls % (n_bins**2)) // n_bins
-        y_pred_decoded[i, 3] = cls % n_bins
+    # Calculate regression metrics
+    mse = mean_squared_error(y_test_scalar, y_pred)
+    mae = mean_absolute_error(y_test_scalar, y_pred)
+    rmse = np.sqrt(mse)
+    r2 = r2_score(y_test_scalar, y_pred)
 
-    # Calculate MSE and MAE for each feature
-    mse_per_feature = []
-    mae_per_feature = []
-
-    for feat_idx in range(len(OUTPUT_FEATURES)):
-        mse = mean_squared_error(y_test_binned[:, feat_idx], y_pred_decoded[:, feat_idx])
-        mae = mean_absolute_error(y_test_binned[:, feat_idx], y_pred_decoded[:, feat_idx])
-        mse_per_feature.append(mse)
-        mae_per_feature.append(mae)
-        print(f"\n{OUTPUT_FEATURES[feat_idx]}:")
-        print(f"  MSE: {mse:.4f}")
-        print(f"  MAE: {mae:.4f}")
-
-    # Overall accuracy (bin prediction)
-    accuracy = np.mean(y_pred_class == y_test_class)
-    print(f"\nComposite class accuracy: {accuracy:.4f}")
+    print(f"\n{OUTPUT_FEATURES[0]}:")
+    print(f"  MSE:  {mse:.6f}")
+    print(f"  RMSE: {rmse:.6f}")
+    print(f"  MAE:  {mae:.6f}")
+    print(f"  R²:   {r2:.6f}")
 
     return {
         'model_type': 'single_step',
-        'classifier': clf,
-        'mse_per_feature': mse_per_feature,
-        'mae_per_feature': mae_per_feature,
-        'accuracy': accuracy,
+        'regressor': regressor,
+        'mse': mse,
+        'rmse': rmse,
+        'mae': mae,
+        'r2': r2,
         'n_test_samples': len(X_test),
+        'y_test': y_test_scalar,
+        'y_pred': y_pred,
     }
 
 
 def train_and_evaluate_window(X, y, window_size=3, test_size=0.2):
     """
-    Train classifier for multi-step prediction using sliding window.
+    Train regressor for multi-step prediction using sliding window.
 
     Args:
         X: features (windowed state history)
-        y: targets (next state)
+        y: targets (next state, continuous)
         window_size: number of past timesteps used
         test_size: fraction of data for testing
 
@@ -306,83 +278,243 @@ def train_and_evaluate_window(X, y, window_size=3, test_size=0.2):
         X, y, test_size=test_size, random_state=42
     )
 
-    # Discretize targets
-    n_bins = N_BINS
+    # Train regressor on continuous target (first output feature)
+    y_train_scalar = y_train[:, 0] if y_train.ndim > 1 else y_train
+    y_test_scalar = y_test[:, 0] if y_test.ndim > 1 else y_test
 
-    y_train_binned = np.zeros((len(y_train), len(OUTPUT_FEATURES)), dtype=int)
-    y_test_binned = np.zeros((len(y_test), len(OUTPUT_FEATURES)), dtype=int)
-
-    for feat_idx, feat_name in enumerate(OUTPUT_FEATURES):
-        bins = np.percentile(y_train[:, feat_idx], np.linspace(0, 100, n_bins+1))
-        y_train_binned[:, feat_idx] = np.digitize(y_train[:, feat_idx], bins) - 1
-        y_test_binned[:, feat_idx] = np.digitize(y_test[:, feat_idx], bins) - 1
-
-    # Composite class
-    y_train_class = y_train_binned[:, 0] * (n_bins**3) + y_train_binned[:, 1] * (n_bins**2) + \
-                    y_train_binned[:, 2] * n_bins + y_train_binned[:, 3]
-    y_test_class = y_test_binned[:, 0] * (n_bins**3) + y_test_binned[:, 1] * (n_bins**2) + \
-                   y_test_binned[:, 2] * n_bins + y_test_binned[:, 3]
-
-    # Train classifier
-    clf = MixtureOfGaussiansFuzzyClassifier(
-        top_n=5, n_gaussians=3, log_transform=False, random_state=42
+    # Train regressor
+    regressor = MixtureOfGaussiansFuzzyRegressor(
+        n_output_buckets=N_BINS, tsk_order="1st", optimize_coefficients=True,
+        random_state=42
     )
-    clf.fit(X_train, y_train_class)
+    regressor.fit(X_train, y_train_scalar)
 
-    # Predict
-    y_pred_class = clf.predict(X_test)
+    # Predict continuous values
+    y_pred = regressor.predict(X_test)
 
-    # Decode predictions
-    y_pred_decoded = np.zeros((len(y_pred_class), len(OUTPUT_FEATURES)))
-    for i, cls in enumerate(y_pred_class):
-        y_pred_decoded[i, 0] = cls // (n_bins**3)
-        y_pred_decoded[i, 1] = (cls % (n_bins**3)) // (n_bins**2)
-        y_pred_decoded[i, 2] = (cls % (n_bins**2)) // n_bins
-        y_pred_decoded[i, 3] = cls % n_bins
+    # Calculate regression metrics
+    mse = mean_squared_error(y_test_scalar, y_pred)
+    mae = mean_absolute_error(y_test_scalar, y_pred)
+    rmse = np.sqrt(mse)
+    r2 = r2_score(y_test_scalar, y_pred)
 
-    # Calculate metrics
-    mse_per_feature = []
-    mae_per_feature = []
-
-    for feat_idx in range(len(OUTPUT_FEATURES)):
-        mse = mean_squared_error(y_test_binned[:, feat_idx], y_pred_decoded[:, feat_idx])
-        mae = mean_absolute_error(y_test_binned[:, feat_idx], y_pred_decoded[:, feat_idx])
-        mse_per_feature.append(mse)
-        mae_per_feature.append(mae)
-        print(f"\n{OUTPUT_FEATURES[feat_idx]}:")
-        print(f"  MSE: {mse:.4f}")
-        print(f"  MAE: {mae:.4f}")
-
-    accuracy = np.mean(y_pred_class == y_test_class)
-    print(f"\nComposite class accuracy: {accuracy:.4f}")
+    print(f"\n{OUTPUT_FEATURES[0]}:")
+    print(f"  MSE:  {mse:.6f}")
+    print(f"  RMSE: {rmse:.6f}")
+    print(f"  MAE:  {mae:.6f}")
+    print(f"  R²:   {r2:.6f}")
 
     return {
         'model_type': 'multi_window',
         'window_size': window_size,
-        'classifier': clf,
-        'mse_per_feature': mse_per_feature,
-        'mae_per_feature': mae_per_feature,
-        'accuracy': accuracy,
+        'regressor': regressor,
+        'mse': mse,
+        'rmse': rmse,
+        'mae': mae,
+        'r2': r2,
         'n_test_samples': len(X_test),
+        'y_test': y_test_scalar,
+        'y_pred': y_pred,
     }
+
+
+def plot_prediction_comparison(results_single, results_window):
+    """
+    Plot comparison of predicted vs actual values for both models.
+    Returns the figure object.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle('Double Pendulum Prediction Comparison', fontsize=16, fontweight='bold')
+
+    # Single-step actual vs predicted scatter
+    ax = axes[0, 0]
+    y_test = results_single['y_test']
+    y_pred = results_single['y_pred']
+    ax.scatter(y_test, y_pred, alpha=0.5, s=20, edgecolors='k', linewidth=0.3)
+    min_val = min(y_test.min(), y_pred.min())
+    max_val = max(y_test.max(), y_pred.max())
+    ax.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2, label='Perfect Prediction')
+    ax.set_xlabel(f'Actual {OUTPUT_FEATURES[0]} (rad)', fontsize=11)
+    ax.set_ylabel(f'Predicted {OUTPUT_FEATURES[0]} (rad)', fontsize=11)
+    ax.set_title(f'Single-Step: Actual vs Predicted\nR²={results_single["r2"]:.4f}, RMSE={results_single["rmse"]:.4f}', fontsize=11)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.set_aspect('equal')
+
+    # Single-step residuals
+    ax = axes[0, 1]
+    residuals_single = y_test - y_pred
+    ax.scatter(y_pred, residuals_single, alpha=0.5, s=20, edgecolors='k', linewidth=0.3)
+    ax.axhline(y=0, color='r', linestyle='--', lw=2)
+    ax.set_xlabel(f'Predicted {OUTPUT_FEATURES[0]} (rad)', fontsize=11)
+    ax.set_ylabel('Residual (Actual - Predicted)', fontsize=11)
+    ax.set_title('Single-Step: Residual Plot', fontsize=11)
+    ax.grid(True, alpha=0.3)
+
+    # Multi-step actual vs predicted scatter
+    ax = axes[1, 0]
+    y_test = results_window['y_test']
+    y_pred = results_window['y_pred']
+    ax.scatter(y_test, y_pred, alpha=0.5, s=20, edgecolors='k', linewidth=0.3, color='green')
+    min_val = min(y_test.min(), y_pred.min())
+    max_val = max(y_test.max(), y_pred.max())
+    ax.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2, label='Perfect Prediction')
+    ax.set_xlabel(f'Actual {OUTPUT_FEATURES[0]} (rad)', fontsize=11)
+    ax.set_ylabel(f'Predicted {OUTPUT_FEATURES[0]} (rad)', fontsize=11)
+    ax.set_title(f'Multi-Step (window=3): Actual vs Predicted\nR²={results_window["r2"]:.4f}, RMSE={results_window["rmse"]:.4f}', fontsize=11)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.set_aspect('equal')
+
+    # Multi-step residuals
+    ax = axes[1, 1]
+    residuals_window = y_test - y_pred
+    ax.scatter(y_pred, residuals_window, alpha=0.5, s=20, edgecolors='k', linewidth=0.3, color='green')
+    ax.axhline(y=0, color='r', linestyle='--', lw=2)
+    ax.set_xlabel(f'Predicted {OUTPUT_FEATURES[0]} (rad)', fontsize=11)
+    ax.set_ylabel(f'Residual (Actual - Predicted)', fontsize=11)
+    ax.set_title('Multi-Step: Residual Plot', fontsize=11)
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    return fig
+
+
+def plot_second_pendulum_position(results_single, results_window, dt=0.01):
+    """
+    Plot the actual and predicted position of the second pendulum ({OUTPUT_FEATURES[0]}) as a function of time.
+    Shows detailed comparison between actual and predicted trajectories.
+    Returns the figure object.
+    """
+    fig, axes = plt.subplots(4, 1, figsize=(10, 15))
+    fig.suptitle(f'{OUTPUT_FEATURES[0]} Over Time', fontsize=16, fontweight='bold')
+
+    # Convert sample indices to time (assuming dt = 0.01 seconds between samples)
+    def sample_to_time(indices, dt):
+        return indices * dt
+
+    # Single-step model - full trace
+    ax = axes[0]
+    y_test = results_single['y_test']
+    y_pred = results_single['y_pred']
+    time_indices = sample_to_time(np.arange(len(y_test)), dt)
+
+    ax.plot(time_indices, y_test, 'b-', linewidth=2, label='Actual', alpha=0.8)
+    ax.plot(time_indices, y_pred, 'r--', linewidth=1.5, label='Predicted', alpha=0.8)
+    ax.fill_between(time_indices, y_test, y_pred, alpha=0.1, color='gray', label='Error')
+    ax.set_xlabel('Time (seconds)', fontsize=11)
+    ax.set_ylabel(f'{OUTPUT_FEATURES[0]} (radians)', fontsize=11)
+    ax.set_title(f'Single-Step Model: {OUTPUT_FEATURES[0]} Position Over Time (R²={results_single["r2"]:.4f}, MAE={results_single["mae"]:.4f})', fontsize=12)
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+
+    # Multi-step model - full trace
+    ax = axes[1]
+    y_test = results_window['y_test']
+    y_pred = results_window['y_pred']
+    time_indices = sample_to_time(np.arange(len(y_test)), dt)
+
+    ax.plot(time_indices, y_test, 'b-', linewidth=2, label='Actual', alpha=0.8)
+    ax.plot(time_indices, y_pred, 'g--', linewidth=1.5, label='Predicted', alpha=0.8)
+    ax.fill_between(time_indices, y_test, y_pred, alpha=0.1, color='gray', label='Error')
+    ax.set_xlabel('Time (seconds)', fontsize=11)
+    ax.set_ylabel(f'{OUTPUT_FEATURES[0]} (radians)', fontsize=11)
+    ax.set_title(f'Multi-Step Window Model: {OUTPUT_FEATURES[0]} Position Over Time (R²={results_window["r2"]:.4f}, MAE={results_window["mae"]:.4f})', fontsize=12)
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+
+    # Error over time
+    ax = axes[2]
+    y_test_single = results_single['y_test']
+    y_pred_single = results_single['y_pred']
+    y_test_window = results_window['y_test']
+    y_pred_window = results_window['y_pred']
+
+    error_single = np.abs(y_test_single - y_pred_single)
+    error_window = np.abs(y_test_window - y_pred_window)
+
+    time_single = sample_to_time(np.arange(len(error_single)), dt)
+    time_window = sample_to_time(np.arange(len(error_window)), dt)
+
+    ax.plot(time_single, error_single, 'r-', linewidth=1, label='Single-Step Error', alpha=0.7)
+    ax.plot(time_window, error_window, 'g-', linewidth=1, label='Multi-Step Error', alpha=0.7)
+    ax.axhline(y=np.mean(error_single), color='r', linestyle=':', linewidth=2, label=f'Single-Step Mean Error: {np.mean(error_single):.4f}')
+    ax.axhline(y=np.mean(error_window), color='g', linestyle=':', linewidth=2, label=f'Multi-Step Mean Error: {np.mean(error_window):.4f}')
+    ax.set_xlabel('Time (seconds)', fontsize=11)
+    ax.set_ylabel('Absolute Error (radians)', fontsize=11)
+    ax.set_title('Prediction Error Over Time', fontsize=12)
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+
+    # Actual compared positions.
+    ax = axes[3]
+    y_test_single = results_single['y_test']
+    y_pred_single = results_single['y_pred']
+    y_test_window = results_window['y_test']
+    y_pred_window = results_window['y_pred']
+
+    ax.plot(y_test_single, y_pred_single, 'r-', linewidth=1, label='Single-Step predictions', alpha=0.7)
+    ax.plot(y_test_window, y_pred_window, 'g-', linewidth=1, label='Multi-Step predictions', alpha=0.7)
+    ax.set_xlabel('Angle', fontsize=11)
+    ax.set_ylabel('Angle', fontsize=11)
+    ax.set_title('Phasing plot', fontsize=12)
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    return fig
+
+
+def plot_trace_comparison(results_single, results_window):
+    """
+    Plot time-series traces of predicted vs actual values.
+    Returns the figure object.
+    """
+    fig, axes = plt.subplots(2, 1, figsize=(14, 8))
+    fig.suptitle('Prediction Traces: Actual vs Predicted', fontsize=16, fontweight='bold')
+
+    # Single-step trace
+    ax = axes[0]
+    y_test = results_single['y_test']
+    y_pred = results_single['y_pred']
+    indices = np.arange(len(y_test))
+    ax.plot(indices, y_test, 'b-', linewidth=1.5, label='Actual', alpha=0.7)
+    ax.plot(indices, y_pred, 'r--', linewidth=1.5, label='Predicted', alpha=0.7)
+    ax.set_xlabel('Test Sample Index', fontsize=11)
+    ax.set_ylabel(f'{OUTPUT_FEATURES[0]} (rad)', fontsize=11)
+    ax.set_title(f'Single-Step Predictions (R²={results_single["r2"]:.4f})', fontsize=12)
+    ax.legend(loc='best')
+    ax.grid(True, alpha=0.3)
+
+    # Multi-step trace
+    ax = axes[1]
+    y_test = results_window['y_test']
+    y_pred = results_window['y_pred']
+    indices = np.arange(len(y_test))
+    ax.plot(indices, y_test, 'b-', linewidth=1.5, label='Actual', alpha=0.7)
+    ax.plot(indices, y_pred, 'g--', linewidth=1.5, label='Predicted', alpha=0.7)
+    ax.set_xlabel('Test Sample Index', fontsize=11)
+    ax.set_ylabel(f'{OUTPUT_FEATURES[0]} (rad)', fontsize=11)
+    ax.set_title(f'Multi-Step Window Predictions (window=3, R²={results_window["r2"]:.4f})', fontsize=12)
+    ax.legend(loc='best')
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    return fig
 
 
 def test_double_pendulum_fuzzy_prediction():
     """
-    Main test: simulate double pendulum and train fuzzy predictive models.
+    Main test: simulate double pendulum and train fuzzy regression models.
     """
     # Setup
     test_dir = Path(__file__).parent
     data_dir = test_dir / "double_pendulum_data"
 
     # Step 1-3: Generate simulation data
-    # Check if data already exists
-    if (data_dir / "simulation_0000.csv").exists():
-        print(f"Simulation data already exists in {data_dir}, skipping generation")
-    else:
-        generate_simulation_data(
-            data_dir, num_simulations=15, duration=3.0, dt=0.01
-        )
+    generate_simulation_data(
+        data_dir, num_simulations=15, duration=3.0, dt=0.01
+    )
 
     # Step 4: Single-step prediction
     print("\n" + "#"*60)
@@ -395,28 +527,48 @@ def test_double_pendulum_fuzzy_prediction():
     print("\n" + "#"*60)
     print("# STEP 5: Multi-Step Window Prediction Model")
     print("#"*60)
-    X_window, y_window = load_and_prepare_data(data_dir, window_size=3)
-    results_window = train_and_evaluate_window(X_window, y_window, window_size=3)
+    window_size = 3
+    X_window, y_window = load_and_prepare_data(data_dir, window_size=window_size)
+    results_window = train_and_evaluate_window(X_window, y_window, window_size=window_size)
 
     # Step 6: Summary evaluation
     print("\n" + "="*60)
     print("EVALUATION SUMMARY")
     print("="*60)
     print("\nSingle-Step Model:")
-    print(f"  Accuracy: {results_single['accuracy']:.4f}")
-    print(f"  Mean MSE: {np.mean(results_single['mse_per_feature']):.4f}")
-    print(f"  Mean MAE: {np.mean(results_single['mae_per_feature']):.4f}")
+    print(f"  R²:   {results_single['r2']:.6f}")
+    print(f"  RMSE: {results_single['rmse']:.6f}")
+    print(f"  MAE:  {results_single['mae']:.6f}")
 
     print("\nMulti-Step Window Model:")
-    print(f"  Accuracy: {results_window['accuracy']:.4f}")
-    print(f"  Mean MSE: {np.mean(results_window['mse_per_feature']):.4f}")
-    print(f"  Mean MAE: {np.mean(results_window['mae_per_feature']):.4f}")
+    print(f"  R²:   {results_window['r2']:.6f}")
+    print(f"  RMSE: {results_window['rmse']:.6f}")
+    print(f"  MAE:  {results_window['mae']:.6f}")
 
     print("\nComparison:")
-    if results_single['accuracy'] > results_window['accuracy']:
-        print("  Single-step model shows better accuracy")
+    if results_single['r2'] > results_window['r2']:
+        print("  Single-step model shows better R² score")
     else:
-        print("  Multi-step window model shows better accuracy")
+        print("  Multi-step window model shows better R² score")
+
+    # Plot results
+    print("\n" + "="*60)
+    print("GENERATING VISUALIZATION PLOTS")
+    print("="*60)
+
+    print("\nPlot 1: Scatter and Residual Comparison")
+    fig1 = plot_prediction_comparison(results_single, results_window)
+    plot_file_1 = test_dir / "prediction_comparison.png"
+    fig1.savefig(plot_file_1, dpi=200, bbox_inches='tight')
+    print(f"  Saved to: {plot_file_1}")
+    plt.close(fig1)
+
+    print("\nPlot 3: Second Pendulum Position Over Time")
+    fig3 = plot_second_pendulum_position(results_single, results_window)
+    plot_file_3 = test_dir / "second_pendulum_position.png"
+    fig3.savefig(plot_file_3, dpi=200, bbox_inches='tight')
+    print(f"  Saved to: {plot_file_3}")
+    plt.close(fig3)
 
     print("\nTest completed successfully!")
 
