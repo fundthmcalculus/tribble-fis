@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
 
 N_BINS = 10
-OUTPUT_FEATURE = ['theta_2']
+OUTPUT_FEATURES = ['theta_2']
 
 class DoublePendulum:
     """Double pendulum simulator using Lagrangian mechanics."""
@@ -48,33 +48,21 @@ class DoublePendulum:
         Returns: [omega_1, alpha_1, omega_2, alpha_2]
         """
         theta1, omega1, theta2, omega2 = state
+        # Found here: https://web.mit.edu/jorloff/www/chaosTalk/double-pendulum/double-pendulum-en.html
+        delta_theta = theta1 - theta2
 
         # Common terms
-        delta = theta1 - theta2
-        sin_delta = np.sin(delta)
-        cos_delta = np.cos(delta)
-        sin_theta1 = np.sin(theta1)
-        sin_theta2 = np.sin(theta2)
+        denom1 = self.l1 *(2*self.m1 + self.m2 - self.m2 *np.cos(2*delta_theta))
+        num11 = -self.g*(2*self.m1 + self.m2)*np.sin(theta1)
+        num12 = -self.m2*self.g*np.sin(delta_theta - theta2) # theta1-2theta2
+        num13 = -2*np.sin(delta_theta)*self.m2*(omega2**2 * self.l2 + omega1**2 *self.l1 * np.cos(delta_theta))
+        alpha1 = (num11 + num12 + num13) / denom1
 
-        # Derived from Euler-Lagrange equations for double pendulum
-        denom = (self.m1 + self.m2) * self.l1 - self.m2 * self.l1 * cos_delta**2
-
-        # Angular acceleration of pendulum 1
-        alpha1 = (
-            self.m2 * self.l1 * omega1**2 * sin_delta * cos_delta
-            + self.m2 * self.g * np.sin(theta2) * cos_delta
-            + (self.m1 + self.m2) * self.g * sin_theta1
-            - self.m2 * self.l2 * omega2**2 * sin_delta
-        ) / denom
-
-        # Angular acceleration of pendulum 2
-        denom2 = (self.m1 + self.m2) * self.l2 - self.m2 * self.l2 * cos_delta**2
-        alpha2 = (
-            -self.m2 * self.l2 * omega2**2 * sin_delta * cos_delta
-            - (self.m1 + self.m2) * self.g * np.sin(theta2)
-            + (self.m1 + self.m2) * self.l1 * omega1**2 * sin_delta
-            + (self.m1 + self.m2) * self.g * sin_theta1 * cos_delta
-        ) / denom2
+        num21 = omega1**2 *self.l1 *(self.m1+self.m2)
+        num22 = self.g*(self.m1+self.m2)*np.cos(theta1)
+        num23 = omega2**2 + self.l2*self.m2 * np.cos(delta_theta)
+        denom2 = self.l2 *(2*self.m1 + self.m2 - self.m2 * np.cos(2*delta_theta))
+        alpha2 = 2*np.sin(delta_theta)*(num21 + num22 + num23) / denom2
 
         return [omega1, alpha1, omega2, alpha2]
 
@@ -263,7 +251,7 @@ def train_and_evaluate_single_step(X, y, test_size=0.2):
     y_pred_class = clf.predict(X_test)
 
     # Decode predictions back to feature values
-    y_pred_decoded = np.zeros((len(y_pred_class), len(feature_names)))
+    y_pred_decoded = np.zeros((len(y_pred_class), len(OUTPUT_FEATURES)))
     for i, cls in enumerate(y_pred_class):
         y_pred_decoded[i, 0] = cls // (n_bins**3)
         y_pred_decoded[i, 1] = (cls % (n_bins**3)) // (n_bins**2)
@@ -274,12 +262,12 @@ def train_and_evaluate_single_step(X, y, test_size=0.2):
     mse_per_feature = []
     mae_per_feature = []
 
-    for feat_idx in range(len(feature_names)):
+    for feat_idx in range(len(OUTPUT_FEATURES)):
         mse = mean_squared_error(y_test_binned[:, feat_idx], y_pred_decoded[:, feat_idx])
         mae = mean_absolute_error(y_test_binned[:, feat_idx], y_pred_decoded[:, feat_idx])
         mse_per_feature.append(mse)
         mae_per_feature.append(mae)
-        print(f"\n{feature_names[feat_idx]}:")
+        print(f"\n{OUTPUT_FEATURES[feat_idx]}:")
         print(f"  MSE: {mse:.4f}")
         print(f"  MAE: {mae:.4f}")
 
@@ -321,10 +309,10 @@ def train_and_evaluate_window(X, y, window_size=3, test_size=0.2):
     # Discretize targets
     n_bins = N_BINS
 
-    y_train_binned = np.zeros((len(y_train), len(feature_names)), dtype=int)
-    y_test_binned = np.zeros((len(y_test), len(feature_names)), dtype=int)
+    y_train_binned = np.zeros((len(y_train), len(OUTPUT_FEATURES)), dtype=int)
+    y_test_binned = np.zeros((len(y_test), len(OUTPUT_FEATURES)), dtype=int)
 
-    for feat_idx, feat_name in enumerate(feature_names):
+    for feat_idx, feat_name in enumerate(OUTPUT_FEATURES):
         bins = np.percentile(y_train[:, feat_idx], np.linspace(0, 100, n_bins+1))
         y_train_binned[:, feat_idx] = np.digitize(y_train[:, feat_idx], bins) - 1
         y_test_binned[:, feat_idx] = np.digitize(y_test[:, feat_idx], bins) - 1
@@ -345,7 +333,7 @@ def train_and_evaluate_window(X, y, window_size=3, test_size=0.2):
     y_pred_class = clf.predict(X_test)
 
     # Decode predictions
-    y_pred_decoded = np.zeros((len(y_pred_class), len(feature_names)))
+    y_pred_decoded = np.zeros((len(y_pred_class), len(OUTPUT_FEATURES)))
     for i, cls in enumerate(y_pred_class):
         y_pred_decoded[i, 0] = cls // (n_bins**3)
         y_pred_decoded[i, 1] = (cls % (n_bins**3)) // (n_bins**2)
@@ -356,12 +344,12 @@ def train_and_evaluate_window(X, y, window_size=3, test_size=0.2):
     mse_per_feature = []
     mae_per_feature = []
 
-    for feat_idx in range(len(feature_names)):
+    for feat_idx in range(len(OUTPUT_FEATURES)):
         mse = mean_squared_error(y_test_binned[:, feat_idx], y_pred_decoded[:, feat_idx])
         mae = mean_absolute_error(y_test_binned[:, feat_idx], y_pred_decoded[:, feat_idx])
         mse_per_feature.append(mse)
         mae_per_feature.append(mae)
-        print(f"\n{feature_names[feat_idx]}:")
+        print(f"\n{OUTPUT_FEATURES[feat_idx]}:")
         print(f"  MSE: {mse:.4f}")
         print(f"  MAE: {mae:.4f}")
 
