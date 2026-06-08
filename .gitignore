@@ -1,4 +1,5 @@
 /tests/double_pendulum_data
+/tests/atwood_data
 **/*.png
 /.idea
 /.claude

@@ -11,6 +11,15 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "certifi"
+version = "2026.5.20"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f3/ce/ee2ecad540810a79593028e88299baeae54d346cc7a0d94b6199988b89b1/certifi-2026.5.20.tar.gz", hash = "sha256:69dea482ab64caa7b9f6aba1c6bf48bb6a5448d1c0f1b17ab42ad8c763a5344d", size = 135422, upload-time = "2026-05-20T11:46:50.073Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/59/8c/57e832b7af6d7c5abe66eb3fbe3a3a32f4d11ea23a1aa7131371035be991/certifi-2026.5.20-py3-none-any.whl", hash = "sha256:3c52e209ba0a4ad7aebe60436a4ab349c39e1e602e8c134221e546902ad25897", size = 134134, upload-time = "2026-05-20T11:46:48.578Z" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1054,7 +1063,7 @@ wheels = [
 
 [[package]]
 name = "tribble-clustering"
-version = "0.1.7"
+version = "0.1.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "matplotlib" },
@@ -1062,7 +1071,7 @@ dependencies = [
     { name = "numba-progress" },
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/77/17/e9ed663410c3eda3873c9decdd55d44ba2131ad1c9dc1156789ef514bc07/tribble_clustering-0.1.7.tar.gz", hash = "sha256:a80fe57b7bfe40fb723d60339bfa2c5af017eefa0b135e411b17e92e7aa1abbb", size = 365970, upload-time = "2026-06-07T16:25:57.163Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/0a/9b8a16f1b1b8550ec3502dfb10cf65251d4119dd578ad9d3e380ef009a76/tribble_clustering-0.1.8.tar.gz", hash = "sha256:2e5d6b303ac832255ce0bea10c592d08bdbca57fb6c203d491479d5212968d6e", size = 377405, upload-time = "2026-06-08T19:24:42.573Z" }
 
 [[package]]
 name = "tribble-fis"
@@ -1074,6 +1083,7 @@ dependencies = [
     { name = "scipy" },
     { name = "seaborn" },
     { name = "tribble-clustering" },
+    { name = "ucimlrepo" },
 ]
 
 [package.optional-dependencies]
@@ -1094,7 +1104,8 @@ requires-dist = [
     { name = "scipy" },
     { name = "scipy", marker = "extra == 'dev'" },
     { name = "seaborn" },
-    { name = "tribble-clustering", specifier = ">=0.1.7" },
+    { name = "tribble-clustering", specifier = ">=0.1.8" },
+    { name = "ucimlrepo", specifier = ">=0.0.7" },
 ]
 provides-extras = ["dev"]
 
@@ -1105,4 +1116,17 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ba/19/1b9b0e29f30c6d35cb345486df41110984ea67ae69dddbc0e8a100999493/tzdata-2026.2.tar.gz", hash = "sha256:9173fde7d80d9018e02a662e168e5a2d04f87c41ea174b139fbef642eda62d10", size = 198254, upload-time = "2026-04-24T15:22:08.651Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/e4/dccd7f47c4b64213ac01ef921a1337ee6e30e8c6466046018326977efd95/tzdata-2026.2-py2.py3-none-any.whl", hash = "sha256:bbe9af844f658da81a5f95019480da3a89415801f6cc966806612cc7169bffe7", size = 349321, upload-time = "2026-04-24T15:22:05.876Z" },
+]
+
+[[package]]
+name = "ucimlrepo"
+version = "0.0.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "certifi" },
+    { name = "pandas" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/87/7c/f5a400cc99a5365d153609ebf803084f78b4638b0f7925aa31d9abb62b8e/ucimlrepo-0.0.7.tar.gz", hash = "sha256:4cff3f9e814367dd60956da999ace473197237b9fce4c07e9a689e77b4ffb59a", size = 9369, upload-time = "2024-05-21T06:06:41.465Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3b/07/1252560194df2b4fad1cb3c46081b948331c63eb1bb0b97620d508d12a53/ucimlrepo-0.0.7-py3-none-any.whl", hash = "sha256:0a5ce7e21d7ec850a0da4427c47f9dd96fcc6532f1c7e95dcec63eeb40f08026", size = 8041, upload-time = "2024-05-21T06:06:39.826Z" },
 ]

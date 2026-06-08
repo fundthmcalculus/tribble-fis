@@ -10,11 +10,12 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "numpy",
-    "tribble-clustering>=0.1.7",
+    "tribble-clustering>=0.1.8",
     # TODO - Reduce the number of dependencies?
     "scikit-learn",
     "scipy",
-    "seaborn"
+    "seaborn",
+    "ucimlrepo>=0.0.7",
 ]
 
 [project.optional-dependencies]
