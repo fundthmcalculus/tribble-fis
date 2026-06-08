@@ -11,7 +11,6 @@ import pandas as pd
 from pathlib import Path
 import matplotlib.pyplot as plt
 from scipy.integrate import odeint
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 import sys
@@ -22,7 +21,7 @@ from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
 
 # Comparison set: https://arxiv.org/pdf/2504.13453
 N_BINS = 15
-OUTPUT_FEATURES = ['theta_1']
+OUTPUT_FEATURES = ['theta_2']
 INPUT_FEATURES = ['omega_1', 'alpha_1', 'omega_2', 'alpha_2']
 
 class DoublePendulum:
@@ -126,25 +125,31 @@ def generate_simulation_data(output_dir, num_simulations=50, duration=10.0, dt=0
     pendulum = DoublePendulum()
 
     print(f"Generating {num_simulations} simulations...")
+    theta1 = 120 * np.pi / 180
+    omega1 = 0.0
+    omega2 = 0.0
     # Sourced from: https://arxiv.org/pdf/2504.13453
     theta2s = np.arange(0, 3.00001, 0.1)
     for ij in range(len(theta2s)):
         theta2 = theta2s[ij]
-        theta1 = 120 * np.pi / 180
         theta2 *= np.pi / 180
-        omega1 = 0.0
-        omega2 = 0.0
         # Simulate
         df = pendulum.simulate(theta1, omega1, theta2, omega2, duration, dt)
         # Save
         filepath = output_path / f"simulation_{ij:04d}.csv"
         df.to_csv(filepath, index=False)
 
+    df_tst1 = pendulum.simulate(theta1, omega1, 2.05 * np.pi / 180.0, omega2, duration, dt)
+    df_tst1.to_csv(output_path / "simulation_tst1.csv", index=False)
+    df_tst2 = pendulum.simulate(theta1, omega1, 2.05 * np.pi / 180.0, omega2, duration, dt)
+    df_tst2.to_csv(output_path / "simulation_tst2.csv", index=False)
+
+
     print(f"Data saved to {output_path}")
     return output_path
 
 
-def load_and_prepare_data(data_dir, window_size=1):
+def load_and_prepare_data(data_dir, window_size=1, file_glob: str = 'simulation_0*.csv'):
     """
     Load all simulation files and prepare data for prediction.
 
@@ -154,12 +159,13 @@ def load_and_prepare_data(data_dir, window_size=1):
     Args:
         data_dir: directory containing simulation CSV files
         window_size: number of past timesteps to use as features
+        file_glob: For picking the existing simulation data.
 
     Returns:
         tuple: (X, y) where X is features and y is target
     """
     data_path = Path(data_dir)
-    files = sorted(data_path.glob("simulation_*.csv"))
+    files = sorted(data_path.glob(file_glob))
 
     print(f"Loading {len(files)} simulation files...")
 
@@ -199,7 +205,7 @@ def load_and_prepare_data(data_dir, window_size=1):
     return X_combined, y_combined
 
 
-def train_and_evaluate_single_step(X, y, test_size=0.2):
+def train_and_evaluate_single_step(X_train, y_train, X_test, y_test):
     """
     Train regressor for single-step prediction (current state -> next state).
 
@@ -214,10 +220,6 @@ def train_and_evaluate_single_step(X, y, test_size=0.2):
     print("\n" + "="*60)
     print("SINGLE-STEP PREDICTION MODEL")
     print("="*60)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=42
-    )
 
     # Train regressor on continuous target (first output feature)
     y_train_scalar = y_train[:, 0] if y_train.ndim > 1 else y_train
@@ -257,7 +259,7 @@ def train_and_evaluate_single_step(X, y, test_size=0.2):
     }
 
 
-def train_and_evaluate_window(X, y, window_size=3, test_size=0.2):
+def train_and_evaluate_window(X_train, y_train, X_test, y_test, window_size=3, test_size=0.2):
     """
     Train regressor for multi-step prediction using sliding window.
 
@@ -273,10 +275,6 @@ def train_and_evaluate_window(X, y, window_size=3, test_size=0.2):
     print("\n" + "="*60)
     print(f"MULTI-STEP WINDOW PREDICTION MODEL (window_size={window_size})")
     print("="*60)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=42
-    )
 
     # Train regressor on continuous target (first output feature)
     y_train_scalar = y_train[:, 0] if y_train.ndim > 1 else y_train
@@ -520,16 +518,18 @@ def test_double_pendulum_fuzzy_prediction():
     print("\n" + "#"*60)
     print("# STEP 4: Single-Step Prediction Model")
     print("#"*60)
-    X_single, y_single = load_and_prepare_data(data_dir, window_size=1)
-    results_single = train_and_evaluate_single_step(X_single, y_single)
+    X_single_train, y_single_train = load_and_prepare_data(data_dir, window_size=1)
+    X_single_test, y_single_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=1)
+    results_single = train_and_evaluate_single_step(X_single_train, y_single_train, X_single_test, y_single_test)
 
     # Step 5: Multi-step window prediction
     print("\n" + "#"*60)
     print("# STEP 5: Multi-Step Window Prediction Model")
     print("#"*60)
     window_size = 3
-    X_window, y_window = load_and_prepare_data(data_dir, window_size=window_size)
-    results_window = train_and_evaluate_window(X_window, y_window, window_size=window_size)
+    X_window_train, y_window_train = load_and_prepare_data(data_dir, window_size=window_size)
+    X_window_test, y_window_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=window_size)
+    results_window = train_and_evaluate_window(X_window_train, y_window_train, X_window_test, y_window_test, window_size=window_size)
 
     # Step 6: Summary evaluation
     print("\n" + "="*60)

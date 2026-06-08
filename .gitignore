@@ -1,0 +1,4 @@
+/tests/double_pendulum_data
+**/*.png
+/.idea
+/.claude
