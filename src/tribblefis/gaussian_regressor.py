@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, RegressorMixin
-from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
+from sklearn.utils.validation import check_X_y, check_is_fitted
 
 from .gauss_math import (
     calculate_gaussian_correlation,
@@ -249,3 +249,88 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
             ) * norm_firing_strength[:, ij]
 
         return y_pred
+
+
+class MimoGaussianPredictor(BaseEstimator, RegressorMixin):
+    """
+    Multi-input multi-output wrapper around MixtureOfGaussiansFuzzyRegressor.
+
+    Fits one independent regressor per output column, enabling simultaneous
+    prediction of multiple outputs from the same input features.
+    """
+
+    def __init__(
+        self,
+        top_n=-1,
+        top_p=0.95,
+        n_gaussians=0,
+        log_transform=False,
+        n_output_buckets=15,
+        tsk_order="1st",
+        optimize_coefficients=True,
+        random_state=42,
+    ):
+        self.top_n = top_n
+        self.top_p = top_p
+        self.n_gaussians = n_gaussians
+        self.log_transform = log_transform
+        self.n_output_buckets = n_output_buckets
+        self.tsk_order = tsk_order
+        self.optimize_coefficients = optimize_coefficients
+        self.random_state = random_state
+
+    def _make_regressor(self):
+        return MixtureOfGaussiansFuzzyRegressor(
+            top_n=self.top_n,
+            top_p=self.top_p,
+            n_gaussians=self.n_gaussians,
+            log_transform=self.log_transform,
+            n_output_buckets=self.n_output_buckets,
+            tsk_order=self.tsk_order,
+            optimize_coefficients=self.optimize_coefficients,
+            random_state=self.random_state,
+        )
+
+    def fit(self, X, y):
+        """
+        Fit one regressor per output column.
+
+        Args:
+            X: Training features (n_samples, n_features)
+            y: Target values (n_samples, n_outputs) or DataFrame
+        """
+        if isinstance(y, pd.DataFrame):
+            self.output_names_ = y.columns.tolist()
+            y_array = y.values
+        elif isinstance(y, pd.Series):
+            self.output_names_ = [y.name or "output_0"]
+            y_array = y.values.reshape(-1, 1)
+        else:
+            y_array = np.asarray(y)
+            if y_array.ndim == 1:
+                y_array = y_array.reshape(-1, 1)
+            self.output_names_ = [f"output_{i}" for i in range(y_array.shape[1])]
+
+        self.regressors_ = {}
+        for i, name in enumerate(self.output_names_):
+            print(f"  Fitting regressor for output '{name}' ({i+1}/{len(self.output_names_)})")
+            reg = self._make_regressor()
+            reg.fit(X, y_array[:, i])
+            self.regressors_[name] = reg
+
+        self.is_fitted_ = True
+        return self
+
+    def predict(self, X):
+        """
+        Predict all outputs for X.
+
+        Args:
+            X: Input features (n_samples, n_features)
+
+        Returns:
+            DataFrame with one column per output (n_samples, n_outputs)
+        """
+        check_is_fitted(self)
+        preds = {name: reg.predict(X) for name, reg in self.regressors_.items()}
+        return pd.DataFrame(preds, columns=self.output_names_)
