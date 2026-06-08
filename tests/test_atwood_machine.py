@@ -21,8 +21,8 @@ from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
 
 # Comparison set: https://arxiv.org/pdf/2504.13453
 N_BINS = 15
-OUTPUT_FEATURES = ['theta_2']
-INPUT_FEATURES = ['omega_1', 'alpha_1', 'omega_2', 'alpha_2']
+OUTPUT_FEATURES = ['theta']
+INPUT_FEATURES = ['r_dot', 'r_ddot', 'omega', 'alpha']
 
 class AtwoodMachine:
     """Double pendulum simulator using Lagrangian mechanics."""
@@ -62,9 +62,6 @@ class AtwoodMachine:
             r_0, theta_0, r_dot0, omega_0: initial conditions
             duration: simulation time in seconds
             dt: timestep in seconds
-
-        Returns:
-            DataFrame with columns: theta_1, omega_1, alpha_1, theta_2, omega_2, alpha_2
         """
         t = np.arange(0, duration, dt)
         state0 = [r_0, theta_0, r_dot0, omega_0]
@@ -78,20 +75,20 @@ class AtwoodMachine:
         omega = solution[:, 3]
 
         # Compute alpha (angular acceleration) at each point
-        alpha1_vals = []
-        alpha2_vals = []
+        r_ddot = []
+        alpha = []
         for i, state in enumerate(solution):
-            _, a1, _, a2 = self.equations_of_motion(state, t[i])
-            alpha1_vals.append(a1)
-            alpha2_vals.append(a2)
+            _, _, a1, a2 = self.equations_of_motion(state, t[i])
+            r_ddot.append(a1)
+            alpha.append(a2)
 
         return pd.DataFrame({
-            'r': theta1,
-            'r_dot': omega1,
-            'r_ddot': alpha1_vals,
-            'theta': theta2,
-            'omega': omega2,
-            'alpha': alpha2_vals
+            'r': r,
+            'r_dot': r_dot,
+            'r_ddot': r_ddot,
+            'theta': theta,
+            'omega': omega,
+            'alpha': alpha
         })
 
 
@@ -111,23 +108,18 @@ def generate_simulation_data(output_dir, num_simulations=50, duration=10.0, dt=0
     pendulum = AtwoodMachine()
 
     print(f"Generating {num_simulations} simulations...")
-    theta1 = 120 * np.pi / 180
-    omega1 = 0.0
-    omega2 = 0.0
     # Sourced from: https://arxiv.org/pdf/2504.13453
-    theta2s = np.arange(0, 3.00001, 0.1)
-    for ij in range(len(theta2s)):
-        theta2 = theta2s[ij]
-        theta2 *= np.pi / 180
+    rs = np.arange(1, 3.00001, 0.1)
+    for ij, r_c in enumerate(rs):
         # Simulate
-        df = pendulum.simulate(theta1, omega1, theta2, omega2, duration, dt)
+        df = pendulum.simulate(r_c, np.pi/2.0, 0.0, 0.0, duration, dt)
         # Save
         filepath = output_path / f"simulation_{ij:04d}.csv"
         df.to_csv(filepath, index=False)
 
-    df_tst1 = pendulum.simulate(theta1, omega1, 2.05 * np.pi / 180.0, omega2, duration, dt)
+    df_tst1 = pendulum.simulate(2.05, np.pi/2.0, 0.0, 0.0, duration, dt)
     df_tst1.to_csv(output_path / "simulation_tst1.csv", index=False)
-    df_tst2 = pendulum.simulate(theta1, omega1, 2.05 * np.pi / 180.0, omega2, duration, dt)
+    df_tst2 = pendulum.simulate(2.0, np.pi/2.0, 0.1, 0.0, duration, dt)
     df_tst2.to_csv(output_path / "simulation_tst2.csv", index=False)
 
 
