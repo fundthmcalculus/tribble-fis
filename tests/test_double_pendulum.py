@@ -39,8 +39,8 @@ def time_this(label="Operation"):
 N_BINS = 2
 MIMO_WINDOW_SIZE = 2
 INPUT_FEATURES = ['theta_1','theta_2', 'omega_1', 'alpha_1', 'omega_2', 'alpha_2']
-# OUTPUT_FEATURES = INPUT_FEATURES.copy()
-OUTPUT_FEATURES = ['theta_1', 'theta_2']
+OUTPUT_FEATURES = INPUT_FEATURES.copy()
+# OUTPUT_FEATURES = ['theta_1', 'theta_2']
 
 # tribblefis.gauss_data.DefaultNormCornorm = 'probability'
 
@@ -189,8 +189,8 @@ def load_and_prepare_data(data_dir, window_size=1, file_glob: str = 'simulation_
 def mimo_input_feature_names(window_size: int) -> list[str]:
     """Return input column names for MIMO data with given window size.
 
-    window_size=1 → OUTPUT_FEATURES
-    window_size=N → ['theta_1_step0', ..., 'theta_2_step0', ..., 'theta_2_step{N-1}']
+    window_size=1 -> OUTPUT_FEATURES
+    window_size=N -> ['theta_1_step0', ..., 'theta_2_step0', ..., 'theta_2_step{N-1}']
     where step0 is oldest, step(window_size-1) is most recent.
     """
     if window_size == 1:
@@ -267,7 +267,7 @@ def train_and_evaluate_single_step(X_train, y_train, X_test, y_test):
     print(f"  MSE:  {mse:.6f}")
     print(f"  RMSE: {rmse:.6f}")
     print(f"  MAE:  {mae:.6f}")
-    print(f"  R²:   {r2:.6f}")
+    print(f"  R2:   {r2:.6f}")
 
     return {
         'model_type': 'single_step',
@@ -308,7 +308,7 @@ def train_and_evaluate_window(X_train, y_train, X_test, y_test, window_size=3, t
     print(f"  MSE:  {mse:.6f}")
     print(f"  RMSE: {rmse:.6f}")
     print(f"  MAE:  {mae:.6f}")
-    print(f"  R²:   {r2:.6f}")
+    print(f"  R2:   {r2:.6f}")
 
     return {
         'model_type': 'multi_window',
@@ -352,7 +352,7 @@ def train_and_evaluate_mimo(X_train, y_train, X_test, y_test, window_size: int =
         mae = mean_absolute_error(y_test_df[col], y_pred_df[col])
         r2 = r2_score(y_test_df[col], y_pred_df[col])
         metrics[col] = {'mse': mse, 'mae': mae, 'rmse': np.sqrt(mse), 'r2': r2}
-        print(f"  {col:10s}: R²={r2:.4f}  RMSE={np.sqrt(mse):.4f}  MAE={mae:.4f}")
+        print(f"  {col:10s}: R2={r2:.4f}  RMSE={np.sqrt(mse):.4f}  MAE={mae:.4f}")
 
     return {
         'model_type': 'mimo',
@@ -364,15 +364,143 @@ def train_and_evaluate_mimo(X_train, y_train, X_test, y_test, window_size: int =
     }
 
 
-def run_iterative_prediction(regressor, initial_window_df, n_steps, window_size: int = 1):
+def replay_training_traces(
+    regressor, data_dir, window_size: int, file_glob: str = 'simulation_0*.csv'
+):
+    """
+    Roll out the MIMO predictor on every training trace and collect residuals.
+
+    For each trace: seeds the rolling buffer with the first `window_size` rows,
+    then predicts forward.  Collects (predicted_state_t, actual_t - predicted_t)
+    pairs for every valid step (seed rows excluded because their residual is zero
+    by construction).
+
+    Returns:
+        X_corr: DataFrame of predicted states, columns = OUTPUT_FEATURES
+        y_corr: DataFrame of residuals (actual - predicted), columns = OUTPUT_FEATURES
+    """
+    data_path = Path(data_dir)
+    files = sorted(data_path.glob(file_glob))
+    print(f"Replaying rollouts on {len(files)} training traces (window={window_size})...")
+
+    X_parts, y_parts = [], []
+
+    for filepath in files:
+        df = pd.read_csv(filepath)
+        if len(df) <= window_size:
+            continue
+
+        seed = df[OUTPUT_FEATURES].iloc[:window_size]
+        n_steps = len(df) - window_size
+
+        predicted = run_iterative_prediction(
+            regressor, seed, n_steps, window_size=window_size, verbose=False
+        )
+        actual = df[OUTPUT_FEATURES].iloc[window_size - 1:].reset_index(drop=True)
+
+        valid_len = min(len(predicted), len(actual))
+        # Skip index 0 -- that is the seed row itself (residual is trivially 0).
+        pred_vals = predicted[OUTPUT_FEATURES].values[1:valid_len]
+        act_vals  = actual[OUTPUT_FEATURES].values[1:valid_len]
+
+        valid_mask = ~np.any(np.isnan(pred_vals), axis=1)
+        if valid_mask.any():
+            X_parts.append(pred_vals[valid_mask])
+            y_parts.append((act_vals - pred_vals)[valid_mask])
+
+    X_corr = np.vstack(X_parts)
+    y_corr = np.vstack(y_parts)
+    print(f"  Collected {len(X_corr)} (predicted, residual) pairs.")
+    return pd.DataFrame(X_corr, columns=OUTPUT_FEATURES), pd.DataFrame(y_corr, columns=OUTPUT_FEATURES)
+
+
+class MimoRolloutCorrector:
+    """
+    Learns additive step-wise corrections from replayed rollout residuals.
+
+    After fitting on (predicted_state, residual) pairs gathered by
+    replay_training_traces(), correct() applies the learned correction
+    at each step of run_iterative_prediction() -- but ONLY when the Linf norm
+    of the correction vector exceeds `activation_threshold`.  This prevents
+    the corrector from amplifying noise in the well-behaved early phase of a
+    rollout, where the base model's residuals are small.
+
+    activation_threshold can be set explicitly, or auto-calibrated during fit()
+    by taking a quantile of the residual magnitudes seen in training.
+    """
+
+    def __init__(
+        self,
+        n_output_buckets=4,
+        tsk_order='1st',
+        optimize_coefficients=True,
+        random_state=42,
+        activation_threshold=None,
+        activation_quantile=0.75,
+    ):
+        self._model = MimoGaussianPredictor(
+            n_output_buckets=n_output_buckets,
+            tsk_order=tsk_order,
+            optimize_coefficients=optimize_coefficients,
+            random_state=random_state,
+        )
+        self.activation_threshold = activation_threshold
+        self.activation_quantile = activation_quantile
+        self.is_fitted_ = False
+
+    def fit(self, X_predicted_df, y_residuals_df):
+        """
+        Fit correction model: predicted_state -> residual.
+
+        If activation_threshold is None, auto-calibrate it as the
+        activation_quantile of Linf residual norms across training pairs.
+        Corrections smaller than this threshold were typical of the
+        well-behaved regime and should not be applied.
+        """
+        print("Fitting rollout corrector...")
+        self._model.fit(X_predicted_df, y_residuals_df)
+
+        if self.activation_threshold is None:
+            residual_norms = np.abs(y_residuals_df.values).max(axis=1)
+            self.activation_threshold = float(np.quantile(residual_norms, self.activation_quantile))
+            print(f"  Auto-calibrated activation_threshold={self.activation_threshold:.6f} "
+                  f"(q{self.activation_quantile:.0%} of training residual Linf norms)")
+
+        self.is_fitted_ = True
+        return self
+
+    def correct(self, predicted_df):
+        """
+        Return corrected state DataFrame: predicted + learned correction,
+        but only if the correction Linf norm exceeds activation_threshold.
+        """
+        correction_df = self._model.predict(predicted_df)
+        correction_norm = float(np.abs(correction_df.values).max())
+        if correction_norm < self.activation_threshold:
+            return predicted_df  # base model is well-behaved here -- leave it alone
+        corrected = predicted_df.copy()
+        for col in OUTPUT_FEATURES:
+            corrected[col] = corrected[col].values + correction_df[col].values
+        return corrected
+
+
+def run_iterative_prediction(
+    regressor, initial_window_df, n_steps,
+    window_size: int = 1,
+    corrector=None,
+    verbose: bool = True,
+):
     """
     Iteratively apply MIMO regressor from an initial window of states.
 
     For window_size=1, initial_window_df should have 1 row (the seed state).
-    For window_size=N, initial_window_df should have N rows (rows oldest→newest).
+    For window_size=N, initial_window_df should have N rows (rows oldest->newest).
     The first row of the returned trajectory corresponds to the *last* row of
     initial_window_df so that the full output aligns with the actual trajectory
     starting at index window_size-1.
+
+    If a fitted MimoRolloutCorrector is supplied, its learned correction is
+    applied to each predicted state before it is stored and fed into the next step.
 
     Stops early if predictions become NaN (chaotic divergence). The returned
     DataFrame is padded with NaN for any steps after divergence.
@@ -384,15 +512,13 @@ def run_iterative_prediction(regressor, initial_window_df, n_steps, window_size:
 
     input_cols = mimo_input_feature_names(window_size)
 
-    # Seed the rolling buffer from initial_window_df.
-    # If fewer rows supplied than window_size, pad at the front with the first row.
+    # Seed the rolling buffer; pad from the front if fewer rows than window_size.
     seed_rows = [initial_window_df.iloc[i].values.copy() for i in range(len(initial_window_df))]
     while len(seed_rows) < window_size:
         seed_rows.insert(0, seed_rows[0].copy())
 
     buffer = deque(seed_rows[-window_size:], maxlen=window_size)
 
-    # The "current" state for trajectory comparison is the last row in the window.
     states = [buffer[-1].copy()]
     diverged_at = None
 
@@ -401,19 +527,24 @@ def run_iterative_prediction(regressor, initial_window_df, n_steps, window_size:
         input_df = pd.DataFrame([input_flat], columns=input_cols)
 
         next_state_df = regressor.predict(input_df)
+
+        if corrector is not None and corrector.is_fitted_:
+            next_state_df = corrector.correct(next_state_df)
+
         row = next_state_df.values[0]
 
         if np.any(np.isnan(row)) or np.any(np.abs(row) > 1e6):
             if diverged_at is None:
                 diverged_at = step + 1
-                print(f"  Warning: prediction diverged at step {diverged_at} — padding remainder with NaN. Row={row}")
+                if verbose:
+                    print(f"  Warning: prediction diverged at step {diverged_at} -- padding remainder with NaN.")
             row = np.full(len(OUTPUT_FEATURES), np.nan)
 
         states.append(row)
         buffer.append(row)
 
     result = pd.DataFrame(np.array(states), columns=OUTPUT_FEATURES)
-    if diverged_at is not None:
+    if diverged_at is not None and verbose:
         print(f"  Valid prediction steps: {diverged_at} / {n_steps + 1}")
     return result
 
@@ -641,33 +772,52 @@ def plot_second_pendulum_position(results_single, results_window, dt=0.01):
     return fig
 
 
-def plot_mimo_state_trajectories(actual_df, predicted_df, dt=0.01):
-    """Plot OUTPUT_FEATURES state variables: actual vs iterative MIMO prediction."""
+def plot_mimo_state_trajectories(actual_df, predicted_df, corrected_df=None, dt=0.01):
+    """Plot OUTPUT_FEATURES: actual vs uncorrected vs (optionally) corrected rollout."""
     n_out = len(OUTPUT_FEATURES)
     ncols = min(n_out, 2)
     nrows = (n_out + ncols - 1) // ncols
     fig, axes = plt.subplots(nrows, ncols, figsize=(7 * ncols, 4 * nrows), squeeze=False)
     axes_flat = axes.flat
-    fig.suptitle('MIMO Iterative Rollout: Actual vs Predicted State Trajectories', fontsize=14, fontweight='bold')
+    title = 'MIMO Iterative Rollout: Actual vs Predicted'
+    if corrected_df is not None:
+        title += ' vs Corrected'
+    fig.suptitle(title, fontsize=14, fontweight='bold')
 
     t_actual = np.arange(len(actual_df)) * dt
     pred_time = np.arange(len(predicted_df)) * dt
     n = min(len(actual_df), len(predicted_df))
+    if corrected_df is not None:
+        n = min(n, len(corrected_df))
 
     for idx, col in enumerate(OUTPUT_FEATURES):
         ax = axes_flat[idx]
         act = actual_df[col].values[:n]
         pred = predicted_df[col].values[:n]
-        valid = ~np.isnan(pred)
-        ax.plot(t_actual[:n], act, 'b-', linewidth=1.5, label='Actual', alpha=0.8)
-        ax.plot(pred_time[:n][valid], pred[valid], 'r--', linewidth=1.5, label='Predicted', alpha=0.8)
-        if valid.any():
-            ax.fill_between(t_actual[:n][valid], act[valid], pred[valid], alpha=0.1, color='gray')
-            mae = np.mean(np.abs(act[valid] - pred[valid]))
-            title = f'{col}  (MAE={mae:.4f}, valid={valid.sum()}/{n})'
+        valid_pred = ~np.isnan(pred)
+
+        ax.plot(t_actual[:n], act, 'b-', linewidth=1.5, label='Actual', alpha=0.9)
+        ax.plot(pred_time[:n][valid_pred], pred[valid_pred], 'r--', linewidth=1.2,
+                label='Predicted (uncorrected)', alpha=0.7)
+
+        if corrected_df is not None:
+            corr = corrected_df[col].values[:n]
+            valid_corr = ~np.isnan(corr)
+            ax.plot(pred_time[:n][valid_corr], corr[valid_corr], 'g-', linewidth=1.5,
+                    label='Predicted (corrected)', alpha=0.8)
+            if valid_corr.any():
+                mae_c = np.mean(np.abs(act[valid_corr] - corr[valid_corr]))
+                mae_u = np.mean(np.abs(act[valid_pred] - pred[valid_pred])) if valid_pred.any() else float('nan')
+                title_str = f'{col}  uncorr MAE={mae_u:.4f} -> corr MAE={mae_c:.4f}'
+            else:
+                title_str = f'{col}  (corrected: no valid predictions)'
+        elif valid_pred.any():
+            mae_u = np.mean(np.abs(act[valid_pred] - pred[valid_pred]))
+            title_str = f'{col}  (MAE={mae_u:.4f}, valid={valid_pred.sum()}/{n})'
         else:
-            title = f'{col}  (no valid predictions)'
-        ax.set_title(title, fontsize=10)
+            title_str = f'{col}  (no valid predictions)'
+
+        ax.set_title(title_str, fontsize=10)
         ax.set_xlabel('Time (s)', fontsize=10)
         ax.grid(True, alpha=0.3)
         ax.legend(loc='upper right', fontsize=9)
@@ -744,41 +894,69 @@ def test_double_pendulum_fuzzy_prediction():
     actual_trajectory = tst_df[OUTPUT_FEATURES].iloc[MIMO_WINDOW_SIZE - 1:].reset_index(drop=True)
     n = min(len(actual_trajectory), len(predicted_trajectory))
 
-    print("\nIterative Rollout Metrics (valid steps only):")
-    for col in OUTPUT_FEATURES:
-        act = actual_trajectory[col].values[:n]
-        pred = predicted_trajectory[col].values[:n]
-        valid = ~np.isnan(pred)
-        if valid.sum() < 2:
-            print(f"  {col:10s}: insufficient valid predictions")
-            continue
-        mae = np.mean(np.abs(act[valid] - pred[valid]))
-        r2 = r2_score(act[valid], pred[valid])
-        print(f"  {col:10s}: MAE={mae:.4f}  R²={r2:.4f}  (valid={valid.sum()}/{n})")
+    def rollout_metrics(label, predicted, actual, n):
+        print(f"\n{label}:")
+        for col in OUTPUT_FEATURES:
+            act = actual[col].values[:n]
+            pred = predicted[col].values[:n]
+            valid = ~np.isnan(pred)
+            if valid.sum() < 2:
+                print(f"  {col:10s}: insufficient valid predictions")
+                continue
+            mae = np.mean(np.abs(act[valid] - pred[valid]))
+            r2 = r2_score(act[valid], pred[valid])
+            print(f"  {col:10s}: MAE={mae:.4f}  R2={r2:.4f}  (valid={valid.sum()}/{n})")
+
+    rollout_metrics("Iterative Rollout Metrics (uncorrected)", predicted_trajectory, actual_trajectory, n)
+
+    # Step 5b: Replay training traces, collect residuals, fit corrector
+    print("\n" + "#"*60)
+    print("# STEP 5b: Fit Rollout Corrector from Training Traces")
+    print("#"*60)
+    with time_this('fit-corrector'):
+        X_corr, y_corr = replay_training_traces(
+            results_mimo['regressor'], data_dir, MIMO_WINDOW_SIZE
+        )
+        corrector = MimoRolloutCorrector(n_output_buckets=8, activation_quantile=0.95)
+        corrector.fit(X_corr, y_corr)
+
+    # Step 5c: Corrected rollout on the same test trace
+    print("\n" + "#"*60)
+    print("# STEP 5c: Corrected Iterative Rollout")
+    print("#"*60)
+    print(f"Running {n_steps} corrected iterative prediction steps...")
+    with time_this('corrected-rollout'):
+        corrected_trajectory = run_iterative_prediction(
+            results_mimo['regressor'], initial_window, n_steps,
+            window_size=MIMO_WINDOW_SIZE, corrector=corrector
+        )
+
+    n_corr = min(len(actual_trajectory), len(corrected_trajectory))
+    rollout_metrics("Iterative Rollout Metrics (corrected)", corrected_trajectory, actual_trajectory, n_corr)
 
     # Step 6: Summary
     print("\n" + "="*60)
     print("EVALUATION SUMMARY")
     print("="*60)
     print("\nSingle-Step Model:")
-    print(f"  R²:   {results_single['r2']:.6f}")
+    print(f"  R2:   {results_single['r2']:.6f}")
     print(f"  RMSE: {results_single['rmse']:.6f}")
     print(f"  MAE:  {results_single['mae']:.6f}")
 
     # print("\nMulti-Step Window Model:")
-    # print(f"  R²:   {results_window['r2']:.6f}")
+    # print(f"  R2:   {results_window['r2']:.6f}")
     # print(f"  RMSE: {results_window['rmse']:.6f}")
     # print(f"  MAE:  {results_window['mae']:.6f}")
 
     print("\nMIMO Model (1-step):")
     for col in OUTPUT_FEATURES:
         m = results_mimo['metrics'][col]
-        print(f"  {col:10s}: R²={m['r2']:.4f}  RMSE={m['rmse']:.4f}")
+        print(f"  {col:10s}: R2={m['r2']:.4f}  RMSE={m['rmse']:.4f}")
 
     # if results_single['r2'] > results_window['r2']:
-    #     print("\n  Single-step model shows better R² score for theta_2")
+    #     print("\n  Single-step model shows better R2 score for theta_2")
     # else:
-    #     print("\n  Multi-step window model shows better R² score for theta_2")
+    #     print("\n  Multi-step window model shows better R2 score for theta_2")
 
     # Step 7: Plots
     print("\n" + "="*60)
@@ -796,17 +974,19 @@ def test_double_pendulum_fuzzy_prediction():
     # plt.close(fig2)
 
     print("\nPlot 3: MIMO Iterative Rollout State Trajectories")
-    fig3 = plot_mimo_state_trajectories(actual_trajectory, predicted_trajectory, dt=dt)
+    fig3 = plot_mimo_state_trajectories(
+        actual_trajectory, predicted_trajectory, corrected_df=corrected_trajectory, dt=dt
+    )
     fig3.savefig(test_dir / "mimo_iterative_trajectories.png", dpi=200, bbox_inches='tight')
     plt.close(fig3)
 
-    # Step 8: GIF animation
+    # Step 8: GIF animation (actual vs corrected rollout)
     print("\n" + "="*60)
     print("GENERATING GIF ANIMATION")
     print("="*60)
     gif_path = test_dir / "double_pendulum_comparison.gif"
     create_pendulum_animation(
-        actual_trajectory, predicted_trajectory,
+        actual_trajectory, corrected_trajectory,
         gif_path, dt=dt, max_frames=300, fps=25
     )
 
