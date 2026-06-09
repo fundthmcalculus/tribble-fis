@@ -18,6 +18,9 @@ from scipy.integrate import odeint
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 import sys
+
+import tribblefis.gauss_data
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor, MimoGaussianPredictor
@@ -33,11 +36,13 @@ def time_this(label="Operation"):
 
 
 # Comparison set: https://arxiv.org/pdf/2504.13453
-N_BINS = 15
-ALL_STATE_FEATURES = ['theta_1', 'omega_1', 'alpha_1', 'theta_2', 'omega_2', 'alpha_2']
-# ALL_STATE_FEATURES = ['theta_1', 'theta_2']
-OUTPUT_FEATURES = ['theta_2']
-INPUT_FEATURES = ['omega_1', 'alpha_1', 'omega_2', 'alpha_2']
+N_BINS = 2
+MIMO_WINDOW_SIZE = 2
+INPUT_FEATURES = ['theta_1','theta_2', 'omega_1', 'alpha_1', 'omega_2', 'alpha_2']
+# OUTPUT_FEATURES = INPUT_FEATURES.copy()
+OUTPUT_FEATURES = ['theta_1', 'theta_2']
+
+# tribblefis.gauss_data.DefaultNormCornorm = 'probability'
 
 class DoublePendulum:
     """Double pendulum simulator using Lagrangian mechanics."""
@@ -184,13 +189,13 @@ def load_and_prepare_data(data_dir, window_size=1, file_glob: str = 'simulation_
 def mimo_input_feature_names(window_size: int) -> list[str]:
     """Return input column names for MIMO data with given window size.
 
-    window_size=1 → ['theta_1', 'omega_1', ...]
-    window_size=3 → ['theta_1_step0', ..., 'alpha_2_step0', 'theta_1_step1', ..., 'alpha_2_step2']
+    window_size=1 → OUTPUT_FEATURES
+    window_size=N → ['theta_1_step0', ..., 'theta_2_step0', ..., 'theta_2_step{N-1}']
     where step0 is oldest, step(window_size-1) is most recent.
     """
     if window_size == 1:
-        return ALL_STATE_FEATURES[:]
-    return [f"{feat}_step{i}" for i in range(window_size) for feat in ALL_STATE_FEATURES]
+        return OUTPUT_FEATURES[:]
+    return [f"{feat}_step{i}" for i in range(window_size) for feat in OUTPUT_FEATURES]
 
 
 def load_and_prepare_mimo_data(
@@ -214,14 +219,14 @@ def load_and_prepare_mimo_data(
     for filepath in files:
         df = pd.read_csv(filepath)
         if window_size == 1:
-            X = df[ALL_STATE_FEATURES].iloc[:-1].values
-            y = df[ALL_STATE_FEATURES].iloc[1:].values
+            X = df[OUTPUT_FEATURES].iloc[:-1].values
+            y = df[OUTPUT_FEATURES].iloc[1:].values
         else:
             X_rows, y_rows = [], []
             for j in range(len(df) - window_size):
-                window = df[ALL_STATE_FEATURES].iloc[j:j + window_size].values.flatten()
+                window = df[OUTPUT_FEATURES].iloc[j:j + window_size].values.flatten()
                 X_rows.append(window)
-                y_rows.append(df[ALL_STATE_FEATURES].iloc[j + window_size].values)
+                y_rows.append(df[OUTPUT_FEATURES].iloc[j + window_size].values)
             if X_rows:
                 X = np.array(X_rows)
                 y = np.array(y_rows)
@@ -332,9 +337,9 @@ def train_and_evaluate_mimo(X_train, y_train, X_test, y_test, window_size: int =
     )
 
     X_train_df = pd.DataFrame(X_train, columns=input_cols)
-    y_train_df = pd.DataFrame(y_train, columns=ALL_STATE_FEATURES)
+    y_train_df = pd.DataFrame(y_train, columns=OUTPUT_FEATURES)
     X_test_df = pd.DataFrame(X_test, columns=input_cols)
-    y_test_df = pd.DataFrame(y_test, columns=ALL_STATE_FEATURES)
+    y_test_df = pd.DataFrame(y_test, columns=OUTPUT_FEATURES)
 
     regressor.fit(X_train_df, y_train_df)
 
@@ -342,7 +347,7 @@ def train_and_evaluate_mimo(X_train, y_train, X_test, y_test, window_size: int =
 
     metrics = {}
     print("\nPer-output metrics:")
-    for col in ALL_STATE_FEATURES:
+    for col in OUTPUT_FEATURES:
         mse = mean_squared_error(y_test_df[col], y_pred_df[col])
         mae = mean_absolute_error(y_test_df[col], y_pred_df[col])
         r2 = r2_score(y_test_df[col], y_pred_df[col])
@@ -401,13 +406,13 @@ def run_iterative_prediction(regressor, initial_window_df, n_steps, window_size:
         if np.any(np.isnan(row)) or np.any(np.abs(row) > 1e6):
             if diverged_at is None:
                 diverged_at = step + 1
-                print(f"  Warning: prediction diverged at step {diverged_at} — padding remainder with NaN")
-            row = np.full(len(ALL_STATE_FEATURES), np.nan)
+                print(f"  Warning: prediction diverged at step {diverged_at} — padding remainder with NaN. Row={row}")
+            row = np.full(len(OUTPUT_FEATURES), np.nan)
 
         states.append(row)
         buffer.append(row)
 
-    result = pd.DataFrame(np.array(states), columns=ALL_STATE_FEATURES)
+    result = pd.DataFrame(np.array(states), columns=OUTPUT_FEATURES)
     if diverged_at is not None:
         print(f"  Valid prediction steps: {diverged_at} / {n_steps + 1}")
     return result
@@ -637,23 +642,27 @@ def plot_second_pendulum_position(results_single, results_window, dt=0.01):
 
 
 def plot_mimo_state_trajectories(actual_df, predicted_df, dt=0.01):
-    """Plot all 6 state variables: actual vs iterative MIMO prediction."""
-    fig, axes = plt.subplots(3, 2, figsize=(14, 12))
+    """Plot OUTPUT_FEATURES state variables: actual vs iterative MIMO prediction."""
+    n_out = len(OUTPUT_FEATURES)
+    ncols = min(n_out, 2)
+    nrows = (n_out + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(7 * ncols, 4 * nrows), squeeze=False)
+    axes_flat = axes.flat
     fig.suptitle('MIMO Iterative Rollout: Actual vs Predicted State Trajectories', fontsize=14, fontweight='bold')
 
-    time = np.arange(len(actual_df)) * dt
+    t_actual = np.arange(len(actual_df)) * dt
     pred_time = np.arange(len(predicted_df)) * dt
     n = min(len(actual_df), len(predicted_df))
 
-    for idx, col in enumerate(ALL_STATE_FEATURES):
-        ax = axes[idx // 2, idx % 2]
+    for idx, col in enumerate(OUTPUT_FEATURES):
+        ax = axes_flat[idx]
         act = actual_df[col].values[:n]
         pred = predicted_df[col].values[:n]
         valid = ~np.isnan(pred)
-        ax.plot(time[:n], act, 'b-', linewidth=1.5, label='Actual', alpha=0.8)
+        ax.plot(t_actual[:n], act, 'b-', linewidth=1.5, label='Actual', alpha=0.8)
         ax.plot(pred_time[:n][valid], pred[valid], 'r--', linewidth=1.5, label='Predicted', alpha=0.8)
         if valid.any():
-            ax.fill_between(time[:n][valid], act[valid], pred[valid], alpha=0.1, color='gray')
+            ax.fill_between(t_actual[:n][valid], act[valid], pred[valid], alpha=0.1, color='gray')
             mae = np.mean(np.abs(act[valid] - pred[valid]))
             title = f'{col}  (MAE={mae:.4f}, valid={valid.sum()}/{n})'
         else:
@@ -702,7 +711,6 @@ def test_double_pendulum_fuzzy_prediction():
     #     results_window = train_and_evaluate_window(X_window_train, y_window_train, X_window_test, y_window_test, window_size=window_size)
 
     # Step 4: MIMO full-state prediction
-    MIMO_WINDOW_SIZE = 1
     print("\n" + "#"*60)
     print(f"# STEP 4: MIMO Full-State Prediction Model (window={MIMO_WINDOW_SIZE})")
     print("#"*60)
@@ -721,7 +729,7 @@ def test_double_pendulum_fuzzy_prediction():
     print("#"*60)
     tst_df = pd.read_csv(data_dir / "simulation_tst1.csv")
     # Seed window: first MIMO_WINDOW_SIZE rows; predict everything after the seed.
-    initial_window = tst_df[ALL_STATE_FEATURES].iloc[:MIMO_WINDOW_SIZE]
+    initial_window = tst_df[OUTPUT_FEATURES].iloc[:MIMO_WINDOW_SIZE]
     n_steps = len(tst_df) - MIMO_WINDOW_SIZE
 
     print(f"Seed window ({MIMO_WINDOW_SIZE} rows):\n{initial_window.to_string()}")
@@ -733,11 +741,11 @@ def test_double_pendulum_fuzzy_prediction():
         )
 
     # Align actual to start at the last row of the seed window.
-    actual_trajectory = tst_df[ALL_STATE_FEATURES].iloc[MIMO_WINDOW_SIZE - 1:].reset_index(drop=True)
+    actual_trajectory = tst_df[OUTPUT_FEATURES].iloc[MIMO_WINDOW_SIZE - 1:].reset_index(drop=True)
     n = min(len(actual_trajectory), len(predicted_trajectory))
 
     print("\nIterative Rollout Metrics (valid steps only):")
-    for col in ALL_STATE_FEATURES:
+    for col in OUTPUT_FEATURES:
         act = actual_trajectory[col].values[:n]
         pred = predicted_trajectory[col].values[:n]
         valid = ~np.isnan(pred)
@@ -763,7 +771,7 @@ def test_double_pendulum_fuzzy_prediction():
     # print(f"  MAE:  {results_window['mae']:.6f}")
 
     print("\nMIMO Model (1-step):")
-    for col in ALL_STATE_FEATURES:
+    for col in OUTPUT_FEATURES:
         m = results_mimo['metrics'][col]
         print(f"  {col:10s}: R²={m['r2']:.4f}  RMSE={m['rmse']:.4f}")
 
