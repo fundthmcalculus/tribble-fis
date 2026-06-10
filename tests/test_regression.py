@@ -2,17 +2,7 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 
-from tribblefis.gauss_math import (
-    calculate_gaussian_correlation,
-    create_gaussian_membership_dict,
-    take_top_features,
-    tsk_firing_strengths,
-)
-from tribblefis.regression import (
-    partition_output,
-    optimize_tsk_coefficients,
-    _rsquared,
-)
+from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
 
 
 
@@ -92,73 +82,36 @@ def test_gaussian_mixture_regression_2d():
 
     # Prepare training data as DataFrame
     X_train = pd.DataFrame({'x': x_train, 'y': y_train})
-    y_train_series = pd.Series(z_train, name='y_value')
-
     X_test = pd.DataFrame({'x': x_test, 'y': y_test})
-    y_test_series = pd.Series(z_test, name='y_value')
 
-    # Partition output into buckets
-    n_output_buckets = 5
-    y_train_bucketed, y_bucket_mean = partition_output(n_output_buckets, y_train_series)
-
-    # Calculate Gaussian correlations
-    feature_differentiators = calculate_gaussian_correlation(X_train, y_train_bucketed["y_bucket"])
-
-    # Take top features
-    top_n, top_n_todo = take_top_features(feature_differentiators, top_n=-1)
-
-    # Create Gaussian membership model
-    gaussian_memberships = create_gaussian_membership_dict(
-        X_train,
-        y_train_bucketed["y_bucket"],
-        top_n_var_names=top_n_todo,
-        n_gaussians=-1
-    )
-
-    # Optimize TSK coefficients for different orders
+    # Test different TSK orders
     orders = ["0th", "1st", "2nd"]
     y_test_preds = []
     metrics = []
 
     for order in orders:
-        corr_terms, y_bucket_mean_opt = optimize_tsk_coefficients(
-            X_train,
-            gaussian_memberships,
-            top_n_todo,
-            y_bucket_mean,
-            y_train_bucketed,
-            n_output_buckets,
-            order=order
+        regressor = MixtureOfGaussiansFuzzyRegressor(
+            top_n=-1,
+            n_gaussians=-1,
+            n_output_buckets=5,
+            tsk_order=order,
+            optimize_coefficients=True,
+            random_state=42
         )
 
+        # Train model
+        regressor.fit(X_train, z_train)
+
         # Predict on test set
-        firing_strengths_test, _ = tsk_firing_strengths(X_test[top_n_todo], gaussian_memberships)
-        norm_firing_strength_test = firing_strengths_test / firing_strengths_test.sum(axis=1)[:, np.newaxis]
-
-        y_test_pred = np.zeros(len(X_test))
-        X_test_array = X_test[top_n_todo].to_numpy()
-
-        n_terms = corr_terms.shape[1]
-
-        for i in range(len(X_test)):
-            pred = 0
-            for rule_id in gaussian_memberships.rule_ids:
-                pred += norm_firing_strength_test[i, rule_id] * y_bucket_mean_opt[rule_id]
-
-                if order == "1st":
-                    pred += norm_firing_strength_test[i, rule_id] * np.dot(corr_terms[rule_id], X_test_array[i])
-                elif order == "2nd":
-                    feat = np.concatenate([X_test_array[i], X_test_array[i]**2])
-                    pred += norm_firing_strength_test[i, rule_id] * np.dot(corr_terms[rule_id], feat)
-
-            y_test_pred[i] = pred
-
+        y_test_pred = regressor.predict(X_test)
         y_test_preds.append(y_test_pred)
 
         # Calculate metrics
-        rmse = np.sqrt(np.mean((y_test_series - y_test_pred)**2))
-        mae = np.mean(np.abs(y_test_series - y_test_pred))
-        r2 = _rsquared(y_test_series, y_test_pred)
+        rmse = np.sqrt(np.mean((z_test - y_test_pred)**2))
+        mae = np.mean(np.abs(z_test - y_test_pred))
+        ss_res = np.sum((z_test - y_test_pred) ** 2)
+        ss_tot = np.sum((z_test - np.mean(z_test)) ** 2)
+        r2 = 1 - ss_res / ss_tot
 
         metrics.append({
             'order': order,
