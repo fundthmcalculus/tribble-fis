@@ -5,8 +5,6 @@ Simulates double pendulum using Lagrangian mechanics, generates datasets
 with random initial conditions, trains fuzzy regressors to predict state
 transitions, and evaluates prediction accuracy on continuous outputs.
 """
-import time
-from contextlib import contextmanager
 
 import numpy as np
 import pandas as pd
@@ -21,102 +19,76 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
 
 
-@contextmanager
-def time_this(label="Operation"):
-    """Simple timer context manager using perf_counter."""
-    start = time.perf_counter()
-    yield
-    elapsed = time.perf_counter() - start
-    print(f"{label} took {elapsed:.4f} seconds")
-
-
 # Comparison set: https://arxiv.org/pdf/2504.13453
 N_BINS = 15
-OUTPUT_FEATURES = ['theta_2']
-INPUT_FEATURES = ['omega_1', 'alpha_1', 'omega_2', 'alpha_2']
+OUTPUT_FEATURES = ['theta']
+INPUT_FEATURES = ['r_dot', 'r_ddot', 'omega', 'alpha']
 
-class DoublePendulum:
+class AtwoodMachine:
     """Double pendulum simulator using Lagrangian mechanics."""
 
-    def __init__(self, m1=1.0, m2=1.0, l1=1.0, l2=1.0, g=9.81):
+    def __init__(self, m1=2.0, m2=1.0, r0 = 2.0, k=20.0, g=9.81):
         """
         Initialize double pendulum.
 
         Args:
-            m1, m2: masses of pendulum 1 and 2
-            l1, l2: lengths of pendulum 1 and 2
+            m1, m2: masses of block 1 pendulum 2
+            r0: length of rope initially
             g: gravitational acceleration
         """
         self.m1 = m1
         self.m2 = m2
-        self.l1 = l1
-        self.l2 = l2
+        self.r0 = r0
+        self.k = k
         self.g = g
 
     def equations_of_motion(self, state, t):
         """
         Compute double pendulum equations of motion using Lagrangian approach.
 
-        State: [theta_1, omega_1, theta_2, omega_2]
-        Returns: [omega_1, alpha_1, omega_2, alpha_2]
+        State: [r, theta, r_dot, omega]
+        Returns: [r_dot, omega, r_ddot, alpha]
         """
-        theta1, omega1, theta2, omega2 = state
-        # Found here: https://web.mit.edu/jorloff/www/chaosTalk/double-pendulum/double-pendulum-en.html
-        delta_theta = theta1 - theta2
+        r, theta, r_dot, omega = state
+        r_ddot = (r*omega**2+self.g*np.cos(theta) - self.k / self.m2 * (r-self.r0))/(self.m1 / self.m2 + 1)
+        alpha = (-2*r_dot*omega-self.g*np.sin(theta))/r
+        return [r_dot, omega, r_ddot, alpha]
 
-        # Common terms
-        denom1 = self.l1 *(2*self.m1 + self.m2 - self.m2 *np.cos(2*delta_theta))
-        num11 = -self.g*(2*self.m1 + self.m2)*np.sin(theta1)
-        num12 = -self.m2*self.g*np.sin(delta_theta - theta2) # theta1-2theta2
-        num13 = -2*np.sin(delta_theta)*self.m2*(omega2**2 * self.l2 + omega1**2 *self.l1 * np.cos(delta_theta))
-        alpha1 = (num11 + num12 + num13) / denom1
-
-        num21 = omega1**2 *self.l1 *(self.m1+self.m2)
-        num22 = self.g*(self.m1+self.m2)*np.cos(theta1)
-        num23 = omega2**2 + self.l2*self.m2 * np.cos(delta_theta)
-        denom2 = self.l2 *(2*self.m1 + self.m2 - self.m2 * np.cos(2*delta_theta))
-        alpha2 = 2*np.sin(delta_theta)*(num21 + num22 + num23) / denom2
-
-        return [omega1, alpha1, omega2, alpha2]
-
-    def simulate(self, theta1_0, omega1_0, theta2_0, omega2_0, duration=10.0, dt=0.001):
+    def simulate(self, r_0, theta_0, r_dot0, omega_0, duration=10.0, dt=0.001):
         """
         Simulate double pendulum from initial conditions.
 
         Args:
-            theta1_0, omega1_0, theta2_0, omega2_0: initial conditions
+            r_0, theta_0, r_dot0, omega_0: initial conditions
             duration: simulation time in seconds
             dt: timestep in seconds
-
-        Returns:
-            DataFrame with columns: theta_1, omega_1, alpha_1, theta_2, omega_2, alpha_2
         """
         t = np.arange(0, duration, dt)
-        state0 = [theta1_0, omega1_0, theta2_0, omega2_0]
+        state0 = [r_0, theta_0, r_dot0, omega_0]
 
         solution = odeint(self.equations_of_motion, state0, t)
 
         # Compute alpha values from derivatives
-        theta1 = solution[:, 0]
-        omega1 = solution[:, 1]
-        theta2 = solution[:, 2]
-        omega2 = solution[:, 3]
+        r = solution[:, 0]
+        theta = solution[:, 1]
+        r_dot = solution[:, 2]
+        omega = solution[:, 3]
 
         # Compute alpha (angular acceleration) at each point
-        alpha1_vals = []
-        alpha2_vals = []
+        r_ddot = []
+        alpha = []
         for i, state in enumerate(solution):
-            _, a1, _, a2 = self.equations_of_motion(state, t[i])
-            alpha1_vals.append(a1)
-            alpha2_vals.append(a2)
+            _, _, a1, a2 = self.equations_of_motion(state, t[i])
+            r_ddot.append(a1)
+            alpha.append(a2)
 
         return pd.DataFrame({
-            'theta_1': theta1,
-            'omega_1': omega1,
-            'alpha_1': alpha1_vals,
-            'theta_2': theta2,
-            'omega_2': omega2,
-            'alpha_2': alpha2_vals
+            'r': r,
+            'r_dot': r_dot,
+            'r_ddot': r_ddot,
+            'theta': theta,
+            'omega': omega,
+            'alpha': alpha
         })
 
 
@@ -133,26 +105,21 @@ def generate_simulation_data(output_dir, num_simulations=50, duration=10.0, dt=0
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    pendulum = DoublePendulum()
+    pendulum = AtwoodMachine()
 
     print(f"Generating {num_simulations} simulations...")
-    theta1 = 120 * np.pi / 180
-    omega1 = 0.0
-    omega2 = 0.0
     # Sourced from: https://arxiv.org/pdf/2504.13453
-    theta2s = np.arange(0, 3.00001, 0.1)
-    for ij in range(len(theta2s)):
-        theta2 = theta2s[ij]
-        theta2 *= np.pi / 180
+    rs = np.arange(1, 3.00001, 0.1)
+    for ij, r_c in enumerate(rs):
         # Simulate
-        df = pendulum.simulate(theta1, omega1, theta2, omega2, duration, dt)
+        df = pendulum.simulate(r_c, np.pi/2.0, 0.0, 0.0, duration, dt)
         # Save
         filepath = output_path / f"simulation_{ij:04d}.csv"
         df.to_csv(filepath, index=False)
 
-    df_tst1 = pendulum.simulate(theta1, omega1, 2.05 * np.pi / 180.0, omega2, duration, dt)
+    df_tst1 = pendulum.simulate(2.05, np.pi/2.0, 0.0, 0.0, duration, dt)
     df_tst1.to_csv(output_path / "simulation_tst1.csv", index=False)
-    df_tst2 = pendulum.simulate(theta1, omega1, 2.05 * np.pi / 180.0, omega2, duration, dt)
+    df_tst2 = pendulum.simulate(2.0, np.pi/2.0, 0.1, 0.0, duration, dt)
     df_tst2.to_csv(output_path / "simulation_tst2.csv", index=False)
 
 
@@ -512,41 +479,35 @@ def plot_trace_comparison(results_single, results_window):
     return fig
 
 
-
-
-
 def test_double_pendulum_fuzzy_prediction():
     """
     Main test: simulate double pendulum and train fuzzy regression models.
     """
     # Setup
     test_dir = Path(__file__).parent
-    data_dir = test_dir / "double_pendulum_data"
+    data_dir = test_dir / "atwood_data"
 
     # Step 1-3: Generate simulation data
-    with time_this("gen-sim-data"):
-        generate_simulation_data(
-            data_dir, num_simulations=15, duration=3.0, dt=0.01
-        )
+    generate_simulation_data(
+        data_dir, num_simulations=15, duration=3.0, dt=0.01
+    )
 
     # Step 4: Single-step prediction
     print("\n" + "#"*60)
     print("# STEP 4: Single-Step Prediction Model")
     print("#"*60)
-    with time_this('train-single'):
-        X_single_train, y_single_train = load_and_prepare_data(data_dir, window_size=1)
-        X_single_test, y_single_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=1)
-        results_single = train_and_evaluate_single_step(X_single_train, y_single_train, X_single_test, y_single_test)
+    X_single_train, y_single_train = load_and_prepare_data(data_dir, window_size=1)
+    X_single_test, y_single_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=1)
+    results_single = train_and_evaluate_single_step(X_single_train, y_single_train, X_single_test, y_single_test)
 
     # Step 5: Multi-step window prediction
     print("\n" + "#"*60)
     print("# STEP 5: Multi-Step Window Prediction Model")
     print("#"*60)
     window_size = 3
-    with time_this('train-multi-step'):
-        X_window_train, y_window_train = load_and_prepare_data(data_dir, window_size=window_size)
-        X_window_test, y_window_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=window_size)
-        results_window = train_and_evaluate_window(X_window_train, y_window_train, X_window_test, y_window_test, window_size=window_size)
+    X_window_train, y_window_train = load_and_prepare_data(data_dir, window_size=window_size)
+    X_window_test, y_window_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=window_size)
+    results_window = train_and_evaluate_window(X_window_train, y_window_train, X_window_test, y_window_test, window_size=window_size)
 
     # Step 6: Summary evaluation
     print("\n" + "="*60)

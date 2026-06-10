@@ -19,6 +19,11 @@ def log_transform(X, column: str | list[str], offset=0):
     return X
 
 
+def standard_transform(X, column: str | list[str]) -> pd.DataFrame:
+    X[column] = (X[column] - X[column].min()) / (X[column].max() - X[column].min())
+    return X
+
+
 def find_optimal_gaussians(data, max_gaussians: int = 4):
     """Find the optimal number of Gaussians using Bayesian Information Criterion (BIC)"""
     if len(data) < 2:
@@ -85,8 +90,6 @@ def fit_gaussians(X, y, column: str, label_value: int, n_gaussians: int = 0, max
     # Use Fuzzy C Means to find cluster centers
     # TODO - Buffer source array is read-only
     n_clusters = min(n_gaussians, len(data))
-    kmeans = FuzzyCMeans(n_clusters=n_clusters, random_state=42)
-    cluster_labels_fcmeans = kmeans.fit_predict(data.copy())
     ivat_means = IVATMeans(random_state=42, n_clusters=n_clusters)
     cluster_labels_ivat = ivat_means.fit_predict(data.copy())
     cluster_labels = cluster_labels_ivat
