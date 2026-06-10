@@ -381,24 +381,24 @@ def test_double_pendulum_fuzzy_prediction():
     print("\n" + "#"*60)
     print("# STEP 4: Single-Step Prediction Model")
     print("#"*60)
-    X_single_train, y_single_train = load_and_prepare_data(data_dir, window_size=1)
-    X_single_test, y_single_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=1)
-    results_single = train_and_evaluate_single_step(X_single_train, y_single_train, X_single_test, y_single_test)
+    X_single_train, y_single_train = load_and_prepare_data(data_dir,input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=1)
+    X_single_test, y_single_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=1)
+    results_single = train_and_evaluate_single_step(N_BINS, OUTPUT_FEATURES, X_single_train, y_single_train, X_single_test, y_single_test)
 
     # Step 5: Multi-step window prediction
     print("\n" + "#"*60)
     print("# STEP 5: Multi-Step Window Prediction Model")
     print("#"*60)
     window_size = 3
-    X_window_train, y_window_train = load_and_prepare_data(data_dir, window_size=window_size)
-    X_window_test, y_window_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=window_size)
-    results_window = train_and_evaluate_window(X_window_train, y_window_train, X_window_test, y_window_test, window_size=window_size)
+    X_window_train, y_window_train = load_and_prepare_data(data_dir, input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=window_size)
+    X_window_test, y_window_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=window_size)
+    results_window = train_and_evaluate_window(N_BINS, OUTPUT_FEATURES,X_window_train, y_window_train, X_window_test, y_window_test, window_size=window_size)
 
     # Step 6: Roll-out prediction
     print("\n" + "#"*60)
     print("# STEP 6: Roll-Out Prediction Model")
     print("#"*60)
-    X_rollout_train, y_rollout_train = load_and_prepare_data(data_dir, window_size=1)
+    X_rollout_train, y_rollout_train = load_and_prepare_data(data_dir, input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=1)
 
     # Load actual test trajectories for comparison
     test_files = sorted((data_dir).glob('simulation_tst*.csv'))
