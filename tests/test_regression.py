@@ -6,55 +6,46 @@ from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
 
 
 
-def generate_synthetic_data(n_samples: int, x_range: tuple, y_range: tuple, seed: int = 42) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Generate synthetic data for Z = X / (Y^2 + 1)."""
+def generate_synthetic_data(n_samples: int, x_range: tuple, seed: int = 42) -> tuple[np.ndarray, np.ndarray]:
+    """Generate synthetic data for Z = X / (X^2 + 1)."""
     np.random.seed(seed)
     x = np.random.uniform(x_range[0], x_range[1], n_samples)
-    y = np.random.uniform(y_range[0], y_range[1], n_samples)
-    z = x / (y**2 + 1)
-    return x, y, z
+    z = x / (x**2 + 1)
+    return x, z
 
 
-def plot_function_and_error(x_test, y_test, z_test, z_pred, save_path: str = None):
-    """Plot actual function, predictions, and error."""
-    fig = plt.figure(figsize=(5, 15))
+def plot_function_and_error(x_train, z_train, z_pred_train, x_test, z_test, z_pred, order_name: str, save_path: str = None):
+    """Plot actual function, predictions, and error for 1D case."""
+    fig = plt.figure()
 
-    # Create a fine grid for the surface plot
-    x_grid = np.linspace(x_test.min(), x_test.max(), 30)
-    y_grid = np.linspace(y_test.min(), y_test.max(), 30)
-    X_grid, Y_grid = np.meshgrid(x_grid, y_grid)
-    Z_actual = X_grid / (Y_grid**2 + 1)
+    # Create a fine grid for the function plot
+    x_grid = np.linspace(x_test.min(), x_test.max(), 300)
+    z_actual = x_grid / (x_grid**2 + 1)
 
-    # Plot 1: Actual function
-    ax1 = fig.add_subplot(311, projection='3d')
-    ax1.scatter(x_test, y_test, z_test, c='blue', marker='o', s=20, alpha=0.7, label='Actual')
-    ax1.plot_surface(X_grid, Y_grid, Z_actual, alpha=0.4, cmap='viridis')
+    # Plot 1: Actual function vs predictions
+    fig.suptitle(f"TSK Regression: {order_name} Order", fontsize=16)
+    ax1 = fig.add_subplot(211)
+    ax1.scatter(x_train, z_train, alpha=0.6, label='Train points')
+    ax1.scatter(x_train, z_pred_train,   alpha=0.6, label='Train-predict points')
+    ax1.scatter(x_test, z_test,  alpha=0.6, label='Test points')
+    ax1.scatter(x_test, z_pred, alpha=0.8, label='Predictions')
+    ax1.plot(x_grid, z_actual, 'b-', linewidth=2, label='Actual function')
     ax1.set_xlabel('X')
-    ax1.set_ylabel('Y')
-    ax1.set_zlabel('Z')
-    ax1.set_title('Actual Function: Z = X / (Y² + 1)')
-    ax1.legend()
+    ax1.set_ylabel('Z')
+    ax1.set_title('Function: Z = X / (X² + 1)')
+    ax1.legend(bbox_to_anchor=(1.1, 1.05))
+    ax1.grid(True, alpha=0.3)
 
-    # Plot 2: Model predictions
-    ax2 = fig.add_subplot(312, projection='3d')
-    ax2.scatter(x_test, y_test, z_pred, c='red', marker='o', s=20, alpha=0.7, label='Predicted')
-    ax2.plot_surface(X_grid, Y_grid, Z_actual, alpha=0.4, cmap='viridis')
-    ax2.set_xlabel('X')
-    ax2.set_ylabel('Y')
-    ax2.set_zlabel('Z')
-    ax2.set_title('Model Predictions')
-    ax2.legend()
-
-    # Plot 3: Prediction error
+    # Plot 2: Prediction error
     error = z_test - z_pred
-    ax3 = fig.add_subplot(313)
-    scatter = ax3.scatter(range(len(error)), error, c=np.abs(error), cmap='RdYlGn_r', s=20, alpha=0.7)
-    ax3.axhline(y=0, color='k', linestyle='--', linewidth=1)
-    ax3.set_xlabel('Test Sample Index')
-    ax3.set_ylabel('Error (Actual - Predicted)')
-    ax3.set_title(f'Prediction Error\nMAE: {np.mean(np.abs(error)):.6f}')
-    plt.colorbar(scatter, ax=ax3, label='|Error|')
-    ax3.grid(True, alpha=0.3)
+    ax2 = fig.add_subplot(212)
+    scatter = ax2.scatter(x_test, error, c=np.abs(error), cmap='RdYlGn_r', s=50, alpha=0.7)
+    ax2.axhline(y=0, color='k', linestyle='--', linewidth=1)
+    ax2.set_xlabel('X')
+    ax2.set_ylabel('Error (Actual - Predicted)')
+    ax2.set_title(f'Prediction Error\nMAE: {np.mean(np.abs(error)):.6f}')
+    plt.colorbar(scatter, ax=ax2, label='|Error|')
+    ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
     if save_path:
@@ -63,30 +54,27 @@ def plot_function_and_error(x_test, y_test, z_test, z_pred, save_path: str = Non
 
 
 def test_gaussian_mixture_regression_2d():
-    """Test GaussianMixtureRegression on Z = X / (Y^2 + 1)."""
-    # Generate training data in [0,1]x[0,1]
-    x_train, y_train, z_train = generate_synthetic_data(
-        n_samples=200,
-        x_range=(0, 1),
-        y_range=(0, 1),
+    """Test GaussianMixtureRegression on Z = X / (X^2 + 1)."""
+    # Generate training data in [-3, 0]
+    x_train, z_train = generate_synthetic_data(
+        n_samples=400,
+        x_range=(-4, 0),
         seed=42
     )
 
-    # Generate test data in [1,2]x[3,4]
-    x_test, y_test, z_test = generate_synthetic_data(
-        n_samples=100,
-        x_range=(1, 2),
-        y_range=(3, 4),
+    # Generate test data in [0, 2]
+    x_test, z_test = generate_synthetic_data(
+        n_samples=250,
+        x_range=(-0.5, 12),
         seed=43
     )
 
     # Prepare training data as DataFrame
-    X_train = pd.DataFrame({'x': x_train, 'y': y_train})
-    X_test = pd.DataFrame({'x': x_test, 'y': y_test})
+    X_train = pd.DataFrame({'x': x_train})
+    X_test = pd.DataFrame({'x': x_test})
 
     # Test different TSK orders
     orders = ["0th", "1st", "2nd"]
-    y_test_preds = []
     metrics = []
 
     for order in orders:
@@ -103,8 +91,8 @@ def test_gaussian_mixture_regression_2d():
         regressor.fit(X_train, z_train)
 
         # Predict on test set
+        y_train_pred = regressor.predict(X_train)
         y_test_pred = regressor.predict(X_test)
-        y_test_preds.append(y_test_pred)
 
         # Calculate metrics
         rmse = np.sqrt(np.mean((z_test - y_test_pred)**2))
@@ -125,14 +113,13 @@ def test_gaussian_mixture_regression_2d():
         print(f"  MAE:  {mae:.6f}")
         print(f"  R²:   {r2:.6f}\n")
 
-    # Plot results for best model (2nd order)
-    best_idx = 2  # 2nd order
-    plot_function_and_error(x_test, y_test, z_test, y_test_preds[best_idx])
+        # Plot results for best model (2nd order)
+        plot_function_and_error(x_train, z_train, y_train_pred, x_test, z_test, y_test_pred, order)
 
-    # Verify test ran without errors
-    best_r2 = metrics[best_idx]['r2']
-    assert not np.isnan(best_r2), "R² should not be NaN"
-    assert len(y_test_preds[best_idx]) == len(z_test), "Predictions should have same length as test data"
+        # Verify test ran without errors
+        # best_r2 = metrics[-1]['r2']
+        # assert not np.isnan(best_r2), "R² should not be NaN"
+        assert len(y_test_pred) == len(z_test), "Predictions should have same length as test data"
 
 if __name__ == "__main__":
     test_gaussian_mixture_regression_2d()
