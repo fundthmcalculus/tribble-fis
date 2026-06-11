@@ -34,9 +34,10 @@ def time_this(label="Operation"):
 
 
 # Comparison set: https://arxiv.org/pdf/2504.13453
-N_BINS = 2
-MIMO_WINDOW_SIZE = 2
-INPUT_FEATURES = ['theta_1','theta_2', 'omega_1', 'alpha_1', 'omega_2', 'alpha_2']
+N_BINS = 3
+MIMO_WINDOW_SIZE = 3
+# INPUT_FEATURES = ['theta_1','theta_2', 'omega_1', 'alpha_1', 'omega_2', 'alpha_2']
+INPUT_FEATURES = ['theta_1','theta_2']
 # OUTPUT_FEATURES = INPUT_FEATURES.copy()
 OUTPUT_FEATURES = ['theta_1', 'theta_2']
 
