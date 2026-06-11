@@ -36,20 +36,20 @@ def find_optimal_gaussians(data, max_gaussians: int = 4):
     n_components_range = range(1, max_components + 1)
 
     # Use IVat Means to estimate optimal number of Gaussians?
-    ivat_means = IVATMeans(random_state=42)
-    ivat_means.fit(data.copy())
-    return ivat_means.cluster_centers_.shape[0]
+    # ivat_means = IVATMeans(random_state=42)
+    # ivat_means.fit(data.copy())
+    # return ivat_means.cluster_centers_.shape[0]
 
-    # for n in n_components_range:
-    #     # TO DO - Use Fuzzy C Means to pick the mu and then compute the sigma
-    #     gmm = GaussianMixture(n_components=n, random_state=42)
-    #     gmm.fit(data)
-    #     if not gmm.converged_:
-    #         continue
-    #     bics.append(gmm.bic(data))
-    #
-    # optimal_n = n_components_range[np.argmin(bics)]
-    # return optimal_n
+    for n in n_components_range:
+        # TO DO - Use Fuzzy C Means to pick the mu and then compute the sigma
+        gmm = GaussianMixture(n_components=n, random_state=42)
+        gmm.fit(data)
+        if not gmm.converged_:
+            continue
+        bics.append(gmm.bic(data))
+
+    optimal_n = n_components_range[np.argmin(bics)]
+    return optimal_n
 
 
 def fit_gaussians(X, y, column: str, label_value: int, n_gaussians: int = 0, max_samples: int = 20_000):

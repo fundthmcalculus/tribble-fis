@@ -72,11 +72,17 @@ def partition_output(
     y_part = pd.cut(y_raw, bins=n_output_buckets, labels=False, include_lowest=True)
     # y_part = pd.qcut(y_raw, q=n_output_buckets, labels=False)
     y_part.name = "y_bucket"
-    # Compute the centroid of each bucket
-    y_bucket_mean = y_raw.groupby(y_part).mean().values.copy()
+    # Build a full-length array indexed by bucket label (0..n_output_buckets-1).
+    # groupby silently drops empty buckets, so reconstruct with correct label alignment
+    # and fill any gaps via linear interpolation so downstream indexing by rule_id is safe.
+    grouped = y_raw.groupby(y_part).mean()
+    y_bucket_mean = np.full(n_output_buckets, np.nan)
+    for label, val in grouped.items():
+        y_bucket_mean[int(label)] = val
+    y_bucket_mean = pd.Series(y_bucket_mean).interpolate(method='linear', limit_direction='both').values.copy()
     # For the extreme endpoint buckets, use the min and max
-    y_bucket_mean[0] = y_raw.min()
-    y_bucket_mean[-1] = y_raw.max()
+    y_bucket_mean[0] = float(y_raw.min())
+    y_bucket_mean[-1] = float(y_raw.max())
 
     y = pd.concat([y_part, y_raw], axis=1)
     return y, y_bucket_mean
@@ -110,7 +116,8 @@ def compute_first_order_corrections(
     y_bucket_mean,
     y_train,
 ) -> ndarray:
-    corr_terms = np.zeros(shape=(gaussian_memberships.n_rules, n_top_vars))
+    n_slots = max(gaussian_memberships.rule_ids) + 1
+    corr_terms = np.zeros(shape=(n_slots, n_top_vars))
     # Loop through each rule
     for rule_id in gaussian_memberships.rule_ids:
         # Find the X_train, y_train which belong to this output bucket
@@ -132,7 +139,8 @@ def compute_second_order_corrections(
     y_bucket_mean,
     y_train,
 ) -> ndarray:
-    corr_terms = np.zeros(shape=(gaussian_memberships.n_rules, n_top_vars * 2))
+    n_slots = max(gaussian_memberships.rule_ids) + 1
+    corr_terms = np.zeros(shape=(n_slots, n_top_vars * 2))
     # Loop through each rule
     for rule_id in gaussian_memberships.rule_ids:
         # Find the X_train, y_train which belong to this output bucket
@@ -156,7 +164,8 @@ def compute_third_order_corrections(
     y_bucket_mean,
     y_train,
 ) -> ndarray:
-    corr_terms = np.zeros(shape=(gaussian_memberships.n_rules, n_top_vars * 3))
+    n_slots = max(gaussian_memberships.rule_ids) + 1
+    corr_terms = np.zeros(shape=(n_slots, n_top_vars * 3))
     # Loop through each rule
     for rule_id in gaussian_memberships.rule_ids:
         # Find the X_train, y_train which belong to this output bucket
@@ -182,7 +191,8 @@ def compute_full_second_order_corrections(
     # Calculate number of cross-power terms
     n_cross_terms = len(list(combinations(range(n_top_vars), 2)))
     total_terms = n_top_vars + n_top_vars + n_cross_terms  # linear + squared + cross
-    corr_terms = np.zeros(shape=(gaussian_memberships.n_rules, total_terms))
+    n_slots = max(gaussian_memberships.rule_ids) + 1
+    corr_terms = np.zeros(shape=(n_slots, total_terms))
     # Loop through each rule
     for rule_id in gaussian_memberships.rule_ids:
         # Find the X_train, y_train which belong to this output bucket

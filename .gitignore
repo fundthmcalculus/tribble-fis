@@ -3,3 +3,4 @@
 **/*.png
 /.idea
 /.claude
+/tests/double_pendulum_comparison.gif
