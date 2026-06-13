@@ -4,6 +4,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_X_y, check_is_fitted
 from sklearn.utils.multiclass import check_classification_targets
 
+from .gauss_data import AnomalyParameters
 from .gauss_math import (
     calculate_gaussian_correlation,
     take_top_features,
@@ -197,6 +198,32 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
                 
         return reordered_probs
 
+    def firing_strengths(self, X, anomaly_details: AnomalyParameters | None = None):
+        """
+        Compute the raw TSK firing strengths for X, optionally including an
+        anomaly column.
+
+        Args:
+            X: Input data (n_samples, n_features)
+            anomaly_details: If provided, an extra "anomaly" column is appended
+                whose strength rises as every class membership falls.
+
+        Returns:
+            (firing_strengths, labels) where ``firing_strengths`` is a
+            (n_samples, n_labels) array and ``labels`` lists the column labels
+            (the anomaly label is last when ``anomaly_details`` is supplied).
+        """
+        check_is_fitted(self)
+
+        if isinstance(X, pd.DataFrame):
+            X_df = X.copy()
+        else:
+            X_df = pd.DataFrame(X, columns=self.feature_names_in_)
+
+        X_df = self._apply_log_transform(X_df)
+
+        return tsk_firing_strengths(X_df, self.model_, anomaly_details=anomaly_details)
+
     def augment(self, X, y):
         """
         Augment the existing model with new data (similar to the 2-pass approach).
@@ -217,3 +244,271 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         
         self.model_ = self.model_.augment(new_model)
         return self
+
+
+class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
+    """
+    A sequence (cascade) of :class:`MixtureOfGaussiansFuzzyClassifier` models.
+
+    The first ("primary") model is fit on all of the training data. Each
+    subsequent model is a *binary specialist* attached to one
+    **(confused class, true class) pair** ``(P, T)`` — the largest off-diagonal
+    cell of the running confusion matrix, i.e. the predicted class ``P`` and the
+    true class ``T`` it is most often mistaken for. A specialist is fit on every
+    training row the upstream stage *predicted* as ``P``, with the true labels
+    collapsed to ``{P, T}``, so it learns only to peel the ``T`` rows out of the
+    ``P`` region. Specialists run with anomaly detection enabled so they know the
+    boundary of their region.
+
+    At prediction time the models are applied one after another:
+
+    * The primary model produces an initial prediction for every sample.
+    * Each specialist is consulted only for the samples whose *current*
+      prediction equals that specialist's confused class ``P``. For such a
+      sample:
+
+      - if the specialist flags it as an ``anomaly`` (the sample lies outside
+        the confused region the specialist was trained on), the sample is frozen
+        and no further specialists are applied to it — the running prediction
+        (``P``) is kept;
+      - otherwise the specialist's binary verdict *refines* the running
+        prediction (relabelling to ``T`` or keeping ``P``), and the sample may go
+        on to a later specialist keyed to that new label.
+
+    This follows scikit-learn's ``ClassifierMixin`` interface.
+    """
+
+    def __init__(
+        self,
+        top_n=-1,
+        top_p=0.95,
+        n_gaussians=0,
+        log_transform=False,
+        random_state=42,
+        max_layers=4,
+        anomaly_threshold=0.99,
+        anomaly_label="anomaly",
+        norm_conorm="min/max",
+        member_function="gaussian",
+        min_confused=20,
+        min_class_samples=5,
+    ):
+        """
+        Args:
+            top_n, top_p, n_gaussians, log_transform, random_state:
+                Passed through to every underlying
+                :class:`MixtureOfGaussiansFuzzyClassifier` layer.
+            max_layers: Maximum number of models in the cascade (including the
+                primary model). The cascade may be shorter if no further
+                confused class is worth specializing on.
+            anomaly_threshold: Anomaly threshold used by the specialist layers
+                (see :class:`AnomalyParameters`). Higher values make a specialist
+                more willing to declare a sample an anomaly (and stop).
+            anomaly_label: Label used to mark anomalies. It must not collide with
+                a real class label.
+            norm_conorm, member_function: Fuzzy operators used when evaluating
+                the specialist layers' anomaly-aware firing strengths.
+            min_confused: Minimum number of rows predicted as a given confused
+                class required before any pair rooted at it is specialized.
+            min_class_samples: Minimum number of confused rows in a
+                ``(predicted, true)`` pair before a specialist is trained for it;
+                rarer confusions are left as the confused-class prediction.
+        """
+        self.is_fitted_: bool = False
+        # layers_[0] is the primary model; layers_[1:] mirror specialists_.
+        self.layers_: list[MixtureOfGaussiansFuzzyClassifier] = []
+        # Each entry is (confused_class, true_class, specialist_model).
+        self.specialists_: list[tuple] = []
+        self.classes_ = None
+        self.feature_names_in_: list[str] = []
+        self.top_n = top_n
+        self.top_p = top_p
+        self.n_gaussians = n_gaussians
+        self.log_transform = log_transform
+        self.random_state = random_state
+        self.max_layers = max_layers
+        self.anomaly_threshold = anomaly_threshold
+        self.anomaly_label = anomaly_label
+        self.norm_conorm = norm_conorm
+        self.member_function = member_function
+        self.min_confused = min_confused
+        self.min_class_samples = min_class_samples
+
+    def _make_layer(self) -> MixtureOfGaussiansFuzzyClassifier:
+        return MixtureOfGaussiansFuzzyClassifier(
+            top_n=self.top_n,
+            top_p=self.top_p,
+            n_gaussians=self.n_gaussians,
+            log_transform=self.log_transform,
+            random_state=self.random_state,
+        )
+
+    def _anomaly_params(self) -> AnomalyParameters:
+        return AnomalyParameters(
+            include_anomaly=True,
+            threshold=self.anomaly_threshold,
+            label=self.anomaly_label,
+            norm_conorm=self.norm_conorm,
+            member_function=self.member_function,
+        )
+
+    @staticmethod
+    def _as_frame_series(X, y):
+        X_df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
+        y_series = y if isinstance(y, pd.Series) else pd.Series(np.asarray(y))
+        # Align indices so boolean masking lines up cleanly.
+        X_df = X_df.reset_index(drop=True)
+        y_series = y_series.reset_index(drop=True)
+        return X_df, y_series
+
+    def _most_confused_pair(self, running, y_true, handled) -> tuple | None:
+        """The unhandled ``(predicted_class, true_class)`` confusion with the
+        most misclassified rows.
+
+        This is the largest off-diagonal cell of the running confusion matrix:
+        the predicted class ``P`` and the true class ``T != P`` that ``P`` is most
+        often mistaken for. Returns ``None`` when no remaining pair has enough
+        rows in its predicted region and enough confused samples to be worth a
+        specialist.
+        """
+        best_pair, best_errors = None, 0
+        for p in np.unique(running):
+            rows = running == p
+            n_rows = int(rows.sum())
+            if n_rows < self.min_confused:
+                continue
+            true_here = y_true[rows]
+            for t in np.unique(true_here):
+                if t == p or (p, t) in handled:
+                    continue
+                errors = int(np.sum(true_here == t))
+                if errors > best_errors and errors >= self.min_class_samples:
+                    best_pair, best_errors = (p, t), errors
+        return best_pair
+
+    def fit(self, X, y):
+        """
+        Fit the cascade.
+
+        The primary model is fit on all data. Then, repeatedly, the single
+        ``(predicted_class P, true_class T)`` pair with the most remaining
+        confusion (the largest off-diagonal confusion-matrix cell) is selected
+        and a *binary* specialist is trained on every row predicted as ``P`` to
+        arbitrate between ``T`` (peel off) and ``P`` (keep). The running
+        predictions are updated with each specialist before the next pair is
+        chosen, up to ``max_layers`` models.
+        """
+        X_df, y_series = self._as_frame_series(X, y)
+        self.feature_names_in_ = X_df.columns.tolist()
+        self.classes_ = np.unique(y_series.values)
+
+        if self.anomaly_label in set(self.classes_.tolist()):
+            raise ValueError(
+                f"anomaly_label={self.anomaly_label!r} collides with a real class label."
+            )
+
+        # Layer 0: the primary model, trained on everything.
+        primary = self._make_layer()
+        primary.fit(X_df, y_series)
+        self.layers_ = [primary]
+        self.specialists_ = []
+
+        y_true = y_series.values.astype(object)
+        running = np.asarray(primary.predict(X_df), dtype=object)
+        handled: set = set()
+
+        for _ in range(1, self.max_layers):
+            pair = self._most_confused_pair(running, y_true, handled)
+            if pair is None:
+                break
+            confused_class, true_class = pair
+            handled.add(pair)
+
+            # Train a binary specialist on every row the cascade currently
+            # predicts as ``confused_class``. Its job is to peel off the rows
+            # that are really ``true_class`` while leaving the rest as the
+            # confused class, so the true labels are collapsed to {P, T}.
+            rows = running == confused_class
+            y_region = y_series[rows].reset_index(drop=True)
+            y_sub = y_region.where(y_region == true_class, confused_class)
+            X_sub = X_df[rows].reset_index(drop=True)
+
+            if y_sub.nunique() < 2:
+                # Nothing for the specialist to disambiguate here; try another pair.
+                continue
+
+            specialist = self._make_layer()
+            specialist.fit(X_sub, y_sub)
+            self.specialists_.append((confused_class, true_class, specialist))
+            self.layers_.append(specialist)
+
+            # Update the running predictions for the affected rows so the next
+            # confused pair is chosen against the refined state.
+            running[rows] = np.asarray(specialist.predict(X_df[rows]), dtype=object)
+
+        self.is_fitted_ = True
+        return self
+
+    def predict(self, X):
+        """
+        Predict class labels for X by running the cascade.
+
+        Returns an array of class labels. The anomaly label is never returned;
+        an anomaly flag from a specialist only freezes the sample (stopping any
+        further specialists) and leaves the running prediction in place.
+        """
+        check_is_fitted(self)
+        X_df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X, columns=self.feature_names_in_)
+
+        preds = np.asarray(self.layers_[0].predict(X_df), dtype=object)
+
+        # ``frozen`` marks samples a specialist declared anomalous; no further
+        # specialist may touch them.
+        frozen = np.zeros(len(X_df), dtype=bool)
+        anomaly_params = self._anomaly_params()
+
+        for confused_class, _true_class, specialist in self.specialists_:
+            # Only route in the samples whose current prediction *is* this
+            # specialist's confused class.
+            target = (preds == confused_class) & ~frozen
+            if not target.any():
+                continue
+
+            firing_strengths, labels = specialist.firing_strengths(X_df, anomaly_details=anomaly_params)
+            best_idx = np.argmax(firing_strengths, axis=1)
+            layer_pred = np.array([labels[i] for i in best_idx], dtype=object)
+            is_anomaly = layer_pred == self.anomaly_label
+
+            # Refine non-anomalous targets; freeze anomalous ones (keep the
+            # confused class and stop applying further specialists to them).
+            refine = target & ~is_anomaly
+            preds[refine] = layer_pred[refine]
+            frozen = frozen | (target & is_anomaly)
+
+        return preds
+
+    def predict_proba(self, X):
+        """
+        Predict class probabilities for X.
+
+        Probabilities come from the primary model, which is the only layer
+        guaranteed to span every class. The cascade refines the hard label via
+        :meth:`predict`; for calibrated probabilities prefer that method's
+        output combined with the primary scores.
+        """
+        check_is_fitted(self)
+        return self.layers_[0].predict_proba(X)
+
+    @property
+    def confused_classes_(self) -> list:
+        """The confused (predicted) class each specialist is keyed to, in order."""
+        return [cls for cls, _, _ in self.specialists_]
+
+    @property
+    def confused_pairs_(self) -> list:
+        """The ``(predicted_class, true_class)`` pair each specialist arbitrates."""
+        return [(cls, true) for cls, true, _ in self.specialists_]
+
+    @property
+    def n_layers(self) -> int:
+        return len(self.layers_)
