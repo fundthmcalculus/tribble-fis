@@ -39,18 +39,7 @@ class OdeSystem(ABC):
         """
         pass
 
-    @abstractmethod
-    def animate(self, axes, state, t):
-        """
-        Create animation of the system on the given axes.
-        Args:
-            axes: Axes to create animation on
-            state: Current state vector
-            t: Current time
-        """
-        pass
-
-    def simulate(self, state0, duration=10.0, dt=0.001, include_derivatives: bool = False) -> pd.DataFrame:
+    def simulate(self, state0, duration: float, dt: float, include_derivatives: bool = False) -> pd.DataFrame:
         """
         Simulate the ODE system from initial conditions.
 
@@ -58,6 +47,7 @@ class OdeSystem(ABC):
             state0: Initial state vector
             duration: Total simulation time
             dt: Time step for output
+            include_derivatives: Whether to include derivatives in the output
 
         Returns:
             DataFrame with columns matching state_labels
