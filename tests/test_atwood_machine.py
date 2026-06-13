@@ -11,7 +11,6 @@ import pandas as pd
 from pathlib import Path
 import matplotlib.pyplot as plt
 from scipy.integrate import odeint
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 import sys
 
@@ -23,8 +22,8 @@ from tests.ode_helpers import plot_second_pendulum_position, plot_prediction_com
 
 # Comparison set: https://arxiv.org/pdf/2504.13453
 N_BINS = 2
-OUTPUT_FEATURES = ['r','theta','r_dot','r_ddot', 'omega', 'alpha']
-INPUT_FEATURES = ['r','theta','r_dot', 'r_ddot', 'omega', 'alpha']
+OUTPUT_FEATURES = ['r','theta','r_dot', 'omega', 'r_ddot', 'alpha']
+INPUT_FEATURES = ['r','theta','r_dot', 'omega', 'r_ddot', 'alpha']
 
 class AtwoodMachine:
     """Double pendulum simulator using Lagrangian mechanics."""

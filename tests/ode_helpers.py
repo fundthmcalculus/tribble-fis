@@ -2,9 +2,29 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
+
+def set_axes_style(ax: Axes):
+    ax.set_facecolor('#16213e')
+    ax.set_xlim(-2.2, 2.2)
+    ax.set_ylim(-2.2, 0.5)
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.2)
+    ax.tick_params(colors='white')
+    for spine in ax.spines.values():
+        spine.set_edgecolor('#444')
+
+
+def angles_to_xy(theta1, theta2, l1, l2):
+    """Convert angles to Cartesian coordinates."""
+    x1 = l1 * np.sin(theta1)
+    y1 = -l1 * np.cos(theta1)
+    x2 = x1 + l2 * np.sin(theta2)
+    y2 = y1 - l2 * np.cos(theta2)
+    return x1, y1, x2, y2
 
 
 def load_and_prepare_data(data_dir, input_features: list[str], output_features:list[str], window_size=1,file_glob: str = 'simulation_0*.csv'):
@@ -71,6 +91,7 @@ def train_and_evaluate_single_step(n_bins:int, output_features: list[str], X_tra
 
     Args:
         n_bins: number of bins for output features
+        output_features: Names of features to output
         X: features (current state)
         y: targets (next state, continuous)
         test_size: fraction of data for testing
@@ -139,7 +160,6 @@ def train_and_evaluate_window(n_bins:int, output_features: list[str], X_train, y
     print(f"MULTI-STEP WINDOW PREDICTION MODEL (window_size={window_size})")
     print("="*60)
 
-    # Train regressor on continuous target (first output feature)
     y_train_scalar = y_train[:, 0] if y_train.ndim > 1 else y_train
     y_test_scalar = y_test[:, 0] if y_test.ndim > 1 else y_test
 
