@@ -1,16 +1,28 @@
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from matplotlib.axes import Axes
+from pandas import DataFrame
 
 from tests.ode_helpers import angles_to_xy, set_axes_style
 from tests.odemodel import OdeSystem
 from tribblefis.gaussian_regressor import MimoGaussianPredictor
 
 
+@dataclass
+class PendulumParameters:
+    theta1: float
+    omega1: float
+    theta2: float
+    omega2: float
+    dt: float
+    duration: float
 
-class DoublePendulum2(OdeSystem):
+
+
+class DoublePendulum(OdeSystem):
     """Double pendulum simulator using Lagrangian mechanics."""
 
     def __init__(self, m1=1.0, m2=1.0, l1=1.0, l2=1.0, g=9.81):
@@ -21,12 +33,12 @@ class DoublePendulum2(OdeSystem):
         self.g = g
 
     @property
-    def state_dim(self) -> int:
-        return 4
-
-    @property
     def state_labels(self) -> list[str]:
         return ['theta_1', 'omega_1', 'theta_2', 'omega_2']
+
+    @property
+    def derivative_labels(self) -> list[str]:
+        return ["omega_1", "alpha_1", "omega_2", "alpha_2"]
 
     def equations_of_motion(self, state, t):
         """
@@ -75,31 +87,7 @@ class DoublePendulum2(OdeSystem):
 def test_tribble_ode():
     """Test ODE system with fuzzy regression model."""
     # 1) Create the simulation data for various initial conditions.
-    pendulum = DoublePendulum2()
-    trajectories = []
-    theta2s = np.arange(1.5, 3.00001, 0.25) # TODO - 0.1
-    theta1 = 120 * np.pi / 180
-    omega1 = 0.0
-    omega2 = 0.0
-    dt = 0.01
-    duration = 5.0
-    for ij in range(len(theta2s)):
-        theta2 = theta2s[ij]
-        theta2 *= np.pi / 180
-        ic = tuple([theta1, omega1, theta2, omega2])
-        df = pendulum.simulate(ic, duration=duration, dt=0.01)
-        trajectories.append(df)
-
-    print(f"Generated {len(trajectories)} trajectories")
-    print(f"First trajectory shape: {trajectories[0].shape}")
-
-    # 2) Use MimoRegressor to fit the model (placeholder for integration).
-    # This would use MimoGaussianPredictor after combining trajectory data
-    X_combined = pd.concat([t.iloc[:-1] for t in trajectories], ignore_index=True)
-    # 1st order integration
-    y_combined = pd.concat([t.diff().iloc[1:]/dt for t in trajectories], ignore_index=True)
-
-    print(f"Training data shape: X={X_combined.shape}, y={y_combined.shape}")
+    X_combined, y_combined, pendulum, params, trajectories = initialize_model()
 
     ode_m = MimoGaussianPredictor()
     ode_m.fit(X_combined, y_combined)
@@ -109,16 +97,17 @@ def test_tribble_ode():
         return ode_m.predict(s_df).values.flatten()
 
     # 3) Roll out using odeint; fall back to Euler if odeint diverges.
-    test_ic = np.array([theta1, omega1, 2.05 * np.pi / 180.0, omega2])
-    actual_trajectory = pendulum.simulate(test_ic, duration=duration, dt=dt)
-    t_span = np.arange(0, duration, dt)
+    test_ic = np.array([params.theta1, params.omega1, 2.05 * np.pi / 180.0, params.omega2])
+    actual_trajectory = pendulum.simulate(test_ic, duration=params.duration, dt=params.dt)
+    t_span = np.arange(0, params.duration, params.dt)
 
     # Euler integration is more stable than odeint for learned models
     state = test_ic.copy().astype(float)
     states = [state.copy()]
     for _ in range(len(t_span) - 1):
         ds = gauss_fcn(state, 0)
-        state = state + ds * dt
+        # TODO - Use 2nd order trapz method?
+        state = state + ds * params.dt
         if not np.isfinite(state).all():
             print(f"Warning: Euler diverged at step {len(states)}, stopping early.")
             break
@@ -206,7 +195,7 @@ def test_tribble_ode():
         pred_rod2.set_data([x1_pred[-1], x2_pred[-1]], [y1_pred[-1], y2_pred[-1]])
 
         # Running error: position error between actual and predicted
-        time_vec = np.arange(idx + 1) * dt
+        time_vec = np.arange(idx + 1) * params.dt
         act_pos = np.sqrt(
             actual_trajectory.iloc[:idx+1, 0].values**2 +
             actual_trajectory.iloc[:idx+1, 2].values**2
@@ -217,7 +206,7 @@ def test_tribble_ode():
         )
         error = np.abs(act_pos - pred_pos)
         err_line.set_data(time_vec, error)
-        ax_error.set_xlim(0, max(duration, max(time_vec) * 1.05))
+        ax_error.set_xlim(0, max(params.duration, max(time_vec) * 1.05))
         err_max = max(error) if np.any(error) else 1
         ax_error.set_ylim(0, max(err_max * 1.1, 0.1))
 
@@ -255,6 +244,36 @@ def test_tribble_ode():
 
     plt.close(fig)
     print("Test completed successfully!")
+
+
+def initialize_model() -> tuple[DataFrame, DataFrame, DoublePendulum, PendulumParameters, list[DataFrame]]:
+    pendulum = DoublePendulum()
+    trajectories = []
+    theta2s = np.arange(1.5, 3.00001, 0.25)  # TODO - 0.1
+    params = PendulumParameters(theta1=120 * np.pi / 180,
+                                omega1=0.0,
+                                omega2=0.0,
+                                dt=0.01,
+                                duration=3.001,
+                                theta2=0.0)
+    for ij in range(len(theta2s)):
+        theta2 = theta2s[ij]
+        theta2 *= np.pi / 180
+        ic = tuple([params.theta1, params.omega1, theta2, params.omega2])
+        df = pendulum.simulate(ic, duration=params.duration, dt=params.dt)
+        trajectories.append(df)
+
+    print(f"Generated {len(trajectories)} trajectories")
+    print(f"First trajectory shape: {trajectories[0].shape}")
+
+    # 2) Use MimoRegressor to fit the model (placeholder for integration).
+    # This would use MimoGaussianPredictor after combining trajectory data
+    X_combined = pd.concat([t.iloc[:-1] for t in trajectories], ignore_index=True)
+    # 1st order integration
+    y_combined = pd.concat([t.diff().iloc[1:] / params.dt for t in trajectories], ignore_index=True)
+
+    print(f"Training data shape: X={X_combined.shape}, y={y_combined.shape}")
+    return X_combined, y_combined, pendulum, params, trajectories
 
 
 if __name__ == "__main__":

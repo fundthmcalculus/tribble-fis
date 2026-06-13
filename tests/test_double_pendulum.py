@@ -6,22 +6,21 @@ with random initial conditions, trains fuzzy regressors to predict state
 transitions, and evaluates prediction accuracy on continuous outputs.
 Includes MIMO full-state prediction and iterative rollout with GIF animation.
 """
+import sys
 import time
 from argparse import ArgumentError
 from collections import namedtuple
 from contextlib import contextmanager
+from pathlib import Path
 
+import matplotlib.animation as animation
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from pathlib import Path
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-from scipy.integrate import odeint
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
-import sys
-
 from tests.ode_helpers import load_and_prepare_data, train_and_evaluate_single_step, set_axes_style
+from tests.test_fuzzy_ode import initialize_model
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -46,103 +45,6 @@ MIMO_WINDOW_SIZE = 1
 INPUT_FEATURES = ['theta_1','theta_2']
 OUTPUT_FEATURES = INPUT_FEATURES.copy()
 
-class DoublePendulum:
-    """Double pendulum simulator using Lagrangian mechanics."""
-
-    def __init__(self, m1=1.0, m2=1.0, l1=1.0, l2=1.0, g=9.81):
-        self.m1 = m1
-        self.m2 = m2
-        self.l1 = l1
-        self.l2 = l2
-        self.g = g
-
-    def equations_of_motion(self, state, t):
-        """
-        Compute double pendulum equations of motion using Lagrangian approach.
-
-        State: [theta_1, omega_1, theta_2, omega_2]
-        Returns: [omega_1, alpha_1, omega_2, alpha_2]
-        """
-        theta1, omega1, theta2, omega2 = state
-        # Found here: https://web.mit.edu/jorloff/www/chaosTalk/double-pendulum/double-pendulum-en.html
-        delta_theta = theta1 - theta2
-
-        # Common terms
-        denom1 = self.l1 *(2*self.m1 + self.m2 - self.m2 *np.cos(2*delta_theta))
-        num11 = -self.g*(2*self.m1 + self.m2)*np.sin(theta1)
-        num12 = -self.m2*self.g*np.sin(delta_theta - theta2) # theta1-2theta2
-        num13 = -2*np.sin(delta_theta)*self.m2*(omega2**2 * self.l2 + omega1**2 *self.l1 * np.cos(delta_theta))
-        alpha1 = (num11 + num12 + num13) / denom1
-
-        num21 = omega1**2 *self.l1 *(self.m1+self.m2)
-        num22 = self.g*(self.m1+self.m2)*np.cos(theta1)
-        num23 = omega2**2 + self.l2*self.m2 * np.cos(delta_theta)
-        denom2 = self.l2 *(2*self.m1 + self.m2 - self.m2 * np.cos(2*delta_theta))
-        alpha2 = 2*np.sin(delta_theta)*(num21 + num22 + num23) / denom2
-
-        return [omega1, alpha1, omega2, alpha2]
-
-    def simulate(self, theta1_0, omega1_0, theta2_0, omega2_0, duration=10.0, dt=0.001):
-        """
-        Simulate double pendulum from initial conditions.
-
-        Returns:
-            DataFrame with columns: theta_1, omega_1, alpha_1, theta_2, omega_2, alpha_2
-        """
-        t = np.arange(0, duration, dt)
-        state0 = [theta1_0, omega1_0, theta2_0, omega2_0]
-
-        solution = odeint(self.equations_of_motion, state0, t)
-
-        theta1 = solution[:, 0]
-        omega1 = solution[:, 1]
-        theta2 = solution[:, 2]
-        omega2 = solution[:, 3]
-
-        alpha1_vals = []
-        alpha2_vals = []
-        for i, state in enumerate(solution):
-            _, a1, _, a2 = self.equations_of_motion(state, t[i])
-            alpha1_vals.append(a1)
-            alpha2_vals.append(a2)
-
-        return pd.DataFrame({
-            'theta_1': theta1,
-            'omega_1': omega1,
-            'alpha_1': alpha1_vals,
-            'theta_2': theta2,
-            'omega_2': omega2,
-            'alpha_2': alpha2_vals
-        })
-
-
-def generate_simulation_data(output_dir, duration=10.0, dt=0.01):
-    """Generate and save simulation data for multiple random initial conditions."""
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    pendulum = DoublePendulum()
-
-    print(f"Generating simulations...")
-    theta1 = 120 * np.pi / 180
-    omega1 = 0.0
-    omega2 = 0.0
-    # Sourced from: https://arxiv.org/pdf/2504.13453
-    theta2s = np.arange(0, 3.00001, 0.1)
-    for ij in range(len(theta2s)):
-        theta2 = theta2s[ij]
-        theta2 *= np.pi / 180
-        df = pendulum.simulate(theta1, omega1, theta2, omega2, duration, dt)
-        filepath = output_path / f"simulation_{ij:04d}.csv"
-        df.to_csv(filepath, index=False)
-
-    df_tst1 = pendulum.simulate(theta1, omega1, 2.05 * np.pi / 180.0, omega2, duration, dt)
-    df_tst1.to_csv(output_path / "simulation_tst1.csv", index=False)
-    df_tst2 = pendulum.simulate(theta1, omega1, 2.05 * np.pi / 180.0, omega2, duration, dt)
-    df_tst2.to_csv(output_path / "simulation_tst2.csv", index=False)
-
-    print(f"Data saved to {output_path}")
-    return output_path
 
 
 def mimo_input_feature_names(window_size: int, feature_names: list[str] | None = None) -> list[FeatureStep]:
@@ -460,72 +362,6 @@ def plot_prediction_comparison(results_single, results_window):
     return fig
 
 
-def plot_second_pendulum_position(results_single, results_window, dt=0.01):
-    """Plot the actual and predicted position of the second pendulum as a function of time."""
-    fig, axes = plt.subplots(4, 1, figsize=(10, 15))
-    fig.suptitle(f'{OUTPUT_FEATURES[0]} Over Time', fontsize=16, fontweight='bold')
-
-    def sample_to_time(indices, dt):
-        return indices * dt
-
-    ax = axes[0]
-    y_test = results_single['y_test']
-    y_pred = results_single['y_pred']
-    time_indices = sample_to_time(np.arange(len(y_test)), dt)
-    ax.plot(time_indices, y_test, 'b-', linewidth=2, label='Actual', alpha=0.8)
-    ax.plot(time_indices, y_pred, 'r--', linewidth=1.5, label='Predicted', alpha=0.8)
-    ax.fill_between(time_indices, y_test, y_pred, alpha=0.1, color='gray', label='Error')
-    ax.set_xlabel('Time (seconds)', fontsize=11)
-    ax.set_ylabel(f'{OUTPUT_FEATURES[0]} (radians)', fontsize=11)
-    ax.set_title(f'Single-Step Model: {OUTPUT_FEATURES[0]} Position Over Time (R²={results_single["r2"]:.4f}, MAE={results_single["mae"]:.4f})', fontsize=12)
-    ax.legend(loc='upper right')
-    ax.grid(True, alpha=0.3)
-
-    ax = axes[1]
-    y_test = results_window['y_test']
-    y_pred = results_window['y_pred']
-    time_indices = sample_to_time(np.arange(len(y_test)), dt)
-    ax.plot(time_indices, y_test, 'b-', linewidth=2, label='Actual', alpha=0.8)
-    ax.plot(time_indices, y_pred, 'g--', linewidth=1.5, label='Predicted', alpha=0.8)
-    ax.fill_between(time_indices, y_test, y_pred, alpha=0.1, color='gray', label='Error')
-    ax.set_xlabel('Time (seconds)', fontsize=11)
-    ax.set_ylabel(f'{OUTPUT_FEATURES[0]} (radians)', fontsize=11)
-    ax.set_title(f'Multi-Step Window Model: {OUTPUT_FEATURES[0]} Position Over Time (R²={results_window["r2"]:.4f}, MAE={results_window["mae"]:.4f})', fontsize=12)
-    ax.legend(loc='upper right')
-    ax.grid(True, alpha=0.3)
-
-    ax = axes[2]
-    y_test_single = results_single['y_test']
-    y_pred_single = results_single['y_pred']
-    y_test_window = results_window['y_test']
-    y_pred_window = results_window['y_pred']
-    error_single = np.abs(y_test_single - y_pred_single)
-    error_window = np.abs(y_test_window - y_pred_window)
-    time_single = sample_to_time(np.arange(len(error_single)), dt)
-    time_window = sample_to_time(np.arange(len(error_window)), dt)
-    ax.plot(time_single, error_single, 'r-', linewidth=1, label='Single-Step Error', alpha=0.7)
-    ax.plot(time_window, error_window, 'g-', linewidth=1, label='Multi-Step Error', alpha=0.7)
-    ax.axhline(y=np.mean(error_single), color='r', linestyle=':', linewidth=2, label=f'Single-Step Mean Error: {np.mean(error_single):.4f}')
-    ax.axhline(y=np.mean(error_window), color='g', linestyle=':', linewidth=2, label=f'Multi-Step Mean Error: {np.mean(error_window):.4f}')
-    ax.set_xlabel('Time (seconds)', fontsize=11)
-    ax.set_ylabel('Absolute Error (radians)', fontsize=11)
-    ax.set_title('Prediction Error Over Time', fontsize=12)
-    ax.legend(loc='upper right')
-    ax.grid(True, alpha=0.3)
-
-    ax = axes[3]
-    ax.plot(y_test_single, y_pred_single, 'r-', linewidth=1, label='Single-Step predictions', alpha=0.7)
-    ax.plot(y_test_window, y_pred_window, 'g-', linewidth=1, label='Multi-Step predictions', alpha=0.7)
-    ax.set_xlabel('Angle', fontsize=11)
-    ax.set_ylabel('Angle', fontsize=11)
-    ax.set_title('Phasing plot', fontsize=12)
-    ax.legend(loc='upper right')
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    return fig
-
-
 def plot_mimo_state_trajectories(actual_df, predicted_df, dt=0.01):
     """Plot OUTPUT_FEATURES: actual vs predicted rollout."""
     n_out = len(OUTPUT_FEATURES)
@@ -571,19 +407,18 @@ def test_double_pendulum_fuzzy_prediction():
     """
     test_dir = Path(__file__).parent
     data_dir = test_dir / "double_pendulum_data"
-    dt = 0.01
 
     # Step 1: Generate simulation data
     with time_this("gen-sim-data"):
-        generate_simulation_data(
-            data_dir, duration=3.0, dt=dt
-        )
+        # 1) Create the simulation data for various initial conditions.
+        X_combined, y_combined, pendulum, params, trajectories = initialize_model()
 
     # Step 2: Single-step prediction (theta_2 only)
     print("\n" + "#"*60)
     print("# STEP 2: Single-Step Prediction Model")
     print("#"*60)
     with time_this('train-single'):
+        # TODO - Convert to MIMO approach.
         X_single_train, y_single_train = load_and_prepare_data(data_dir,INPUT_FEATURES, OUTPUT_FEATURES, window_size=1)
         X_single_test, y_single_test = load_and_prepare_data(data_dir,INPUT_FEATURES, OUTPUT_FEATURES, file_glob='simulation_tst*.csv', window_size=1)
         results_single = train_and_evaluate_single_step(N_BINS,OUTPUT_FEATURES, X_single_train, y_single_train, X_single_test, y_single_test)
@@ -593,6 +428,7 @@ def test_double_pendulum_fuzzy_prediction():
     print(f"# STEP 4: MIMO Full-State Prediction Model (window={MIMO_WINDOW_SIZE})")
     print("#"*60)
     with time_this('train-mimo'):
+        # TODO - Convert to MIMO approach.
         X_mimo_train, y_mimo_train = load_and_prepare_mimo_data(data_dir, window_size=MIMO_WINDOW_SIZE)
         X_mimo_test, y_mimo_test = load_and_prepare_mimo_data(
             data_dir, file_glob='simulation_tst*.csv', window_size=MIMO_WINDOW_SIZE
