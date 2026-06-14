@@ -31,6 +31,54 @@ class GaussianMembership(NamedTuple):
     def create(mu: float, sigma: float) -> "GaussianMembership":
         return GaussianMembership(mu=mu, sigma=sigma, id=uuid.uuid4())
 
+    def evaluate(self, x: np.ndarray) -> np.ndarray:
+        """Evaluate Gaussian membership function at given points."""
+        x = np.asarray(x, dtype=float)
+        sigma = max(self.sigma, 1e-6)
+        return np.exp(-0.5 * ((x - self.mu) / sigma) ** 2)
+
+
+class TrapezoidMembership(NamedTuple):
+    """A single trapezoidal membership function with parameters a <= b <= c <= d."""
+    a: float
+    b: float
+    c: float
+    d: float
+    id: Optional[uuid.UUID] = None
+
+    @staticmethod
+    def create(a: float, b: float, c: float, d: float) -> "TrapezoidMembership":
+        return TrapezoidMembership(a=a, b=b, c=c, d=d, id=uuid.uuid4())
+
+    def evaluate(self, x: np.ndarray) -> np.ndarray:
+        """Evaluate trapezoidal membership function at given points.
+
+        Membership is 0 outside [a,d], rises linearly from 0 to 1 over [a,b],
+        remains at 1 over [b,c], and falls linearly from 1 to 0 over [c,d].
+        """
+        x = np.asarray(x, dtype=float)
+        y = np.zeros_like(x, dtype=float)
+
+        # Rising slope [a, b]
+        ab_width = self.b - self.a
+        if ab_width > 0:
+            mask = (x > self.a) & (x < self.b)
+            y[mask] = (x[mask] - self.a) / ab_width
+
+        # Flat top [b, c]
+        y[(x >= self.b) & (x <= self.c)] = 1.0
+
+        # Falling slope [c, d]
+        cd_width = self.d - self.c
+        if cd_width > 0:
+            mask = (x > self.c) & (x < self.d)
+            y[mask] = (self.d - x[mask]) / cd_width
+
+        return y
+
+
+AnyMembership = GaussianMembership | TrapezoidMembership
+
 
 class Rule(NamedTuple):
     """A fuzzy rule mapping input membership functions to an output label."""
@@ -40,9 +88,9 @@ class Rule(NamedTuple):
 
 
 class SimpleGaussianClassifierModel(NamedTuple):
-    """A simple Gaussian classifier model with explicit rules."""
+    """A simple classifier model with explicit rules (supports any membership function type)."""
 
-    input_mfs: list[GaussianMembership]
+    input_mfs: list[AnyMembership]
     rules: list[Rule]
     anomaly_params: Optional[AnomalyParameters] = None
 
@@ -58,10 +106,10 @@ class SimpleGaussianClassifierModel(NamedTuple):
     def n_features(self) -> int:
         return len(self.all_features)
 
-    def get_mfs(self, ids: list[uuid.UUID]) -> list[GaussianMembership]:
+    def get_mfs(self, ids: list[uuid.UUID]) -> list[AnyMembership]:
         return [mf for mf in self.input_mfs if mf.id in ids]
 
-    def get_mfs_for_feature(self, feature_name: str) -> list[GaussianMembership]:
+    def get_mfs_for_feature(self, feature_name: str) -> list[AnyMembership]:
         return list(set([mf for rule in self.rules for mf in self.get_mfs(rule.antecedents.get(feature_name, []))]))
 
 
@@ -133,7 +181,7 @@ class GaussianMixtureModel(NamedTuple):
         return list(self.feature_models.values())[0].ordered_keys[-1] + 1
 
     @property
-    def all_membership_fcns(self) -> list[GaussianMembership]:
+    def all_membership_fcns(self) -> list[AnyMembership]:
         """Gets all membership functions across all features and labels."""
         return [
             g
@@ -146,7 +194,7 @@ class GaussianMixtureModel(NamedTuple):
     def all_output_labels(self) -> list[int]:
         return list(set([label for label_model in self.feature_models.values() for label in label_model.ordered_keys]))
 
-    def identify_duplicate_membership_fcns(self) -> list[tuple[str, int, GaussianMembership, GaussianMembership]]:
+    def identify_duplicate_membership_fcns(self) -> list[tuple[str, int, AnyMembership, AnyMembership]]:
         duplicates = []
         for feature_name, feature_model in self.feature_models.items():
             for label, label_model in feature_model.label_models.items():
@@ -157,7 +205,7 @@ class GaussianMixtureModel(NamedTuple):
                                 duplicates.append((feature_name, label, other_gaussian, gaussian))
         return duplicates
 
-    def get_deduplicated_membership_fcns(self) -> dict[GaussianMembership, GaussianMembership]:
+    def get_deduplicated_membership_fcns(self) -> dict[AnyMembership, AnyMembership]:
         """ Returns a dictionary of [to_replace, with_this] membership functions."""
         to_replace = dict()
         all_mfs = self.all_membership_fcns
@@ -216,8 +264,26 @@ class GaussianMixtureModel(NamedTuple):
             anomaly_params=details
         )
 
-def _is_close(g1: GaussianMembership, g2: GaussianMembership, rtol: float = 1e-2, atol: float = 1e-3) -> bool:
-    return bool(
-        np.isclose(g1.mu, g2.mu, rtol=rtol, atol=atol)
-        and np.isclose(g1.sigma, g2.sigma, rtol=rtol, atol=atol)
-    )
+def _is_close(g1: AnyMembership, g2: AnyMembership, rtol: float = 1e-2, atol: float = 1e-3) -> bool:
+    """Check if two membership functions are numerically close.
+
+    Only returns True if both objects are the same type and their parameters match.
+    """
+    if type(g1) != type(g2):
+        return False
+
+    if isinstance(g1, GaussianMembership):
+        return bool(
+            np.isclose(g1.mu, g2.mu, rtol=rtol, atol=atol)
+            and np.isclose(g1.sigma, g2.sigma, rtol=rtol, atol=atol)
+        )
+    elif isinstance(g1, TrapezoidMembership):
+        return bool(
+            np.allclose(
+                [g1.a, g1.b, g1.c, g1.d],
+                [g2.a, g2.b, g2.c, g2.d],
+                rtol=rtol,
+                atol=atol
+            )
+        )
+    return False
