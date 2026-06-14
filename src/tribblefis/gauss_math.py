@@ -24,6 +24,55 @@ def standard_transform(X, column: str | list[str]) -> pd.DataFrame:
     return X
 
 
+def detect_and_apply_log_transform(X, already_fitted=False, fitted_features=None):
+    """
+    Detect and apply log transformation to features with dynamic range > 4.
+
+    A feature qualifies for log transformation if its dynamic range
+    (log10(max_abs / min_abs) of non-zero values) exceeds 4.
+
+    Args:
+        X: DataFrame of features
+        already_fitted: If True, use fitted_features list instead of detecting
+        fitted_features: List of feature names to transform (if already_fitted=True)
+
+    Returns:
+        Tuple of (transformed_X, features_to_transform)
+    """
+    X_transformed = X.copy()
+
+    if already_fitted:
+        features_to_transform = fitted_features or []
+        for col in features_to_transform:
+            X_transformed[col] = np.log1p(X_transformed[col].clip(lower=0))
+        return X_transformed, features_to_transform
+
+    features_to_transform = []
+    for col in X.columns:
+        vals = X[col].dropna()
+        if len(vals) == 0:
+            continue
+
+        non_zero_vals = vals[vals > 0]
+        if len(non_zero_vals) == 0:
+            continue
+
+        abs_vals = np.abs(non_zero_vals)
+        max_abs = abs_vals.max()
+        min_abs = abs_vals.min()
+
+        if min_abs > 0:
+            dynamic_range = np.log10(max_abs / min_abs)
+            if dynamic_range > 4:
+                features_to_transform.append(col)
+                print(f"  Suggesting log-transform for feature '{col}' (dynamic range: {dynamic_range:.2f})")
+
+    for col in features_to_transform:
+        X_transformed[col] = np.log1p(X_transformed[col].clip(lower=0))
+
+    return X_transformed, features_to_transform
+
+
 def find_optimal_gaussians(data, max_gaussians: int = 4):
     """Find the optimal number of Gaussians using Bayesian Information Criterion (BIC)"""
     if len(data) < 2:
