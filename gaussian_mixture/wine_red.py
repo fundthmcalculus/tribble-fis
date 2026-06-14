@@ -3,20 +3,19 @@ import time
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 
-from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzySequenceClassifier
+from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
 from tribblefis.gauss_math import log_transform
-from tribblefis.gauss_plot import (
-    report_figures_of_merit,
-    plot_confusion_matrix,
-    plot_classification_report,
+from tribblefis.regression import (
+    report_regression_performance,
+    plot_tsk_order_comparison,
 )
 
 
 def load_data():
-    data_path = "winequality-red.csv"
+    data_path = "winequality-white.csv"
     if not os.path.exists(data_path):
         # Try to find it in the same directory as the script
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -24,82 +23,79 @@ def load_data():
 
     X = pd.read_csv(data_path, delimiter=";")
     X = X.dropna()
-    y = X["quality"].astype(str)
+    # Quality is a continuous score, not a class label, so keep it numeric.
+    y = X["quality"].astype(float)
+    y.name = "y_value"
     X.drop(["quality"], axis=1, inplace=True)
     X = X.select_dtypes(include=[np.number])
 
     return X, y
 
 
-def report_sequence(clf: MixtureOfGaussiansFuzzySequenceClassifier, X, y, label: str):
-    """Report cascade accuracy and per-class metrics for the full sequence."""
-    y_pred = clf.predict(X)
-    accuracy = np.mean(y_pred == y.values.astype(object))
-
-    print(f"\nCascade ({clf.n_layers} layers) on {label.upper()} set:")
-    print("=" * 80)
-    print(f"Cascade Accuracy ({label}): {accuracy:.4f}")
-    labels = list(np.unique(np.concatenate([y.values.astype(object), y_pred])))
-    print(f"\nConfusion Matrix ({label}):")
-    print(confusion_matrix(y, y_pred, labels=labels))
-    print(f"\nClassification Report ({label}):")
-    print(classification_report(y, y_pred))
-    print("=" * 80)
-    return y_pred
-
-
-def plot_sequence(y_true, y_pred, label: str = "cascade"):
-    """Plot confusion matrix and classification report for the cascade."""
-    plot_confusion_matrix(y_true, y_pred, title=f"Cascade Confusion Matrix ({label} Set)")
-    plot_classification_report(y_true, y_pred, title=f"Cascade Classification Report ({label} Set)")
-
-
 def main():
     start_time = time.time()
     X, y = load_data()
 
-    # Get the number of unique values in y
-    n_unique = y.nunique()
-    print(f"Number of unique values in y: {n_unique}")
+    print(f"Target 'quality' range: [{y.min():.2f}, {y.max():.2f}], "
+          f"mean={y.mean():.3f}, std={y.std():.3f}")
 
     X = log_transform(X, ["total sulfur dioxide", "free sulfur dioxide", "chlorides"], 1)
 
-    # Split dataset into train/test
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42, stratify=y)
+    # Split dataset into train/test. Stratify on coarse quality buckets so both
+    # splits span the full continuous range.
+    strata = pd.cut(y, bins=5, labels=False, include_lowest=True)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.1, random_state=42, stratify=strata
+    )
     print(f"Dataset split: Train={len(X_train)}, Test={len(X_test)}")
 
-    # Fit a layered (cascade) classifier. The primary model is trained on all
-    # data; each subsequent specialist is a binary model keyed to the single
-    # most-confused (predicted, true) class pair, trained to peel the true-class
-    # rows out of that confused region, unless it flags the input as an anomaly
-    # (outside its trained region), in which case the cascade stops.
-    clf = MixtureOfGaussiansFuzzySequenceClassifier(
-        max_layers=5,
-        anomaly_threshold=0.95,
-        norm_conorm="probability",
-    )
-    clf.fit(X_train, y_train)
-    print(f"\nFit cascade with {clf.n_layers} layer(s).")
-    print("Specialists keyed to (predicted -> true) confusion pairs: "
-          f"{[f'{p} -> {t}' for p, t in clf.confused_pairs_]}")
+    # Fit a TSK Gaussian-mixture regressor at several polynomial orders and
+    # compare how much each correction order helps.
+    orders = ["0th", "1st", "2nd"]
+    order_labels = ["0 Optimized", "1 Optimized", "2 Optimized"]
 
-    # Report figures of merit for the PRIMARY model alone (layer 0) using the
-    # existing plotting/reporting helpers.
-    primary = clf.layers_[0]
-    report_figures_of_merit(
-        X_train, y_train, primary.model_, n_unique, start_time, primary.top_features_, label="train (primary)"
-    )
-    report_figures_of_merit(
-        X_test, y_test, primary.model_, n_unique, start_time, primary.top_features_, label="test (primary)"
-    )
+    # report_regression_performance expects the truth as a frame with a
+    # "y_value" column; align indices with the positionally-ordered predictions.
+    y_test_frame = pd.DataFrame({"y_value": y_test.to_numpy()})
 
-    # Report the full cascade (primary + specialists) for comparison.
-    y_pred_train = report_sequence(clf, X_train, y_train, label="train (cascade)")
-    y_pred_test = report_sequence(clf, X_test, y_test, label="test (cascade)")
+    r2_list, rmse_list, pred_list = [], [], []
+    for order, label in zip(orders, order_labels):
+        print(f"\nFitting {order}-order TSK regressor...")
+        reg = MixtureOfGaussiansFuzzyRegressor(
+            n_output_buckets=5,
+            tsk_order=order,
+            optimize_coefficients=True,
+            random_state=42,
+        )
+        reg.fit(X_train, y_train)
 
-    # Plot cascade metrics.
-    plot_sequence(y_train.values.astype(object), y_pred_train, label="train (cascade)")
-    plot_sequence(y_test.values.astype(object), y_pred_test, label="test (cascade)")
+        # Because the output is rounded, we do the same.
+        y_pred_test = np.round(reg.predict(X_test))
+        print(f"\n{order}-order on TEST set:")
+        print("=" * 80)
+        r2, rmse = report_regression_performance(start_time, y_test_frame, y_pred_test, n_order=label)
+
+        r2_list.append(r2)
+        rmse_list.append(rmse)
+        pred_list.append(y_pred_test)
+
+    # Comparison baseline: a Random Forest regressor on the same split.
+    print("\nFitting RandomForest regressor (comparison baseline)...")
+    rf = RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1)
+    rf.fit(X_train, y_train)
+    # Round to match the TSK predictions for an apples-to-apples comparison.
+    y_pred_rf = np.round(rf.predict(X_test))
+    print("\nRandomForest on TEST set:")
+    print("=" * 80)
+    r2_rf, rmse_rf = report_regression_performance(start_time, y_test_frame, y_pred_rf, n_order="RandomForest")
+
+    r2_list.append(r2_rf)
+    rmse_list.append(rmse_rf)
+    pred_list.append(y_pred_rf)
+    order_labels = order_labels + ["RandomForest"]
+
+    # Plot actual-vs-predicted scatter for each model on the test set.
+    plot_tsk_order_comparison(r2_list, rmse_list, y_test_frame, pred_list, order_labels)
 
     print(f"\nTotal execution time: {time.time() - start_time:.2f} seconds")
 
