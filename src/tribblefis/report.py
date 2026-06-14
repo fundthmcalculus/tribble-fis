@@ -5,7 +5,7 @@ from tribblefis.gauss_data import GaussianMixtureModel
 def print_membership_details(model: GaussianMixtureModel):
     # Compute the total number of membership functions by input variable
     per_var_membership_fcns = {
-        feature_name: sum(len(label_model.gaussians) for label_model in feature_model.label_models.values())
+        feature_name: sum(len(label_model.memberships) for label_model in feature_model.label_models.values())
         for feature_name, feature_model in model.feature_models.items()
     }
 
@@ -20,7 +20,7 @@ def print_membership_details(model: GaussianMixtureModel):
     # Print total possible rules for each label
     for label in sorted(all_labels):
         per_var_membership_fcns_for_label = {
-            feature_name: len(feature_model.label_models[label].gaussians) if label in feature_model.label_models else 0
+            feature_name: len(feature_model.label_models[label].memberships) if label in feature_model.label_models else 0
             for feature_name, feature_model in model.feature_models.items()
         }
         print(
@@ -30,14 +30,12 @@ def print_membership_details(model: GaussianMixtureModel):
 
 
 def print_gaussian_memberships(model):
-    print("\nGaussian Memberships Dictionary:")
+    print("\nMembership Functions Dictionary:")
     print("=" * 80)
     for feature_name, feature_model in model.feature_models.items():
         print(f"\n{feature_name}:")
         for label, label_model in feature_model.label_models.items():
-            print(f"  Label {label}: {len(label_model.gaussians)} Gaussians")
-            for i, g in enumerate(label_model.gaussians):
-                mu = g.mu
-                sigma = g.sigma
-                print(f"    Gaussian {i + 1}: μ={mu:.4f}, σ={sigma:.4f}")
+            print(f"  Label {label}: {len(label_model.memberships)} membership functions")
+            for i, mf in enumerate(label_model.memberships):
+                print(f"    MF {i + 1}: {mf}")
     print("=" * 80)

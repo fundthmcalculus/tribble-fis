@@ -485,6 +485,105 @@ def find_optimal_trapezoids(
     return optimal_k
 
 
+def fit_trapezoids(
+    X,
+    y,
+    column: str,
+    label_value: int,
+    n_trapezoids: int = 0,
+    max_samples: int = 20_000,
+) -> list[TrapezoidMembership]:
+    """Fit multiple trapezoidal MFs to a single variable filtered by label.
+
+    Analogue of gauss_math.fit_gaussians() but for trapezoids.
+
+    Args:
+        X: Feature dataframe
+        y: Label series
+        column: Column name to fit
+        label_value: Class label to filter by
+        n_trapezoids: Number of trapezoid components (0 for automatic BIC selection)
+        max_samples: Maximum samples to use
+
+    Returns:
+        List of fitted TrapezoidMembership objects
+    """
+    data = X[column][y == label_value].dropna().values
+    data = data[:max_samples]
+
+    if len(data) == 0:
+        return []
+
+    # Determine number of trapezoids if not specified
+    if n_trapezoids <= 0:
+        n_trapezoids = find_optimal_trapezoids(data, max_components=4)
+        print(f"  Automatically selected {n_trapezoids} trapezoids for {column} (label {label_value})")
+
+    # Fit EM
+    trapezoids, weights, ll = fit_trapezoids_em(
+        data, n_components=n_trapezoids, n_bins=50, max_iter=100, tol=1e-4
+    )
+
+    return trapezoids
+
+
+def create_trapz_membership_dict(
+    X, y, top_n_var_names: list[str], n_trapezoids: int | dict[str, int] = 0
+) -> "GaussianMixtureModel":
+    """Create a trapezoid membership model for top-n variables across all class labels.
+
+    Analogue of gauss_math.create_gaussian_membership_dict() but uses trapezoids.
+
+    Returns the same GaussianMixtureModel container type — the model is agnostic
+    about whether LabelModel.memberships contains Gaussian or Trapezoid objects.
+
+    Args:
+        X: Feature dataframe
+        y: Label series
+        top_n_var_names: List of feature names to fit
+        n_trapezoids: Number of trapezoids (0 for automatic, or dict per feature)
+
+    Returns:
+        GaussianMixtureModel containing fitted trapezoid MFs
+    """
+    from concurrent.futures.thread import ThreadPoolExecutor
+    from .gauss_data import GaussianMixtureModel, FeatureModel, LabelModel
+
+    unique_labels = y.unique()
+
+    def process_feature(feature_name: str) -> tuple[str, FeatureModel]:
+        """Process a single feature across all labels"""
+        label_models = {}
+
+        # Determine number of trapezoids for this feature
+        if isinstance(n_trapezoids, dict):
+            feature_n_trapezoids = n_trapezoids.get(feature_name, 0)
+        else:
+            feature_n_trapezoids = n_trapezoids
+
+        for label_value in unique_labels:
+            label_n_trapezoids = 0
+            if isinstance(n_trapezoids, dict):
+                label_n_trapezoids = n_trapezoids.get(label_value, 0)
+            if label_n_trapezoids > 0:
+                feature_n_trapezoids = label_n_trapezoids
+
+            trapz_params = fit_trapezoids(X, y, feature_name, label_value, feature_n_trapezoids)
+            label_models[label_value] = LabelModel(memberships=trapz_params)
+
+        return feature_name, FeatureModel(label_models=label_models)
+
+    feature_models = {}
+
+    # Use ThreadPoolExecutor for parallel fitting
+    with ThreadPoolExecutor() as executor:
+        result = executor.map(process_feature, top_n_var_names)
+        for r in result:
+            feature_models[r[0]] = r[1]
+
+    return GaussianMixtureModel(feature_models=feature_models)
+
+
 class TrapzMixtureModel:
     """Fits a mixture of trapezoidal membership functions to 1D histogram data.
 

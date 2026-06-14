@@ -114,15 +114,15 @@ class SimpleGaussianClassifierModel(NamedTuple):
 
 
 class LabelModel(NamedTuple):
-    """A collection of Gaussian membership functions for a specific output class label."""
+    """A collection of membership functions for a specific output class label."""
 
-    gaussians: list[GaussianMembership]
+    memberships: list[AnyMembership]
 
     def augment(self, other_label_model) -> "LabelModel":
-        """Augment this LabelModel with another LabelModel, combining Gaussian membership."""
-        new_gaussian_memberships = self.gaussians.copy()
-        new_gaussian_memberships.extend(other_label_model.gaussians)
-        return LabelModel(new_gaussian_memberships)
+        """Augment this LabelModel with another LabelModel, combining membership functions."""
+        new_memberships = self.memberships.copy()
+        new_memberships.extend(other_label_model.memberships)
+        return LabelModel(new_memberships)
 
 
 class FeatureModel(NamedTuple):
@@ -159,17 +159,17 @@ class GaussianMixtureModel(NamedTuple):
     def possible_rules(self) -> float:
         """Compute the total possible rules based upon number of membership functions on each input variable regardless of output class."""
         return prod(
-            len(gaussian.gaussians)
-            for label_model in self.feature_models.values()
-            for gaussian in label_model.label_models.values()
+            len(label_model.memberships)
+            for feature_model in self.feature_models.values()
+            for label_model in feature_model.label_models.values()
         )
 
     @property
     def n_membership_functions(self) -> int:
         return sum(
-            len(gaussian.gaussians)
-            for label_model in self.feature_models.values()
-            for gaussian in label_model.label_models.values()
+            len(label_model.memberships)
+            for feature_model in self.feature_models.values()
+            for label_model in feature_model.label_models.values()
         )
 
     @property
@@ -185,9 +185,9 @@ class GaussianMixtureModel(NamedTuple):
         """Gets all membership functions across all features and labels."""
         return [
             g
-            for label_model in self.feature_models.values()
-            for gaussian in label_model.label_models.values()
-            for g in gaussian.gaussians
+            for feature_model in self.feature_models.values()
+            for label_model in feature_model.label_models.values()
+            for g in label_model.memberships
         ]
 
     @property
@@ -198,11 +198,11 @@ class GaussianMixtureModel(NamedTuple):
         duplicates = []
         for feature_name, feature_model in self.feature_models.items():
             for label, label_model in feature_model.label_models.items():
-                for i, gaussian in enumerate(label_model.gaussians):
-                    for j, other_gaussian in enumerate(label_model.gaussians):
+                for i, mf in enumerate(label_model.memberships):
+                    for j, other_mf in enumerate(label_model.memberships):
                         if i < j:
-                            if _is_close(gaussian, other_gaussian):
-                                duplicates.append((feature_name, label, other_gaussian, gaussian))
+                            if _is_close(mf, other_mf):
+                                duplicates.append((feature_name, label, other_mf, mf))
         return duplicates
 
     def get_deduplicated_membership_fcns(self) -> dict[AnyMembership, AnyMembership]:
@@ -228,7 +228,7 @@ class GaussianMixtureModel(NamedTuple):
         for _, (feature_name, label, dup_mf, src_mf) in enumerate(duplicate_mfcns):
             # Replace the dup_mf with the src_mf
             try:
-                self.feature_models[feature_name].label_models[label].gaussians.remove(dup_mf)
+                self.feature_models[feature_name].label_models[label].memberships.remove(dup_mf)
             except ValueError:
                 pass
 

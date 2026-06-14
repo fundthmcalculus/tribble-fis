@@ -18,7 +18,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
     It follows scikit-learn's ClassifierMixin interface.
     """
 
-    def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, log_transform=False, random_state=42):
+    def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, log_transform=False, member_function="gaussian", random_state=42):
         """
         Initialize the MixtureOfGaussiansFuzzyClassifier.
 
@@ -30,6 +30,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
                          Can also be a dictionary mapping feature names or labels to number of Gaussians.
             log_transform: Whether to automatically suggest and apply log-transformation to features
                            that have a broad range of scales.
+            member_function: Type of membership function ("gaussian" or "trap").
             random_state: Seed for random number generator for reproducibility.
         """
         self.is_fitted_: bool = False
@@ -44,6 +45,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.top_p = top_p
         self.n_gaussians = n_gaussians
         self.log_transform = log_transform
+        self.member_function = member_function
         self.random_state = random_state
 
     def _apply_log_transform(self, X):
@@ -136,10 +138,18 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
             self.feature_differentiators_, top_p=self.top_p, top_n=self.top_n
         )
 
-        # 3. Create Gaussian membership model
-        self.model_ = create_gaussian_membership_dict(
-            X_df, y_series, top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians
-        )
+        # 3. Create membership model (Gaussian or Trapezoid)
+        if self.member_function == "gaussian":
+            self.model_ = create_gaussian_membership_dict(
+                X_df, y_series, top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians
+            )
+        elif self.member_function == "trap":
+            from .trapz_math import create_trapz_membership_dict
+            self.model_ = create_trapz_membership_dict(
+                X_df, y_series, top_n_var_names=self.top_features_, n_trapezoids=self.n_gaussians
+            )
+        else:
+            raise ValueError(f"Unknown member_function: {self.member_function}")
 
         self.is_fitted_ = True
         return self
@@ -179,14 +189,18 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         X_df = self._apply_log_transform(X_df)
 
         firing_strengths, labels = tsk_firing_strengths(X_df, self.model_)
-        
+
         # Normalize firing strengths to get probabilities
-        # Adding a small epsilon to avoid division by zero
         row_sums = firing_strengths.sum(axis=1, keepdims=True)
-        row_sums[row_sums == 0] = 1e-10
-        
-        probabilities = firing_strengths / row_sums
-        
+
+        # For rows where all firing strengths are zero, use uniform probability
+        probabilities = np.zeros_like(firing_strengths)
+        zero_rows = row_sums.flatten() == 0
+        nonzero_rows = ~zero_rows
+
+        probabilities[nonzero_rows] = firing_strengths[nonzero_rows] / row_sums[nonzero_rows]
+        probabilities[zero_rows] = 1.0 / len(labels)
+
         # Ensure the columns match self.classes_ order
         label_to_idx = {label: i for i, label in enumerate(labels)}
 
@@ -194,7 +208,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         for i, cls in enumerate(self.classes_):
             if cls in label_to_idx:
                 reordered_probs[:, i] = probabilities[:, label_to_idx[cls]]
-                
+
         return reordered_probs
 
     def augment(self, X, y):
