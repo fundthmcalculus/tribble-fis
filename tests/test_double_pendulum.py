@@ -6,6 +6,7 @@ with random initial conditions, trains fuzzy regressors to predict state
 transitions, and evaluates prediction accuracy on continuous outputs.
 Includes MIMO full-state prediction and iterative rollout with GIF animation.
 """
+import unittest
 import time
 from contextlib import contextmanager
 
@@ -681,147 +682,156 @@ def plot_mimo_state_trajectories(actual_df, predicted_df, dt=0.01):
     return fig
 
 
-def test_double_pendulum_fuzzy_prediction():
-    """
-    Main test: simulate double pendulum and train fuzzy regression models.
-    Includes MIMO full-state prediction and iterative rollout with GIF animation.
-    """
-    test_dir = Path(__file__).parent
-    data_dir = test_dir / "double_pendulum_data"
-    dt = 0.01
+class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
+    """Integration test for double pendulum fuzzy regression with MIMO."""
 
-    # Step 1: Generate simulation data
-    with time_this("gen-sim-data"):
-        generate_simulation_data(
-            data_dir, num_simulations=15, duration=3.0, dt=dt
-        )
+    def test_double_pendulum_fuzzy_prediction(self):
+        """
+        Main test: simulate double pendulum and train fuzzy regression models.
+        Includes MIMO full-state prediction and iterative rollout with GIF animation.
+        """
+        test_dir = Path(__file__).parent
+        data_dir = test_dir / "double_pendulum_data"
+        dt = 0.01
 
-    # Step 2: Single-step prediction (theta_2 only)
-    print("\n" + "#"*60)
-    print("# STEP 2: Single-Step Prediction Model")
-    print("#"*60)
-    with time_this('train-single'):
-        X_single_train, y_single_train = load_and_prepare_data(data_dir, window_size=1)
-        X_single_test, y_single_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=1)
-        results_single = train_and_evaluate_single_step(X_single_train, y_single_train, X_single_test, y_single_test)
+        # Step 1: Generate simulation data
+        with time_this("gen-sim-data"):
+            generate_simulation_data(
+                data_dir, num_simulations=15, duration=3.0, dt=dt
+            )
 
-    # Step 3: Multi-step window prediction
-    # print("\n" + "#"*60)
-    # print("# STEP 3: Multi-Step Window Prediction Model")
-    # print("#"*60)
-    # window_size = 3
-    # with time_this('train-multi-step'):
-    #     X_window_train, y_window_train = load_and_prepare_data(data_dir, window_size=window_size)
-    #     X_window_test, y_window_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=window_size)
-    #     results_window = train_and_evaluate_window(X_window_train, y_window_train, X_window_test, y_window_test, window_size=window_size)
+        # Step 2: Single-step prediction (theta_2 only)
+        print("\n" + "#"*60)
+        print("# STEP 2: Single-Step Prediction Model")
+        print("#"*60)
+        with time_this('train-single'):
+            X_single_train, y_single_train = load_and_prepare_data(data_dir, window_size=1)
+            X_single_test, y_single_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=1)
+            results_single = train_and_evaluate_single_step(X_single_train, y_single_train, X_single_test, y_single_test)
 
-    # Step 4: MIMO full-state prediction
-    print("\n" + "#"*60)
-    print(f"# STEP 4: MIMO Full-State Prediction Model (window={MIMO_WINDOW_SIZE})")
-    print("#"*60)
-    with time_this('train-mimo'):
-        X_mimo_train, y_mimo_train = load_and_prepare_mimo_data(data_dir, window_size=MIMO_WINDOW_SIZE)
-        X_mimo_test, y_mimo_test = load_and_prepare_mimo_data(
-            data_dir, file_glob='simulation_tst*.csv', window_size=MIMO_WINDOW_SIZE
-        )
-        results_mimo = train_and_evaluate_mimo(
-            X_mimo_train, y_mimo_train, X_mimo_test, y_mimo_test, window_size=MIMO_WINDOW_SIZE
-        )
+        # Step 3: Multi-step window prediction
+        # print("\n" + "#"*60)
+        # print("# STEP 3: Multi-Step Window Prediction Model")
+        # print("#"*60)
+        # window_size = 3
+        # with time_this('train-multi-step'):
+        #     X_window_train, y_window_train = load_and_prepare_data(data_dir, window_size=window_size)
+        #     X_window_test, y_window_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=window_size)
+        #     results_window = train_and_evaluate_window(X_window_train, y_window_train, X_window_test, y_window_test, window_size=window_size)
 
-    # Step 5: Iterative rollout from initial conditions
-    print("\n" + "#"*60)
-    print("# STEP 5: Iterative Rollout from Initial Conditions")
-    print("#"*60)
-    tst_df = pd.read_csv(data_dir / "simulation_tst1.csv")
-    # Seed window: first MIMO_WINDOW_SIZE rows; predict everything after the seed.
-    initial_window = tst_df[OUTPUT_FEATURES].iloc[:MIMO_WINDOW_SIZE]
-    n_steps = len(tst_df) - MIMO_WINDOW_SIZE
+        # Step 4: MIMO full-state prediction
+        print("\n" + "#"*60)
+        print(f"# STEP 4: MIMO Full-State Prediction Model (window={MIMO_WINDOW_SIZE})")
+        print("#"*60)
+        with time_this('train-mimo'):
+            X_mimo_train, y_mimo_train = load_and_prepare_mimo_data(data_dir, window_size=MIMO_WINDOW_SIZE)
+            X_mimo_test, y_mimo_test = load_and_prepare_mimo_data(
+                data_dir, file_glob='simulation_tst*.csv', window_size=MIMO_WINDOW_SIZE
+            )
+            results_mimo = train_and_evaluate_mimo(
+                X_mimo_train, y_mimo_train, X_mimo_test, y_mimo_test, window_size=MIMO_WINDOW_SIZE
+            )
 
-    print(f"Seed window ({MIMO_WINDOW_SIZE} rows):\n{initial_window.to_string()}")
-    print(f"Running {n_steps} iterative prediction steps...")
+        # Step 5: Iterative rollout from initial conditions
+        print("\n" + "#"*60)
+        print("# STEP 5: Iterative Rollout from Initial Conditions")
+        print("#"*60)
+        tst_df = pd.read_csv(data_dir / "simulation_tst1.csv")
+        # Seed window: first MIMO_WINDOW_SIZE rows; predict everything after the seed.
+        initial_window = tst_df[OUTPUT_FEATURES].iloc[:MIMO_WINDOW_SIZE]
+        n_steps = len(tst_df) - MIMO_WINDOW_SIZE
 
-    with time_this('iterative-rollout'):
-        predicted_trajectory = run_iterative_prediction(
-            results_mimo['regressor'], initial_window, n_steps, window_size=MIMO_WINDOW_SIZE
-        )
+        print(f"Seed window ({MIMO_WINDOW_SIZE} rows):\n{initial_window.to_string()}")
+        print(f"Running {n_steps} iterative prediction steps...")
 
-    # Align actual to start at the last row of the seed window.
-    actual_trajectory = tst_df[OUTPUT_FEATURES].iloc[MIMO_WINDOW_SIZE - 1:].reset_index(drop=True)
-    n = min(len(actual_trajectory), len(predicted_trajectory))
+        with time_this('iterative-rollout'):
+            predicted_trajectory = run_iterative_prediction(
+                results_mimo['regressor'], initial_window, n_steps, window_size=MIMO_WINDOW_SIZE
+            )
 
-    def rollout_metrics(label, predicted, actual, n):
-        print(f"\n{label}:")
+        # Align actual to start at the last row of the seed window.
+        actual_trajectory = tst_df[OUTPUT_FEATURES].iloc[MIMO_WINDOW_SIZE - 1:].reset_index(drop=True)
+        n = min(len(actual_trajectory), len(predicted_trajectory))
+
+        def rollout_metrics(label, predicted, actual, n):
+            print(f"\n{label}:")
+            for col in OUTPUT_FEATURES:
+                act = actual[col].values[:n]
+                pred = predicted[col].values[:n]
+                valid = ~np.isnan(pred)
+                if valid.sum() < 2:
+                    print(f"  {col:10s}: insufficient valid predictions")
+                    continue
+                mae = np.mean(np.abs(act[valid] - pred[valid]))
+                r2 = r2_score(act[valid], pred[valid])
+                print(f"  {col:10s}: MAE={mae:.4f}  R2={r2:.4f}  (valid={valid.sum()}/{n})")
+
+        rollout_metrics("Iterative Rollout Metrics", predicted_trajectory, actual_trajectory, n)
+
+        # Step 6: Summary
+        print("\n" + "="*60)
+        print("EVALUATION SUMMARY")
+        print("="*60)
+        print("\nSingle-Step Model:")
+        print(f"  R2:   {results_single['r2']:.6f}")
+        print(f"  RMSE: {results_single['rmse']:.6f}")
+        print(f"  MAE:  {results_single['mae']:.6f}")
+
+        # print("\nMulti-Step Window Model:")
+        # print(f"  R2:   {results_window['r2']:.6f}")
+        # print(f"  RMSE: {results_window['rmse']:.6f}")
+        # print(f"  MAE:  {results_window['mae']:.6f}")
+
+        print("\nMIMO Model (1-step):")
         for col in OUTPUT_FEATURES:
-            act = actual[col].values[:n]
-            pred = predicted[col].values[:n]
-            valid = ~np.isnan(pred)
-            if valid.sum() < 2:
-                print(f"  {col:10s}: insufficient valid predictions")
-                continue
-            mae = np.mean(np.abs(act[valid] - pred[valid]))
-            r2 = r2_score(act[valid], pred[valid])
-            print(f"  {col:10s}: MAE={mae:.4f}  R2={r2:.4f}  (valid={valid.sum()}/{n})")
+            m = results_mimo['metrics'][col]
+            print(f"  {col:10s}: R2={m['r2']:.4f}  RMSE={m['rmse']:.4f}")
 
-    rollout_metrics("Iterative Rollout Metrics", predicted_trajectory, actual_trajectory, n)
+        # if results_single['r2'] > results_window['r2']:
+        #     print("\n  Single-step model shows better R2 score for theta_2")
+        # else:
+        #     print("\n  Multi-step window model shows better R2 score for theta_2")
 
-    # Step 6: Summary
-    print("\n" + "="*60)
-    print("EVALUATION SUMMARY")
-    print("="*60)
-    print("\nSingle-Step Model:")
-    print(f"  R2:   {results_single['r2']:.6f}")
-    print(f"  RMSE: {results_single['rmse']:.6f}")
-    print(f"  MAE:  {results_single['mae']:.6f}")
+        # Step 7: Plots
+        print("\n" + "="*60)
+        print("GENERATING VISUALIZATION PLOTS")
+        print("="*60)
 
-    # print("\nMulti-Step Window Model:")
-    # print(f"  R2:   {results_window['r2']:.6f}")
-    # print(f"  RMSE: {results_window['rmse']:.6f}")
-    # print(f"  MAE:  {results_window['mae']:.6f}")
+        # print("\nPlot 1: Scatter and Residual Comparison")
+        # fig1 = plot_prediction_comparison(results_single, results_window)
+        # fig1.savefig(test_dir / "prediction_comparison.png", dpi=200, bbox_inches='tight')
+        # plt.close(fig1)
+        #
+        # print("\nPlot 2: Second Pendulum Position Over Time")
+        # fig2 = plot_second_pendulum_position(results_single, results_window, dt=dt)
+        # fig2.savefig(test_dir / "second_pendulum_position.png", dpi=200, bbox_inches='tight')
+        # plt.close(fig2)
 
-    print("\nMIMO Model (1-step):")
-    for col in OUTPUT_FEATURES:
-        m = results_mimo['metrics'][col]
-        print(f"  {col:10s}: R2={m['r2']:.4f}  RMSE={m['rmse']:.4f}")
+        print("\nPlot 3: MIMO Iterative Rollout State Trajectories")
+        fig3 = plot_mimo_state_trajectories(
+            actual_trajectory, predicted_trajectory, dt=dt
+        )
+        fig3.savefig(test_dir / "mimo_iterative_trajectories.png", dpi=200, bbox_inches='tight')
+        plt.close(fig3)
 
-    # if results_single['r2'] > results_window['r2']:
-    #     print("\n  Single-step model shows better R2 score for theta_2")
-    # else:
-    #     print("\n  Multi-step window model shows better R2 score for theta_2")
+        # Step 8: GIF animation (actual vs predicted rollout)
+        print("\n" + "="*60)
+        print("GENERATING GIF ANIMATION")
+        print("="*60)
+        gif_path = test_dir / "double_pendulum_comparison.gif"
+        create_pendulum_animation(
+            actual_trajectory, predicted_trajectory,
+            gif_path, dt=dt, max_frames=300, fps=25
+        )
 
-    # Step 7: Plots
-    print("\n" + "="*60)
-    print("GENERATING VISUALIZATION PLOTS")
-    print("="*60)
+        print("\nTest completed successfully!")
 
-    # print("\nPlot 1: Scatter and Residual Comparison")
-    # fig1 = plot_prediction_comparison(results_single, results_window)
-    # fig1.savefig(test_dir / "prediction_comparison.png", dpi=200, bbox_inches='tight')
-    # plt.close(fig1)
-    #
-    # print("\nPlot 2: Second Pendulum Position Over Time")
-    # fig2 = plot_second_pendulum_position(results_single, results_window, dt=dt)
-    # fig2.savefig(test_dir / "second_pendulum_position.png", dpi=200, bbox_inches='tight')
-    # plt.close(fig2)
-
-    print("\nPlot 3: MIMO Iterative Rollout State Trajectories")
-    fig3 = plot_mimo_state_trajectories(
-        actual_trajectory, predicted_trajectory, dt=dt
-    )
-    fig3.savefig(test_dir / "mimo_iterative_trajectories.png", dpi=200, bbox_inches='tight')
-    plt.close(fig3)
-
-    # Step 8: GIF animation (actual vs predicted rollout)
-    print("\n" + "="*60)
-    print("GENERATING GIF ANIMATION")
-    print("="*60)
-    gif_path = test_dir / "double_pendulum_comparison.gif"
-    create_pendulum_animation(
-        actual_trajectory, predicted_trajectory,
-        gif_path, dt=dt, max_frames=300, fps=25
-    )
-
-    print("\nTest completed successfully!")
+        # Basic assertions to verify models trained successfully
+        self.assertIsNotNone(results_single['regressor'])
+        self.assertIsNotNone(results_mimo['regressor'])
+        self.assertGreater(len(actual_trajectory), 0)
+        self.assertGreater(len(predicted_trajectory), 0)
 
 
-if __name__ == "__main__":
-    test_double_pendulum_fuzzy_prediction()
+if __name__ == '__main__':
+    unittest.main()

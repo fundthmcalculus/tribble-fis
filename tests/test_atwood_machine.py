@@ -6,6 +6,7 @@ with random initial conditions, trains fuzzy regressors to predict state
 transitions, and evaluates prediction accuracy on continuous outputs.
 """
 
+import unittest
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -479,77 +480,86 @@ def plot_trace_comparison(results_single, results_window):
     return fig
 
 
-def test_double_pendulum_fuzzy_prediction():
-    """
-    Main test: simulate double pendulum and train fuzzy regression models.
-    """
-    # Setup
-    test_dir = Path(__file__).parent
-    data_dir = test_dir / "atwood_data"
+class TestAtwoodMachineFuzzyPrediction(unittest.TestCase):
+    """Integration test for double pendulum fuzzy regression."""
 
-    # Step 1-3: Generate simulation data
-    generate_simulation_data(
-        data_dir, num_simulations=15, duration=3.0, dt=0.01
-    )
+    def test_double_pendulum_fuzzy_prediction(self):
+        """
+        Main test: simulate double pendulum and train fuzzy regression models.
+        """
+        # Setup
+        test_dir = Path(__file__).parent
+        data_dir = test_dir / "atwood_data"
 
-    # Step 4: Single-step prediction
-    print("\n" + "#"*60)
-    print("# STEP 4: Single-Step Prediction Model")
-    print("#"*60)
-    X_single_train, y_single_train = load_and_prepare_data(data_dir, window_size=1)
-    X_single_test, y_single_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=1)
-    results_single = train_and_evaluate_single_step(X_single_train, y_single_train, X_single_test, y_single_test)
+        # Step 1-3: Generate simulation data
+        generate_simulation_data(
+            data_dir, num_simulations=15, duration=3.0, dt=0.01
+        )
 
-    # Step 5: Multi-step window prediction
-    print("\n" + "#"*60)
-    print("# STEP 5: Multi-Step Window Prediction Model")
-    print("#"*60)
-    window_size = 3
-    X_window_train, y_window_train = load_and_prepare_data(data_dir, window_size=window_size)
-    X_window_test, y_window_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=window_size)
-    results_window = train_and_evaluate_window(X_window_train, y_window_train, X_window_test, y_window_test, window_size=window_size)
+        # Step 4: Single-step prediction
+        print("\n" + "#"*60)
+        print("# STEP 4: Single-Step Prediction Model")
+        print("#"*60)
+        X_single_train, y_single_train = load_and_prepare_data(data_dir, window_size=1)
+        X_single_test, y_single_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=1)
+        results_single = train_and_evaluate_single_step(X_single_train, y_single_train, X_single_test, y_single_test)
 
-    # Step 6: Summary evaluation
-    print("\n" + "="*60)
-    print("EVALUATION SUMMARY")
-    print("="*60)
-    print("\nSingle-Step Model:")
-    print(f"  R²:   {results_single['r2']:.6f}")
-    print(f"  RMSE: {results_single['rmse']:.6f}")
-    print(f"  MAE:  {results_single['mae']:.6f}")
+        # Step 5: Multi-step window prediction
+        print("\n" + "#"*60)
+        print("# STEP 5: Multi-Step Window Prediction Model")
+        print("#"*60)
+        window_size = 3
+        X_window_train, y_window_train = load_and_prepare_data(data_dir, window_size=window_size)
+        X_window_test, y_window_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=window_size)
+        results_window = train_and_evaluate_window(X_window_train, y_window_train, X_window_test, y_window_test, window_size=window_size)
 
-    print("\nMulti-Step Window Model:")
-    print(f"  R²:   {results_window['r2']:.6f}")
-    print(f"  RMSE: {results_window['rmse']:.6f}")
-    print(f"  MAE:  {results_window['mae']:.6f}")
+        # Step 6: Summary evaluation and assertions
+        print("\n" + "="*60)
+        print("EVALUATION SUMMARY")
+        print("="*60)
+        print("\nSingle-Step Model:")
+        print(f"  R²:   {results_single['r2']:.6f}")
+        print(f"  RMSE: {results_single['rmse']:.6f}")
+        print(f"  MAE:  {results_single['mae']:.6f}")
 
-    print("\nComparison:")
-    if results_single['r2'] > results_window['r2']:
-        print("  Single-step model shows better R² score")
-    else:
-        print("  Multi-step window model shows better R² score")
+        print("\nMulti-Step Window Model:")
+        print(f"  R²:   {results_window['r2']:.6f}")
+        print(f"  RMSE: {results_window['rmse']:.6f}")
+        print(f"  MAE:  {results_window['mae']:.6f}")
 
-    # Plot results
-    print("\n" + "="*60)
-    print("GENERATING VISUALIZATION PLOTS")
-    print("="*60)
+        print("\nComparison:")
+        if results_single['r2'] > results_window['r2']:
+            print("  Single-step model shows better R² score")
+        else:
+            print("  Multi-step window model shows better R² score")
 
-    print("\nPlot 1: Scatter and Residual Comparison")
-    fig1 = plot_prediction_comparison(results_single, results_window)
-    plot_file_1 = test_dir / "prediction_comparison.png"
-    fig1.savefig(plot_file_1, dpi=200, bbox_inches='tight')
-    print(f"  Saved to: {plot_file_1}")
-    plt.close(fig1)
+        # Plot results
+        print("\n" + "="*60)
+        print("GENERATING VISUALIZATION PLOTS")
+        print("="*60)
 
-    print("\nPlot 3: Second Pendulum Position Over Time")
-    fig3 = plot_second_pendulum_position(results_single, results_window)
-    plot_file_3 = test_dir / "second_pendulum_position.png"
-    fig3.savefig(plot_file_3, dpi=200, bbox_inches='tight')
-    print(f"  Saved to: {plot_file_3}")
-    plt.close(fig3)
+        print("\nPlot 1: Scatter and Residual Comparison")
+        fig1 = plot_prediction_comparison(results_single, results_window)
+        plot_file_1 = test_dir / "prediction_comparison.png"
+        fig1.savefig(plot_file_1, dpi=200, bbox_inches='tight')
+        print(f"  Saved to: {plot_file_1}")
+        plt.close(fig1)
 
-    print("\nTest completed successfully!")
+        print("\nPlot 3: Second Pendulum Position Over Time")
+        fig3 = plot_second_pendulum_position(results_single, results_window)
+        plot_file_3 = test_dir / "second_pendulum_position.png"
+        fig3.savefig(plot_file_3, dpi=200, bbox_inches='tight')
+        print(f"  Saved to: {plot_file_3}")
+        plt.close(fig3)
+
+        print("\nTest completed successfully!")
+
+        # Basic assertions to verify models trained successfully
+        self.assertIsNotNone(results_single['regressor'])
+        self.assertIsNotNone(results_window['regressor'])
+        self.assertGreater(len(results_single['y_pred']), 0)
+        self.assertGreater(len(results_window['y_pred']), 0)
 
 
-if __name__ == "__main__":
-    test_double_pendulum_fuzzy_prediction()
+if __name__ == '__main__':
+    unittest.main()
