@@ -18,7 +18,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
     It follows scikit-learn's ClassifierMixin interface.
     """
 
-    def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, log_transform=False, member_function="gaussian", trapz_method="em", random_state=42):
+    def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, log_transform=False, member_function="gaussian", trapz_method="fast", random_state=42):
         """
         Initialize the MixtureOfGaussiansFuzzyClassifier.
 
@@ -31,7 +31,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
             log_transform: Whether to automatically suggest and apply log-transformation to features
                            that have a broad range of scales.
             member_function: Type of membership function ("gaussian" or "trap").
-            trapz_method: Method for trapezoid fitting ("em" for EM-based, "fast" for histogram-based).
+            trapz_method: Method for trapezoid fitting ("fast" for histogram-based default, "em" for EM-based).
             random_state: Seed for random number generator for reproducibility.
         """
         self.is_fitted_: bool = False
