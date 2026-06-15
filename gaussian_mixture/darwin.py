@@ -3,6 +3,8 @@ import time
 
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 
 from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
@@ -45,6 +47,18 @@ def main():
 
     # Create the actual fuzzy model and predict on test set
     report_figures_of_merit(X_test, y_test, gaussian_memberships, n_unique, start_time, top_n_todo, label="test")
+
+    # Comparison baseline: a Random Forest classifier on the same split.
+    print("\nFitting RandomForest classifier (comparison baseline)...")
+    rf = RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=-1)
+    rf.fit(X_train, y_train)
+    y_pred_rf = rf.predict(X_test)
+    print("\nRandomForest on TEST set:")
+    print("=" * 80)
+    print(f"Model Accuracy (RandomForest): {accuracy_score(y_test, y_pred_rf):.4f}")
+    print("\nClassification Report (RandomForest):")
+    print(classification_report(y_test, y_pred_rf))
+    print("=" * 80)
 
     # Now, plot a set of distributions for the most-differentiating variables
     # plot_var_gauss_dist(X_train, y_train, top_n_todo, gaussian_memberships)
