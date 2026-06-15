@@ -27,7 +27,7 @@ def angles_to_xy(theta1, theta2, l1, l2):
     return x1, y1, x2, y2
 
 
-def load_and_prepare_data(data_dir, input_features: list[str], output_features:list[str], window_size=1,file_glob: str = 'simulation_0*.csv'):
+def load_and_prepare_data(trajectories: list[pd.DataFrame], input_features: list[str], output_features:list[str], window_size=1,file_glob: str = 'simulation_0*.csv'):
     """
     Load all simulation files and prepare data for prediction.
 
@@ -35,7 +35,7 @@ def load_and_prepare_data(data_dir, input_features: list[str], output_features:l
     For window_size>1: features are last n timesteps, target is next state.
 
     Args:
-        data_dir: directory containing simulation CSV files
+        trajectories: list of simulation trajectories
         input_features: list of input features to use
         output_features: list of output features to use
         window_size: number of past timesteps to use as features
@@ -44,17 +44,12 @@ def load_and_prepare_data(data_dir, input_features: list[str], output_features:l
     Returns:
         tuple: (X, y) where X is features and y is target
     """
-    data_path = Path(data_dir)
-    files = sorted(data_path.glob(file_glob))
-
-    print(f"Loading {len(files)} simulation files...")
+    print(f"Loading {len(trajectories)} simulation files...")
 
     all_X = []
     all_y = []
 
-    for filepath in files:
-        df = pd.read_csv(filepath)
-
+    for df in trajectories:
         if window_size == 1:
             # Single timestep: current state -> next state
             X = df[input_features].iloc[:-1].values

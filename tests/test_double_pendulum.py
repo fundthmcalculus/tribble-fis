@@ -70,9 +70,7 @@ def mimo_input_feature_names(window_size: int, feature_names: list[str] | None =
     ]
 
 
-def load_and_prepare_mimo_data(
-    data_dir, file_glob: str = 'simulation_0*.csv', window_size: int = 1
-):
+def load_and_prepare_mimo_data(trajectories: list[pd.DataFrame], window_size: int = 1):
     """
     Load all simulation files and prepare data for MIMO full-state prediction.
 
@@ -80,16 +78,12 @@ def load_and_prepare_mimo_data(
     For window_size>1: input is the flattened states at [t-window+1, ..., t],
                        output is the full state at t+1.
     """
-    data_path = Path(data_dir)
-    files = sorted(data_path.glob(file_glob))
-
-    print(f"Loading {len(files)} simulation files for MIMO (window={window_size})...")
+    print(f"Loading {len(trajectories)} simulation files for MIMO (window={window_size})...")
 
     all_X = []
     all_y = []
 
-    for filepath in files:
-        df = pd.read_csv(filepath)
+    for df in trajectories:
         y = np.diff(df[OUTPUT_FEATURES].iloc[(window_size-1):].values, axis=0)
         if window_size == 1:
             X = df[INPUT_FEATURES].iloc[:-(window_size-1)].values
@@ -405,22 +399,19 @@ def test_double_pendulum_fuzzy_prediction():
     Main test: simulate double pendulum and train fuzzy regression models.
     Includes MIMO full-state prediction and iterative rollout with GIF animation.
     """
-    test_dir = Path(__file__).parent
-    data_dir = test_dir / "double_pendulum_data"
 
     # Step 1: Generate simulation data
     with time_this("gen-sim-data"):
         # 1) Create the simulation data for various initial conditions.
-        X_combined, y_combined, pendulum, params, trajectories = initialize_model()
+        train_results, test_results = initialize_model()
 
     # Step 2: Single-step prediction (theta_2 only)
     print("\n" + "#"*60)
     print("# STEP 2: Single-Step Prediction Model")
     print("#"*60)
     with time_this('train-single'):
-        # TODO - Convert to MIMO approach.
-        X_single_train, y_single_train = load_and_prepare_data(data_dir,INPUT_FEATURES, OUTPUT_FEATURES, window_size=1)
-        X_single_test, y_single_test = load_and_prepare_data(data_dir,INPUT_FEATURES, OUTPUT_FEATURES, file_glob='simulation_tst*.csv', window_size=1)
+        X_single_train, y_single_train = load_and_prepare_data(train_results.trajectories,INPUT_FEATURES, OUTPUT_FEATURES, window_size=1)
+        X_single_test, y_single_test = load_and_prepare_data(test_results.trajectories,INPUT_FEATURES, OUTPUT_FEATURES, window_size=1)
         results_single = train_and_evaluate_single_step(N_BINS,OUTPUT_FEATURES, X_single_train, y_single_train, X_single_test, y_single_test)
 
     # Step 4: MIMO full-state prediction
@@ -428,11 +419,8 @@ def test_double_pendulum_fuzzy_prediction():
     print(f"# STEP 4: MIMO Full-State Prediction Model (window={MIMO_WINDOW_SIZE})")
     print("#"*60)
     with time_this('train-mimo'):
-        # TODO - Convert to MIMO approach.
-        X_mimo_train, y_mimo_train = load_and_prepare_mimo_data(data_dir, window_size=MIMO_WINDOW_SIZE)
-        X_mimo_test, y_mimo_test = load_and_prepare_mimo_data(
-            data_dir, file_glob='simulation_tst*.csv', window_size=MIMO_WINDOW_SIZE
-        )
+        X_mimo_train, y_mimo_train = load_and_prepare_mimo_data(train_results.trajectories, window_size=MIMO_WINDOW_SIZE)
+        X_mimo_test, y_mimo_test = load_and_prepare_mimo_data(test_results.trajectories, window_size=MIMO_WINDOW_SIZE)
         results_mimo = train_and_evaluate_mimo(
             X_mimo_train, y_mimo_train, X_mimo_test, y_mimo_test, window_size=MIMO_WINDOW_SIZE
         )
@@ -441,8 +429,8 @@ def test_double_pendulum_fuzzy_prediction():
     print("\n" + "#"*60)
     print("# STEP 5: Iterative Rollout from Initial Conditions")
     print("#"*60)
-    tst_df = pd.read_csv(data_dir / "simulation_tst1.csv")
     # Seed window: first MIMO_WINDOW_SIZE rows; predict everything after the seed.
+    tst_df = test_trajectories[0]
     n_steps = len(tst_df) - MIMO_WINDOW_SIZE
 
     print(f"Seed window ({MIMO_WINDOW_SIZE} rows)")
@@ -493,19 +481,19 @@ def test_double_pendulum_fuzzy_prediction():
 
     print("\nPlot 3: MIMO Iterative Rollout State Trajectories")
     fig3 = plot_mimo_state_trajectories(
-        actual_trajectory, predicted_trajectory, dt=dt
+        actual_trajectory, predicted_trajectory, dt=params.dt
     )
-    fig3.savefig(test_dir / "mimo_iterative_trajectories.png", dpi=200, bbox_inches='tight')
+    fig3.savefig("mimo_iterative_trajectories.png", dpi=200, bbox_inches='tight')
     plt.close(fig3)
 
     # Step 8: GIF animation (actual vs predicted rollout)
     print("\n" + "="*60)
     print("GENERATING GIF ANIMATION")
     print("="*60)
-    gif_path = test_dir / "double_pendulum_comparison.gif"
+    gif_path = "double_pendulum_comparison.gif"
     create_pendulum_animation(
         actual_trajectory, predicted_trajectory,
-        gif_path, dt=dt, max_frames=300, fps=25
+        gif_path, dt=params.dt, max_frames=300, fps=25
     )
 
     print("\nTest completed successfully!")
