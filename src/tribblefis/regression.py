@@ -69,8 +69,7 @@ def partition_output(
     n_output_buckets: int, y_raw: pd.Series | pd.DataFrame | typing.Any
 ) -> tuple[pd.DataFrame, typing.Any]:
     # Partition y into n_output_buckets, but ensure one bucket is essentially at each end of the range.
-    y_part = pd.cut(y_raw, bins=n_output_buckets, labels=False, include_lowest=True)
-    # y_part = pd.qcut(y_raw, q=n_output_buckets, labels=False)
+    y_part = pd.qcut(y_raw, q=n_output_buckets, labels=False)
     y_part.name = "y_bucket"
     # Build a full-length array indexed by bucket label (0..n_output_buckets-1).
     # groupby silently drops empty buckets, so reconstruct with correct label alignment
@@ -210,7 +209,7 @@ def compute_full_second_order_corrections(
         y_train_rule_err = y_train[rule_mask]["y_value"] - y_bucket_mean[rule_id]
         b = y_train_rule_err
         # A \ b
-        corr_terms[rule_id, :] = np.linalg.pinv(A) @ b
+        corr_terms[rule_id, :] = np.linalg.lstsq(A, b, rcond=None)[0]
     return corr_terms
 
 
@@ -271,33 +270,44 @@ def optimize_tsk_coefficients(
     else:
         raise ValueError(f"Unknown order: {order}")
 
-    # Use basic linear regression to fit coefficients
+    # Flatten initial coefficients
     if order == "0th":
-        y_bucket_mean_opt = y_bucket_mean.copy()
+        initial_coeffs_flat = y_bucket_mean.copy()
+    else:
+        assert initial_corr_terms is not None
+        initial_coeffs = np.column_stack([y_bucket_mean, initial_corr_terms])
+        initial_coeffs_flat = initial_coeffs.flatten()
+
+    def predict(coeffs_flat, X_data, norm_fs, rule_labels, n_rules, n_feat_terms):
+        """Compute predictions from flattened coefficients."""
+        if order == "0th":
+            # Only constant terms
+            y_pred = np.dot(norm_fs, coeffs_flat[rule_labels])
+        else:
+            coeffs = coeffs_flat.reshape(n_rules, n_feat_terms + 1)
+            y_pred = np.zeros(X_data.shape[0])
+            for ij, y_id in enumerate(rule_labels):
+                y_pred[:] += (coeffs[y_id, 0] + X_data @ coeffs[y_id, 1:]) * norm_fs[:, ij]
+        return y_pred
+
+    def objective(coeffs_flat):
+        """RMSE objective function."""
+        y_pred = predict(
+            coeffs_flat, X_train_features, norm_firing_strength_train, labels_train, n_output_buckets, n_terms
+        )
+        return _mse(y_train["y_value"].values, y_pred)
+
+    # Optimize using L-BFGS-B
+    result = minimize(objective, initial_coeffs_flat, method="L-BFGS-B", options={"maxiter": 1000})
+
+    # Extract optimized coefficients
+    if order == "0th":
+        y_bucket_mean_opt = result.x
         corr_terms_opt = np.zeros((n_output_buckets, 0))
     else:
-        # Build design matrix for linear regression
-        # Each row corresponds to a training sample
-        # Columns correspond to: [rule1_const, rule1_feat1, ..., rule1_featN, rule2_const, ...]
-        n_samples = X_train_features.shape[0]
-        n_coeffs_per_rule = n_terms + 1
-        A = np.zeros((n_samples, n_output_buckets * n_coeffs_per_rule))
-
-        for i in range(n_samples):
-            for j, rule_id in enumerate(labels_train):
-                base_idx = rule_id * n_coeffs_per_rule
-                # Constant term
-                A[i, base_idx] = norm_firing_strength_train[i, j]
-                # Feature terms
-                for k in range(n_terms):
-                    A[i, base_idx + 1 + k] = norm_firing_strength_train[i, j] * X_train_features[i, k]
-
-        # Solve least squares: A @ coeffs = y_train
-        b = y_train["y_value"].values
-        coeffs_flat = np.linalg.lstsq(A, b, rcond=None)[0]
-
-        # Reshape coefficients
-        optimized_coeffs = coeffs_flat.reshape(n_output_buckets, n_coeffs_per_rule)
+        optimized_coeffs = result.x.reshape(n_output_buckets, n_terms + 1)
         y_bucket_mean_opt = optimized_coeffs[:, 0]
         corr_terms_opt = optimized_coeffs[:, 1:]
+
+    print(f"Optimization completed. Final RMSE on training set: {result.fun:.4f}")
     return corr_terms_opt, y_bucket_mean_opt

@@ -13,15 +13,56 @@ from tribbleclustering import IVATMeans, FuzzyCMeans
 from .gauss_data import *  # noqa: F401, F403
 
 
-def log_transform(X, column: str | list[str], offset=0):
+def log_transform(X: pd.DataFrame, column: str | list[str], offset=0):
     """Apply log transformation to a column in the DataFrame with an offset to avoid log(0)."""
     X[column] = np.log(X[column] + offset)
     return X
 
 
-def standard_transform(X, column: str | list[str]) -> pd.DataFrame:
-    X[column] = (X[column] - X[column].min()) / (X[column].max() - X[column].min())
+def standard_transform(X: pd.DataFrame | pd.Series, column: str | list[str] = "") -> pd.DataFrame:
+    if isinstance(X, pd.Series):
+        X = (X - X.min()) / (X.max() - X.min())
+    else:
+        X[column] = (X[column] - X[column].min()) / (X[column].max() - X[column].min())
     return X
+
+
+def detect_and_apply_log_transform(X: pd.DataFrame, min_dynamic_range: float= 3.0) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Detect and apply log transformation to features with dynamic range
+
+    A feature qualifies for log transformation if its dynamic range
+    (log10(max_abs / min_abs) of non-zero values) exceeds dynamic_range.
+
+    Args:
+        X: DataFrame of features
+        min_dynamic_range: Dynamic range threshold for log transformation
+
+    Returns:
+        Tuple of (transformed_X, features_to_transform)
+    """
+    features_to_transform = []
+    for col in X.columns:
+        vals = X[col].dropna()
+        if len(vals) == 0:
+            continue
+
+        non_zero_vals = vals[vals != 0]
+        if len(non_zero_vals) == 0:
+            continue
+
+        abs_vals = np.abs(non_zero_vals)
+        max_abs = abs_vals.max()
+        min_abs = abs_vals.min()
+
+        dynamic_range = np.log10(max_abs / min_abs)
+        if dynamic_range >= min_dynamic_range:
+            features_to_transform.append(col)
+            print(f"  Suggesting log-transform for feature '{col}' (dynamic range: {dynamic_range:.2f})")
+            # Offset by minimum value to avoid log(0)
+            X[col] = np.log1p(X[col] - vals.min())
+
+    return X, features_to_transform
 
 
 def find_optimal_gaussians(data, max_gaussians: int = 4):
@@ -90,9 +131,12 @@ def fit_gaussians(X, y, column: str, label_value: int, n_gaussians: int = 0, max
     # Use Fuzzy C Means to find cluster centers
     # TODO - Buffer source array is read-only
     n_clusters = min(n_gaussians, len(data))
-    ivat_means = IVATMeans(random_state=42, n_clusters=n_clusters)
-    cluster_labels_ivat = ivat_means.fit_predict(data.copy())
-    cluster_labels = cluster_labels_ivat
+    # ivat_means = IVATMeans(random_state=42, n_clusters=n_clusters)
+    # cluster_labels_ivat = ivat_means.fit_predict(data.copy())
+    # cluster_labels = cluster_labels_ivat
+    # TODO - Fuzzy C Means?
+    fc_means = KMeans(n_clusters=n_clusters, random_state=42)
+    cluster_labels = fc_means.fit_predict(data.copy())
 
     # Fit Gaussian to each cluster
     gaussians = []
