@@ -6,22 +6,27 @@ with random initial conditions, trains fuzzy regressors to predict state
 transitions, and evaluates prediction accuracy on continuous outputs.
 Includes MIMO full-state prediction and iterative rollout with GIF animation.
 """
+import sys
 import time
+from argparse import ArgumentError
+from collections import namedtuple
 from contextlib import contextmanager
+from pathlib import Path
 
+import matplotlib.animation as animation
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from pathlib import Path
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-from scipy.integrate import odeint
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
-import sys
+from tests.ode_helpers import load_and_prepare_data, train_and_evaluate_single_step, set_axes_style
+from tests.test_fuzzy_ode import initialize_model
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor, MimoGaussianPredictor
+from tribblefis.gaussian_regressor import MimoGaussianPredictor
+
+FeatureStep = namedtuple('FeatureStep', ['step_name', 'step_offset', 'col_name'])
 
 
 @contextmanager
@@ -35,169 +40,37 @@ def time_this(label="Operation"):
 
 # Comparison set: https://arxiv.org/pdf/2504.13453
 N_BINS = 3
-MIMO_WINDOW_SIZE = 3
+MIMO_WINDOW_SIZE = 1
 # INPUT_FEATURES = ['theta_1','theta_2', 'omega_1', 'alpha_1', 'omega_2', 'alpha_2']
 INPUT_FEATURES = ['theta_1','theta_2']
-# OUTPUT_FEATURES = INPUT_FEATURES.copy()
-OUTPUT_FEATURES = ['theta_1', 'theta_2']
-
-class DoublePendulum:
-    """Double pendulum simulator using Lagrangian mechanics."""
-
-    def __init__(self, m1=1.0, m2=1.0, l1=1.0, l2=1.0, g=9.81):
-        self.m1 = m1
-        self.m2 = m2
-        self.l1 = l1
-        self.l2 = l2
-        self.g = g
-
-    def equations_of_motion(self, state, t):
-        """
-        Compute double pendulum equations of motion using Lagrangian approach.
-
-        State: [theta_1, omega_1, theta_2, omega_2]
-        Returns: [omega_1, alpha_1, omega_2, alpha_2]
-        """
-        theta1, omega1, theta2, omega2 = state
-        # Found here: https://web.mit.edu/jorloff/www/chaosTalk/double-pendulum/double-pendulum-en.html
-        delta_theta = theta1 - theta2
-
-        # Common terms
-        denom1 = self.l1 *(2*self.m1 + self.m2 - self.m2 *np.cos(2*delta_theta))
-        num11 = -self.g*(2*self.m1 + self.m2)*np.sin(theta1)
-        num12 = -self.m2*self.g*np.sin(delta_theta - theta2) # theta1-2theta2
-        num13 = -2*np.sin(delta_theta)*self.m2*(omega2**2 * self.l2 + omega1**2 *self.l1 * np.cos(delta_theta))
-        alpha1 = (num11 + num12 + num13) / denom1
-
-        num21 = omega1**2 *self.l1 *(self.m1+self.m2)
-        num22 = self.g*(self.m1+self.m2)*np.cos(theta1)
-        num23 = omega2**2 + self.l2*self.m2 * np.cos(delta_theta)
-        denom2 = self.l2 *(2*self.m1 + self.m2 - self.m2 * np.cos(2*delta_theta))
-        alpha2 = 2*np.sin(delta_theta)*(num21 + num22 + num23) / denom2
-
-        return [omega1, alpha1, omega2, alpha2]
-
-    def simulate(self, theta1_0, omega1_0, theta2_0, omega2_0, duration=10.0, dt=0.001):
-        """
-        Simulate double pendulum from initial conditions.
-
-        Returns:
-            DataFrame with columns: theta_1, omega_1, alpha_1, theta_2, omega_2, alpha_2
-        """
-        t = np.arange(0, duration, dt)
-        state0 = [theta1_0, omega1_0, theta2_0, omega2_0]
-
-        solution = odeint(self.equations_of_motion, state0, t)
-
-        theta1 = solution[:, 0]
-        omega1 = solution[:, 1]
-        theta2 = solution[:, 2]
-        omega2 = solution[:, 3]
-
-        alpha1_vals = []
-        alpha2_vals = []
-        for i, state in enumerate(solution):
-            _, a1, _, a2 = self.equations_of_motion(state, t[i])
-            alpha1_vals.append(a1)
-            alpha2_vals.append(a2)
-
-        return pd.DataFrame({
-            'theta_1': theta1,
-            'omega_1': omega1,
-            'alpha_1': alpha1_vals,
-            'theta_2': theta2,
-            'omega_2': omega2,
-            'alpha_2': alpha2_vals
-        })
+OUTPUT_FEATURES = INPUT_FEATURES.copy()
 
 
-def generate_simulation_data(output_dir, num_simulations=50, duration=10.0, dt=0.01):
-    """Generate and save simulation data for multiple random initial conditions."""
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
 
-    pendulum = DoublePendulum()
-
-    print(f"Generating {num_simulations} simulations...")
-    theta1 = 120 * np.pi / 180
-    omega1 = 0.0
-    omega2 = 0.0
-    # Sourced from: https://arxiv.org/pdf/2504.13453
-    theta2s = np.arange(0, 3.00001, 0.1)
-    for ij in range(len(theta2s)):
-        theta2 = theta2s[ij]
-        theta2 *= np.pi / 180
-        df = pendulum.simulate(theta1, omega1, theta2, omega2, duration, dt)
-        filepath = output_path / f"simulation_{ij:04d}.csv"
-        df.to_csv(filepath, index=False)
-
-    df_tst1 = pendulum.simulate(theta1, omega1, 2.05 * np.pi / 180.0, omega2, duration, dt)
-    df_tst1.to_csv(output_path / "simulation_tst1.csv", index=False)
-    df_tst2 = pendulum.simulate(theta1, omega1, 2.05 * np.pi / 180.0, omega2, duration, dt)
-    df_tst2.to_csv(output_path / "simulation_tst2.csv", index=False)
-
-    print(f"Data saved to {output_path}")
-    return output_path
-
-
-def load_and_prepare_data(data_dir, window_size=1, file_glob: str = 'simulation_0*.csv'):
-    """
-    Load all simulation files and prepare data for single-output prediction.
-
-    For window_size=1: features are current state, target is next state.
-    """
-    data_path = Path(data_dir)
-    files = sorted(data_path.glob(file_glob))
-
-    print(f"Loading {len(files)} simulation files...")
-
-    all_X = []
-    all_y = []
-
-    for filepath in files:
-        df = pd.read_csv(filepath)
-
-        if window_size == 1:
-            X = df[INPUT_FEATURES].iloc[:-1].values
-            y = df[OUTPUT_FEATURES].iloc[1:].values
-        else:
-            X = []
-            y = []
-            for j in range(len(df) - window_size):
-                window = df[INPUT_FEATURES].iloc[j:j+window_size].values.flatten()
-                X.append(window)
-                y.append(df[OUTPUT_FEATURES].iloc[j+window_size].values)
-
-            if X:
-                X = np.array(X)
-                y = np.array(y)
-
-        all_X.append(X)
-        all_y.append(y)
-
-    X_combined = np.vstack(all_X)
-    y_combined = np.vstack(all_y)
-
-    print(f"Combined data shape: X={X_combined.shape}, y={y_combined.shape}")
-
-    return X_combined, y_combined
-
-
-def mimo_input_feature_names(window_size: int) -> list[str]:
+def mimo_input_feature_names(window_size: int, feature_names: list[str] | None = None) -> list[FeatureStep]:
     """Return input column names for MIMO data with given window size.
 
-    window_size=1 -> OUTPUT_FEATURES
+    window_size=1 -> INPUT_FEATURES
     window_size=N -> ['theta_1_step0', ..., 'theta_2_step0', ..., 'theta_2_step{N-1}']
     where step0 is oldest, step(window_size-1) is most recent.
+
+    Returns:
+        List of FeatureStep namedtuples containing step_name, step_offset, and col_name.
     """
+    if feature_names is None:
+        feature_names = INPUT_FEATURES.copy()
+
     if window_size == 1:
-        return OUTPUT_FEATURES[:]
-    return [f"{feat}_step{i}" for i in range(window_size) for feat in OUTPUT_FEATURES]
+        return [FeatureStep(step_name=feat, step_offset=0, col_name=feat) for feat in feature_names]
+
+    return [
+        FeatureStep(step_name=f"{feat}_step{i}", step_offset=i, col_name=feat)
+        for i in range(window_size)
+        for feat in feature_names
+    ]
 
 
-def load_and_prepare_mimo_data(
-    data_dir, file_glob: str = 'simulation_0*.csv', window_size: int = 1
-):
+def load_and_prepare_mimo_data(trajectories: list[pd.DataFrame], window_size: int = 1):
     """
     Load all simulation files and prepare data for MIMO full-state prediction.
 
@@ -205,28 +78,17 @@ def load_and_prepare_mimo_data(
     For window_size>1: input is the flattened states at [t-window+1, ..., t],
                        output is the full state at t+1.
     """
-    data_path = Path(data_dir)
-    files = sorted(data_path.glob(file_glob))
-
-    print(f"Loading {len(files)} simulation files for MIMO (window={window_size})...")
+    print(f"Loading {len(trajectories)} simulation files for MIMO (window={window_size})...")
 
     all_X = []
     all_y = []
 
-    for filepath in files:
-        df = pd.read_csv(filepath)
+    for df in trajectories:
+        y = np.diff(df[OUTPUT_FEATURES].iloc[(window_size-1):].values, axis=0)
         if window_size == 1:
-            X = df[OUTPUT_FEATURES].iloc[:-1].values
-            y = df[OUTPUT_FEATURES].iloc[1:].values
+            X = df[INPUT_FEATURES].iloc[:-(window_size-1)].values
         else:
-            X_rows, y_rows = [], []
-            for j in range(len(df) - window_size):
-                window = df[OUTPUT_FEATURES].iloc[j:j + window_size].values.flatten()
-                X_rows.append(window)
-                y_rows.append(df[OUTPUT_FEATURES].iloc[j + window_size].values)
-            if X_rows:
-                X = np.array(X_rows)
-                y = np.array(y_rows)
+            X = get_mimo_df(df, window_size)
         all_X.append(X)
         all_y.append(y)
 
@@ -238,87 +100,12 @@ def load_and_prepare_mimo_data(
     return X_combined, y_combined
 
 
-def train_and_evaluate_single_step(X_train, y_train, X_test, y_test):
-    """Train regressor for single-step prediction (current state -> next state)."""
-    print("\n" + "="*60)
-    print("SINGLE-STEP PREDICTION MODEL")
-    print("="*60)
-
-    y_train_scalar = y_train[:, 0] if y_train.ndim > 1 else y_train
-    y_test_scalar = y_test[:, 0] if y_test.ndim > 1 else y_test
-
-    regressor = MixtureOfGaussiansFuzzyRegressor(
-        n_output_buckets=N_BINS, tsk_order="2nd", optimize_coefficients=True,
-        random_state=42
-    )
-    regressor.fit(X_train, y_train_scalar)
-
-    y_pred = regressor.predict(X_test)
-
-    mse = mean_squared_error(y_test_scalar, y_pred)
-    mae = mean_absolute_error(y_test_scalar, y_pred)
-    rmse = np.sqrt(mse)
-    r2 = r2_score(y_test_scalar, y_pred)
-
-    print(f"\n{OUTPUT_FEATURES[0]}:")
-    print(f"  MSE:  {mse:.6f}")
-    print(f"  RMSE: {rmse:.6f}")
-    print(f"  MAE:  {mae:.6f}")
-    print(f"  R2:   {r2:.6f}")
-
-    return {
-        'model_type': 'single_step',
-        'regressor': regressor,
-        'mse': mse,
-        'rmse': rmse,
-        'mae': mae,
-        'r2': r2,
-        'n_test_samples': len(X_test),
-        'y_test': y_test_scalar,
-        'y_pred': y_pred,
-    }
-
-
-def train_and_evaluate_window(X_train, y_train, X_test, y_test, window_size=3, test_size=0.2):
-    """Train regressor for multi-step prediction using sliding window."""
-    print("\n" + "="*60)
-    print(f"MULTI-STEP WINDOW PREDICTION MODEL (window_size={window_size})")
-    print("="*60)
-
-    y_train_scalar = y_train[:, 0] if y_train.ndim > 1 else y_train
-    y_test_scalar = y_test[:, 0] if y_test.ndim > 1 else y_test
-
-    regressor = MixtureOfGaussiansFuzzyRegressor(
-        n_output_buckets=N_BINS, tsk_order="0th", optimize_coefficients=True,
-        random_state=42
-    )
-    regressor.fit(X_train, y_train_scalar)
-
-    y_pred = regressor.predict(X_test)
-
-    mse = mean_squared_error(y_test_scalar, y_pred)
-    mae = mean_absolute_error(y_test_scalar, y_pred)
-    rmse = np.sqrt(mse)
-    r2 = r2_score(y_test_scalar, y_pred)
-
-    print(f"\n{OUTPUT_FEATURES[0]}:")
-    print(f"  MSE:  {mse:.6f}")
-    print(f"  RMSE: {rmse:.6f}")
-    print(f"  MAE:  {mae:.6f}")
-    print(f"  R2:   {r2:.6f}")
-
-    return {
-        'model_type': 'multi_window',
-        'window_size': window_size,
-        'regressor': regressor,
-        'mse': mse,
-        'rmse': rmse,
-        'mae': mae,
-        'r2': r2,
-        'n_test_samples': len(X_test),
-        'y_test': y_test_scalar,
-        'y_pred': y_pred,
-    }
+def get_mimo_df(df: pd.DataFrame, window_size: int) -> pd.DataFrame:
+    feature_steps = mimo_input_feature_names(window_size)
+    X = pd.DataFrame()
+    for f_step in feature_steps:
+        X[f_step.step_name] = df[f_step.col_name].iloc[f_step.step_offset:-(window_size - f_step.step_offset)].values
+    return X
 
 
 def train_and_evaluate_mimo(X_train, y_train, X_test, y_test, window_size: int = 1):
@@ -327,7 +114,8 @@ def train_and_evaluate_mimo(X_train, y_train, X_test, y_test, window_size: int =
     print(f"MIMO FULL-STATE PREDICTION MODEL (window={window_size})")
     print("="*60)
 
-    input_cols = mimo_input_feature_names(window_size)
+    feature_steps = mimo_input_feature_names(window_size)
+    input_cols = [fs.step_name for fs in feature_steps]
     regressor = MimoGaussianPredictor(
         n_output_buckets=N_BINS, tsk_order="1st", optimize_coefficients=True,
         random_state=42
@@ -361,9 +149,8 @@ def train_and_evaluate_mimo(X_train, y_train, X_test, y_test, window_size: int =
     }
 
 
-
 def run_iterative_prediction(
-    regressor, initial_window_df, n_steps,
+    regressor, initial_window_df: pd.DataFrame, n_steps,
     window_size: int = 1,
     verbose: bool = True,
 ):
@@ -382,51 +169,51 @@ def run_iterative_prediction(
     Returns:
         DataFrame of shape (n_steps+1, n_features)
     """
-    from collections import deque
+    if len(initial_window_df) < window_size:
+        raise ArgumentError("Initial data must be greater than or equal to window size.")
 
-    input_cols = mimo_input_feature_names(window_size)
-
-    # Seed the rolling buffer; pad from the front if fewer rows than window_size.
-    seed_rows = [initial_window_df.iloc[i].values.copy() for i in range(len(initial_window_df))]
-    while len(seed_rows) < window_size:
-        seed_rows.insert(0, seed_rows[0].copy())
-
-    buffer = deque(seed_rows[-window_size:], maxlen=window_size)
-
-    states = [buffer[-1].copy()]
+    running_state = initial_window_df.copy()
+    if window_size > 1:
+        running_state = get_mimo_df(initial_window_df, window_size)
     diverged_at = None
 
     for step in range(n_steps):
-        input_flat = np.concatenate(list(buffer))
-        input_df = pd.DataFrame([input_flat], columns=input_cols)
+        if diverged_at:
+            running_state = pd.concat([running_state, pd.DataFrame([np.full(running_state.shape[1],np.nan)], columns=running_state.columns)],
+                                      ignore_index=True)
+        else:
+            # TODO - Predict DELTAS so we can scale to preserve energy!
+            next_state_delta_df = regressor.predict(running_state[-window_size:])
+            if window_size == 1:
+                new_state = running_state.iloc[-1,:] + next_state_delta_df
+            else:
+                # Roll backwards: shift step1->step0, step2->step1, etc.
+                # The new prediction becomes the most recent state (highest step index)
+                feature_steps = mimo_input_feature_names(window_size)
+                new_row = {}
+                for fs in feature_steps:
+                    if fs.step_offset < window_size - 1:
+                        # Shift from next step: step1 data goes to step0, etc.
+                        next_step_name = f"{fs.col_name}_step{fs.step_offset + 1}"
+                        new_row[fs.step_name] = running_state.iloc[-1][next_step_name]
+                    else:
+                        # Most recent step gets the new prediction
+                        new_row[fs.step_name] = running_state.iloc[-1][fs.col_name] + next_state_delta_df.iloc[0][
+                            fs.col_name]
+                new_state = pd.DataFrame([new_row])
 
-        next_state_df = regressor.predict(input_df)
-
-        row = next_state_df.values[0]
-
-        if np.any(np.isnan(row)) or np.any(np.abs(row) > 1e6):
-            if diverged_at is None:
-                diverged_at = step + 1
-                if verbose:
-                    print(f"  Warning: prediction diverged at step {diverged_at} -- padding remainder with NaN.")
-            row = np.full(len(OUTPUT_FEATURES), np.nan)
-
-        states.append(row)
-        buffer.append(row)
-
-    result = pd.DataFrame(np.array(states), columns=OUTPUT_FEATURES)
+            # TODO - Set better bounds
+            if np.any(np.isnan(new_state)) or np.any(np.abs(new_state) > 1e6):
+                if diverged_at is None:
+                    diverged_at = step + 1
+                    if verbose:
+                        print(f"  Warning: prediction diverged at step {diverged_at} -- padding remainder with NaN.")
+            else:
+                running_state = pd.concat([running_state, new_state],
+                                          ignore_index=True)
     if diverged_at is not None and verbose:
         print(f"  Valid prediction steps: {diverged_at} / {n_steps + 1}")
-    return result
-
-
-def angles_to_xy(theta1, theta2, l1=1.0, l2=1.0):
-    """Convert pendulum angles to Cartesian coordinates of both masses."""
-    x1 = l1 * np.sin(theta1)
-    y1 = -l1 * np.cos(theta1)
-    x2 = x1 + l2 * np.sin(theta2)
-    y2 = y1 - l2 * np.cos(theta2)
-    return x1, y1, x2, y2
+    return running_state
 
 
 def create_pendulum_animation(actual_df, predicted_df, output_path, dt=0.01, max_frames=500, fps=30):
@@ -461,21 +248,13 @@ def create_pendulum_animation(actual_df, predicted_df, output_path, dt=0.01, max
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     fig.patch.set_facecolor('#1a1a2e')
     for ax in axes:
-        ax.set_facecolor('#16213e')
-        ax.set_xlim(-2.2, 2.2)
-        ax.set_ylim(-2.2, 0.5)
-        ax.set_aspect('equal')
-        ax.grid(True, alpha=0.2)
-        ax.tick_params(colors='white')
-        for spine in ax.spines.values():
-            spine.set_edgecolor('#444')
+        set_axes_style(ax)
 
     axes[0].set_title('Actual', color='white', fontsize=13, fontweight='bold')
     axes[1].set_title('Predicted (iterative rollout)', color='white', fontsize=13, fontweight='bold')
     fig.suptitle('Double Pendulum: Actual vs Predicted', color='white', fontsize=14, fontweight='bold')
 
     trail_len = 40
-    trail_alpha = np.linspace(0.05, 0.5, trail_len)
 
     # Actual panel objects
     act_trail2, = axes[0].plot([], [], '-', color='#00d4ff', linewidth=1.2, alpha=0.5)
@@ -577,72 +356,6 @@ def plot_prediction_comparison(results_single, results_window):
     return fig
 
 
-def plot_second_pendulum_position(results_single, results_window, dt=0.01):
-    """Plot the actual and predicted position of the second pendulum as a function of time."""
-    fig, axes = plt.subplots(4, 1, figsize=(10, 15))
-    fig.suptitle(f'{OUTPUT_FEATURES[0]} Over Time', fontsize=16, fontweight='bold')
-
-    def sample_to_time(indices, dt):
-        return indices * dt
-
-    ax = axes[0]
-    y_test = results_single['y_test']
-    y_pred = results_single['y_pred']
-    time_indices = sample_to_time(np.arange(len(y_test)), dt)
-    ax.plot(time_indices, y_test, 'b-', linewidth=2, label='Actual', alpha=0.8)
-    ax.plot(time_indices, y_pred, 'r--', linewidth=1.5, label='Predicted', alpha=0.8)
-    ax.fill_between(time_indices, y_test, y_pred, alpha=0.1, color='gray', label='Error')
-    ax.set_xlabel('Time (seconds)', fontsize=11)
-    ax.set_ylabel(f'{OUTPUT_FEATURES[0]} (radians)', fontsize=11)
-    ax.set_title(f'Single-Step Model: {OUTPUT_FEATURES[0]} Position Over Time (R²={results_single["r2"]:.4f}, MAE={results_single["mae"]:.4f})', fontsize=12)
-    ax.legend(loc='upper right')
-    ax.grid(True, alpha=0.3)
-
-    ax = axes[1]
-    y_test = results_window['y_test']
-    y_pred = results_window['y_pred']
-    time_indices = sample_to_time(np.arange(len(y_test)), dt)
-    ax.plot(time_indices, y_test, 'b-', linewidth=2, label='Actual', alpha=0.8)
-    ax.plot(time_indices, y_pred, 'g--', linewidth=1.5, label='Predicted', alpha=0.8)
-    ax.fill_between(time_indices, y_test, y_pred, alpha=0.1, color='gray', label='Error')
-    ax.set_xlabel('Time (seconds)', fontsize=11)
-    ax.set_ylabel(f'{OUTPUT_FEATURES[0]} (radians)', fontsize=11)
-    ax.set_title(f'Multi-Step Window Model: {OUTPUT_FEATURES[0]} Position Over Time (R²={results_window["r2"]:.4f}, MAE={results_window["mae"]:.4f})', fontsize=12)
-    ax.legend(loc='upper right')
-    ax.grid(True, alpha=0.3)
-
-    ax = axes[2]
-    y_test_single = results_single['y_test']
-    y_pred_single = results_single['y_pred']
-    y_test_window = results_window['y_test']
-    y_pred_window = results_window['y_pred']
-    error_single = np.abs(y_test_single - y_pred_single)
-    error_window = np.abs(y_test_window - y_pred_window)
-    time_single = sample_to_time(np.arange(len(error_single)), dt)
-    time_window = sample_to_time(np.arange(len(error_window)), dt)
-    ax.plot(time_single, error_single, 'r-', linewidth=1, label='Single-Step Error', alpha=0.7)
-    ax.plot(time_window, error_window, 'g-', linewidth=1, label='Multi-Step Error', alpha=0.7)
-    ax.axhline(y=np.mean(error_single), color='r', linestyle=':', linewidth=2, label=f'Single-Step Mean Error: {np.mean(error_single):.4f}')
-    ax.axhline(y=np.mean(error_window), color='g', linestyle=':', linewidth=2, label=f'Multi-Step Mean Error: {np.mean(error_window):.4f}')
-    ax.set_xlabel('Time (seconds)', fontsize=11)
-    ax.set_ylabel('Absolute Error (radians)', fontsize=11)
-    ax.set_title('Prediction Error Over Time', fontsize=12)
-    ax.legend(loc='upper right')
-    ax.grid(True, alpha=0.3)
-
-    ax = axes[3]
-    ax.plot(y_test_single, y_pred_single, 'r-', linewidth=1, label='Single-Step predictions', alpha=0.7)
-    ax.plot(y_test_window, y_pred_window, 'g-', linewidth=1, label='Multi-Step predictions', alpha=0.7)
-    ax.set_xlabel('Angle', fontsize=11)
-    ax.set_ylabel('Angle', fontsize=11)
-    ax.set_title('Phasing plot', fontsize=12)
-    ax.legend(loc='upper right')
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    return fig
-
-
 def plot_mimo_state_trajectories(actual_df, predicted_df, dt=0.01):
     """Plot OUTPUT_FEATURES: actual vs predicted rollout."""
     n_out = len(OUTPUT_FEATURES)
@@ -686,44 +399,28 @@ def test_double_pendulum_fuzzy_prediction():
     Main test: simulate double pendulum and train fuzzy regression models.
     Includes MIMO full-state prediction and iterative rollout with GIF animation.
     """
-    test_dir = Path(__file__).parent
-    data_dir = test_dir / "double_pendulum_data"
-    dt = 0.01
 
     # Step 1: Generate simulation data
     with time_this("gen-sim-data"):
-        generate_simulation_data(
-            data_dir, num_simulations=15, duration=3.0, dt=dt
-        )
+        # 1) Create the simulation data for various initial conditions.
+        train_results, test_results = initialize_model()
 
     # Step 2: Single-step prediction (theta_2 only)
     print("\n" + "#"*60)
     print("# STEP 2: Single-Step Prediction Model")
     print("#"*60)
     with time_this('train-single'):
-        X_single_train, y_single_train = load_and_prepare_data(data_dir, window_size=1)
-        X_single_test, y_single_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=1)
-        results_single = train_and_evaluate_single_step(X_single_train, y_single_train, X_single_test, y_single_test)
-
-    # Step 3: Multi-step window prediction
-    # print("\n" + "#"*60)
-    # print("# STEP 3: Multi-Step Window Prediction Model")
-    # print("#"*60)
-    # window_size = 3
-    # with time_this('train-multi-step'):
-    #     X_window_train, y_window_train = load_and_prepare_data(data_dir, window_size=window_size)
-    #     X_window_test, y_window_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', window_size=window_size)
-    #     results_window = train_and_evaluate_window(X_window_train, y_window_train, X_window_test, y_window_test, window_size=window_size)
+        X_single_train, y_single_train = load_and_prepare_data(train_results.trajectories,INPUT_FEATURES, OUTPUT_FEATURES, window_size=1)
+        X_single_test, y_single_test = load_and_prepare_data(test_results.trajectories,INPUT_FEATURES, OUTPUT_FEATURES, window_size=1)
+        results_single = train_and_evaluate_single_step(N_BINS,OUTPUT_FEATURES, X_single_train, y_single_train, X_single_test, y_single_test)
 
     # Step 4: MIMO full-state prediction
     print("\n" + "#"*60)
     print(f"# STEP 4: MIMO Full-State Prediction Model (window={MIMO_WINDOW_SIZE})")
     print("#"*60)
     with time_this('train-mimo'):
-        X_mimo_train, y_mimo_train = load_and_prepare_mimo_data(data_dir, window_size=MIMO_WINDOW_SIZE)
-        X_mimo_test, y_mimo_test = load_and_prepare_mimo_data(
-            data_dir, file_glob='simulation_tst*.csv', window_size=MIMO_WINDOW_SIZE
-        )
+        X_mimo_train, y_mimo_train = load_and_prepare_mimo_data(train_results.trajectories, window_size=MIMO_WINDOW_SIZE)
+        X_mimo_test, y_mimo_test = load_and_prepare_mimo_data(test_results.trajectories, window_size=MIMO_WINDOW_SIZE)
         results_mimo = train_and_evaluate_mimo(
             X_mimo_train, y_mimo_train, X_mimo_test, y_mimo_test, window_size=MIMO_WINDOW_SIZE
         )
@@ -732,17 +429,16 @@ def test_double_pendulum_fuzzy_prediction():
     print("\n" + "#"*60)
     print("# STEP 5: Iterative Rollout from Initial Conditions")
     print("#"*60)
-    tst_df = pd.read_csv(data_dir / "simulation_tst1.csv")
     # Seed window: first MIMO_WINDOW_SIZE rows; predict everything after the seed.
-    initial_window = tst_df[OUTPUT_FEATURES].iloc[:MIMO_WINDOW_SIZE]
+    tst_df = test_trajectories[0]
     n_steps = len(tst_df) - MIMO_WINDOW_SIZE
 
-    print(f"Seed window ({MIMO_WINDOW_SIZE} rows):\n{initial_window.to_string()}")
+    print(f"Seed window ({MIMO_WINDOW_SIZE} rows)")
     print(f"Running {n_steps} iterative prediction steps...")
 
     with time_this('iterative-rollout'):
         predicted_trajectory = run_iterative_prediction(
-            results_mimo['regressor'], initial_window, n_steps, window_size=MIMO_WINDOW_SIZE
+            results_mimo['regressor'], tst_df, n_steps, window_size=MIMO_WINDOW_SIZE
         )
 
     # Align actual to start at the last row of the seed window.
@@ -773,51 +469,31 @@ def test_double_pendulum_fuzzy_prediction():
     print(f"  RMSE: {results_single['rmse']:.6f}")
     print(f"  MAE:  {results_single['mae']:.6f}")
 
-    # print("\nMulti-Step Window Model:")
-    # print(f"  R2:   {results_window['r2']:.6f}")
-    # print(f"  RMSE: {results_window['rmse']:.6f}")
-    # print(f"  MAE:  {results_window['mae']:.6f}")
-
     print("\nMIMO Model (1-step):")
     for col in OUTPUT_FEATURES:
         m = results_mimo['metrics'][col]
         print(f"  {col:10s}: R2={m['r2']:.4f}  RMSE={m['rmse']:.4f}")
-
-    # if results_single['r2'] > results_window['r2']:
-    #     print("\n  Single-step model shows better R2 score for theta_2")
-    # else:
-    #     print("\n  Multi-step window model shows better R2 score for theta_2")
 
     # Step 7: Plots
     print("\n" + "="*60)
     print("GENERATING VISUALIZATION PLOTS")
     print("="*60)
 
-    # print("\nPlot 1: Scatter and Residual Comparison")
-    # fig1 = plot_prediction_comparison(results_single, results_window)
-    # fig1.savefig(test_dir / "prediction_comparison.png", dpi=200, bbox_inches='tight')
-    # plt.close(fig1)
-    #
-    # print("\nPlot 2: Second Pendulum Position Over Time")
-    # fig2 = plot_second_pendulum_position(results_single, results_window, dt=dt)
-    # fig2.savefig(test_dir / "second_pendulum_position.png", dpi=200, bbox_inches='tight')
-    # plt.close(fig2)
-
     print("\nPlot 3: MIMO Iterative Rollout State Trajectories")
     fig3 = plot_mimo_state_trajectories(
-        actual_trajectory, predicted_trajectory, dt=dt
+        actual_trajectory, predicted_trajectory, dt=params.dt
     )
-    fig3.savefig(test_dir / "mimo_iterative_trajectories.png", dpi=200, bbox_inches='tight')
+    fig3.savefig("mimo_iterative_trajectories.png", dpi=200, bbox_inches='tight')
     plt.close(fig3)
 
     # Step 8: GIF animation (actual vs predicted rollout)
     print("\n" + "="*60)
     print("GENERATING GIF ANIMATION")
     print("="*60)
-    gif_path = test_dir / "double_pendulum_comparison.gif"
+    gif_path = "double_pendulum_comparison.gif"
     create_pendulum_animation(
         actual_trajectory, predicted_trajectory,
-        gif_path, dt=dt, max_frames=300, fps=25
+        gif_path, dt=params.dt, max_frames=300, fps=25
     )
 
     print("\nTest completed successfully!")

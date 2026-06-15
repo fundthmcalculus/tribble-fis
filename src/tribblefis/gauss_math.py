@@ -90,9 +90,12 @@ def fit_gaussians(X, y, column: str, label_value: int, n_gaussians: int = 0, max
     # Use Fuzzy C Means to find cluster centers
     # TODO - Buffer source array is read-only
     n_clusters = min(n_gaussians, len(data))
-    ivat_means = IVATMeans(random_state=42, n_clusters=n_clusters)
-    cluster_labels_ivat = ivat_means.fit_predict(data.copy())
-    cluster_labels = cluster_labels_ivat
+    # ivat_means = IVATMeans(random_state=42, n_clusters=n_clusters)
+    # cluster_labels_ivat = ivat_means.fit_predict(data.copy())
+    # cluster_labels = cluster_labels_ivat
+    # TODO - Fuzzy C Means?
+    fc_means = KMeans(n_clusters=n_clusters, random_state=42)
+    cluster_labels = fc_means.fit_predict(data.copy())
 
     # Fit Gaussian to each cluster
     gaussians = []
