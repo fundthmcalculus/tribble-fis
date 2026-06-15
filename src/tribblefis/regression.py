@@ -6,7 +6,7 @@ import pandas as pd
 from itertools import combinations
 from matplotlib import pyplot as plt
 from numpy import ndarray
-from scipy.optimize import minimize
+from numpy.linalg import LinAlgError
 
 from tribblefis.gauss_data import GaussianMixtureModel
 from tribblefis.gauss_math import tsk_firing_strengths
@@ -241,7 +241,17 @@ def optimize_tsk_coefficients(
 
     # Compute training firing strengths
     firing_strengths_train, labels_train = tsk_firing_strengths(X_train[top_n_todo], gaussian_memberships)
-    norm_firing_strength_train = firing_strengths_train / firing_strengths_train.sum(axis=1)[:, np.newaxis]
+    # Create mask for rows where sum > 1e-6
+    row_sums = firing_strengths_train.sum(axis=1)
+    valid_rows = row_sums > 1e-6
+    
+    # Initialize with zeros
+    norm_firing_strength_train = np.zeros_like(firing_strengths_train)
+    
+    # Only normalize valid rows
+    norm_firing_strength_train[valid_rows] = (
+        firing_strengths_train[valid_rows] / row_sums[valid_rows, np.newaxis]
+    )
     X_train_rule = X_train[top_n_todo].to_numpy()
 
     n_top_vars = len(top_n_todo)
@@ -294,10 +304,18 @@ def optimize_tsk_coefficients(
 
         # Solve least squares: A @ coeffs = y_train
         b = y_train["y_value"].values
-        coeffs_flat = np.linalg.lstsq(A, b, rcond=None)[0]
+        # Remove any rows with nan or all-0 in the A matrix.
+        valid_rows = ~np.isnan(A).any(axis=1) & ~np.all(A == 0, axis=1)
+        A = A[valid_rows]
+        b = b[valid_rows]
+        try:
+            coeffs_flat = np.linalg.lstsq(A, b, rcond=None)[0]
 
-        # Reshape coefficients
-        optimized_coeffs = coeffs_flat.reshape(n_output_buckets, n_coeffs_per_rule)
-        y_bucket_mean_opt = optimized_coeffs[:, 0]
-        corr_terms_opt = optimized_coeffs[:, 1:]
+            # Reshape coefficients
+            optimized_coeffs = coeffs_flat.reshape(n_output_buckets, n_coeffs_per_rule)
+            y_bucket_mean_opt = optimized_coeffs[:, 0]
+            corr_terms_opt = optimized_coeffs[:, 1:]
+        except LinAlgError:
+            y_bucket_mean_opt = y_bucket_mean.copy()
+            corr_terms_opt = initial_corr_terms
     return corr_terms_opt, y_bucket_mean_opt

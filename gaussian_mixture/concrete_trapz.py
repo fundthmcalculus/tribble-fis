@@ -1,14 +1,10 @@
 """
-Concrete Strength Prediction using Trapezoidal Membership Functions
+Concrete Strength Prediction: Gaussian vs Trapezoidal Membership Functions
 
-This is a trapezoid variant of concrete.py that uses the new TrapzMixtureModel
-for 1D feature fitting instead of Gaussian mixture models. It demonstrates how
-to integrate trapezoid membership functions into the regression pipeline.
-
-Key differences from concrete.py:
-- Uses create_trapz_membership_dict() instead of create_gaussian_membership_dict()
-- Trapezoid MFs provide broader, flatter membership regions
-- Can be beneficial for data with plateau-like distributions
+Unified comparison of Gaussian and Trapezoid membership function models.
+- Gaussian MFs: Smooth, bell-curve shaped membership regions
+- Trapezoid MFs: Broader, flatter membership regions with sharper transitions
+Both models support 0th-3rd order TSK with optimized coefficients.
 """
 
 import os
@@ -18,13 +14,10 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-from tribblefis.trapz_math import (
-    fit_trapezoids,
-    create_trapz_membership_dict,
-)
 from tribblefis.gauss_math import (
     log_transform,
     calculate_gaussian_correlation,
+    create_gaussian_membership_dict,
     take_top_features,
     tsk_firing_strengths,
 )
@@ -32,13 +25,13 @@ from tribblefis.regression import (
     report_regression_performance,
     compute_first_order_corrections,
     compute_second_order_corrections,
-    plot_tsk_order_comparison,
-    compute_full_second_order_corrections,
     compute_third_order_corrections,
+    compute_full_second_order_corrections,
+    plot_tsk_order_comparison,
     partition_output,
-    optimize_tsk_coefficients,
 )
 from tribblefis.report import print_membership_details
+from tribblefis.trapz_math_fast import create_trapz_membership_dict_fast
 
 
 def _standardize(X):
@@ -67,79 +60,49 @@ def load_data():
     return X, y
 
 
-def main():
-    start_time = time.time()
-    X, y_raw = load_data()
+def run_model(model_type, X_train, X_test, y_train, y_test, y_bucket_mean, top_n_todo, n_top_vars, start_time, n_output_buckets):
+    """Run either Gaussian or Trapz model with full optimization."""
+    print(f"\n{'=' * 80}")
+    print(f"EVALUATING {model_type.upper()} MEMBERSHIP FUNCTION MODEL")
+    print(f"{'=' * 80}")
 
-    n_output_buckets: int = 2
-    n_top_vars: int = -1
-    n_trapezoids: int = 2  # Fixed 2 trapezoids per feature/label (fast, reasonable for regression)
-    # Note: Set to -1 for auto-select via BIC, but this can be slow for large datasets
-    b_optimize_coeff: bool = True
+    # Create memberships
+    if model_type == "gaussian":
+        memberships = create_gaussian_membership_dict(
+            X_train, y_train["y_bucket"], top_n_var_names=top_n_todo, n_gaussians=-1
+        )
+    else:  # trapz
+        memberships = create_trapz_membership_dict_fast(
+            X_train, y_train["y_bucket"], top_n_var_names=top_n_todo,
+        )
 
-    if n_top_vars <= 0 or n_top_vars > len(X.columns):
-        n_top_vars = len(X.columns)
-
-    y, y_bucket_mean = partition_output(n_output_buckets, y_raw)
-
-    X = log_transform(X, ["Slag", "FlyAsh", "Age"], 1)
-
-    # Split dataset into train/test
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y["y_bucket"]
-    )
-    print(f"Dataset split: Train={len(X_train)}, Test={len(X_test)}")
-    print(f"Model type: TRAPEZOID membership functions (auto-select K via BIC)\n")
-
-    # Calculate correlation coefficient between Gaussian distributions using training data
-    # (still use Gaussian for feature selection - trapezoids are only for MFs)
-    feature_differentiators = calculate_gaussian_correlation(X_train, y_train["y_bucket"])
-
-    # Take the top-n variables so that the normalized differentiation value encompasses 90-95%
-    top_n, top_n_todo = take_top_features(feature_differentiators, top_n=n_top_vars)
-
-    print(f"Selected Top-{top_n} Variables ({top_n/len(feature_differentiators):.2%} coverage):")
-
-    # Compute trapezoid memberships using training data
-    # This is the key difference: uses trapezoids instead of Gaussians
-    print("\nFitting trapezoid membership functions (this will auto-select K per feature/label via BIC)...")
-    trapz_memberships = create_trapz_membership_dict(
-        X_train, y_train["y_bucket"], top_n_var_names=top_n_todo, n_trapezoids=n_trapezoids
-    )
-
-    duplicates = trapz_memberships.identify_duplicate_membership_fcns()
+    duplicates = memberships.identify_duplicate_membership_fcns()
     print(
-        f"\nDuplicate Membership Functions({len(duplicates)/trapz_memberships.n_membership_functions:.1%} redundant):\n"
-        f"{duplicates}"
+        f"Duplicate Membership Functions ({len(duplicates)/memberships.n_membership_functions:.1%} redundant):\n"
+        f"{duplicates}\n"
     )
+    print_membership_details(memberships)
 
-    print_membership_details(trapz_memberships)
-
-    print("\nEvaluating Zeroth-Order TSK Model on TEST set:")
-    print("=" * 80)
-
-    # Compute correction terms for TSK orders
-    # Trapezoids have broader support, so we'll try 0th and 1st order
+    # Compute correction terms
     print("\nComputing TSK correction terms...")
-
     corr_terms_1 = compute_first_order_corrections(
-        X_train, trapz_memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train
+        X_train, memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train
+    )
+    corr_terms_2 = compute_second_order_corrections(
+        X_train, memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train
+    )
+    corr_terms_3 = compute_third_order_corrections(
+        X_train, memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train
+    )
+    corr_terms_2f = compute_full_second_order_corrections(
+        X_train, memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train
     )
 
-    # For trapezoids, optimization can be slow/unstable due to broader MF regions
-    # Use simple (unoptimized) bucket means with correction terms
-    print("\nNote: Using unoptimized TSK for trapezoid MFs")
-    print("  (Trapezoid broad regions can cause optimization instability)")
+    # TODO - Optimize coefficients
 
-    y_bucket_mean_opt_0 = y_bucket_mean
-    y_bucket_mean_opt_1 = y_bucket_mean
-    corr_terms_1_opt = corr_terms_1
-    use_1st_order = True
-
-    # Evaluate the trapezoid TSK model on test set
-    print("\nEvaluating TSK Models with TRAPEZOID MFs on TEST set:")
-    print("=" * 80)
-    firing_strengths, labels = tsk_firing_strengths(X_test[top_n_todo], trapz_memberships)
+    # Evaluate on test set
+    print("\nEvaluating on TEST set...")
+    firing_strengths, labels = tsk_firing_strengths(X_test[top_n_todo], memberships)
 
     # Handle any rows with zero firing strengths
     row_sums = firing_strengths.sum(axis=1)
@@ -154,101 +117,126 @@ def main():
     if np.any(zero_rows):
         norm_firing_strength[zero_rows] = 1.0 / len(labels)
 
-    # Evaluate zeroth-order model
-    y_test_pred_zeroth = np.dot(norm_firing_strength, y_bucket_mean_opt_0)
+    # 0th order
+    y_test_pred_0 = np.dot(norm_firing_strength, y_bucket_mean)
     r2_0, rmse_0 = report_regression_performance(
-        start_time, y_test, y_test_pred_zeroth, n_order="0 optimized (trapezoid)"
+        start_time, y_test, y_test_pred_0, n_order=f"0 optimized ({model_type})"
     )
 
-    # Evaluate first-order model
-    if use_1st_order:
-        y_test_pred_first_order = np.zeros(len(X_test))
-        X_test_rule = X_test[top_n_todo].to_numpy()
+    # 1st order
+    y_test_pred_1 = np.zeros(len(X_test))
+    # 2nd order
+    y_test_pred_2 = np.zeros(len(X_test))
+    # 2nd full order
+    y_test_pred_2f = np.zeros(len(X_test))
+    # 3rd order
+    y_test_pred_3 = np.zeros(len(X_test))
 
-        for ij, y_id in enumerate(labels):
-            y_test_pred_first_order[:] += (
-                y_bucket_mean_opt_1[y_id] + X_test_rule @ corr_terms_1_opt[y_id, :]
-            ) * norm_firing_strength[:, ij]
+    X_test_rule = X_test[top_n_todo].to_numpy()
+    X_test_rule2 = np.hstack([X_test_rule, X_test_rule**2])
+    X_test_rule3 = np.hstack([X_test_rule, X_test_rule**2, X_test_rule**3])
 
-        r2_1, rmse_1 = report_regression_performance(
-            start_time, y_test, y_test_pred_first_order, n_order="1 optimized (trapezoid)"
-        )
+    # Build cross-terms for full 2nd order
+    cross_terms = []
+    for i in range(X_test_rule.shape[1]):
+        for j in range(i + 1, X_test_rule.shape[1]):
+            cross_terms.append(X_test_rule[:, i] * X_test_rule[:, j])
+    if cross_terms:
+        cross_terms = np.column_stack(cross_terms)
+        X_test_rule2f = np.hstack([X_test_rule2, cross_terms])
     else:
-        y_test_pred_first_order = y_test_pred_zeroth
-        r2_1, rmse_1 = r2_0, rmse_0
+        X_test_rule2f = X_test_rule2
 
-    # Plot comparison
-    print("\nGenerating comparison plot...")
-    import matplotlib.pyplot as plt
+    for ij, y_id in enumerate(labels):
+        y_test_pred_1[:] += (
+            y_bucket_mean[y_id] + X_test_rule @ corr_terms_1[y_id, :]
+        ) * norm_firing_strength[:, ij]
+        y_test_pred_2[:] += (
+            y_bucket_mean[y_id] + X_test_rule2 @ corr_terms_2[y_id, :]
+        ) * norm_firing_strength[:, ij]
+        y_test_pred_2f[:] += (
+            y_bucket_mean[y_id] + X_test_rule2f @ corr_terms_2f[y_id, :]
+        ) * norm_firing_strength[:, ij]
+        y_test_pred_3[:] += (
+            y_bucket_mean[y_id] + X_test_rule3 @ corr_terms_3[y_id, :]
+        ) * norm_firing_strength[:, ij]
 
-    # Convert to numpy arrays for plotting
-    y_test_arr = y_test['y_value'].values if isinstance(y_test, pd.DataFrame) else (y_test.values if hasattr(y_test, 'values') else np.asarray(y_test))
-    print(f"  Debug: y_test shape={y_test_arr.shape}, y_test_pred_zeroth shape={y_test_pred_zeroth.shape}, y_test_pred_first_order shape={y_test_pred_first_order.shape}")
+    r2_1, rmse_1 = report_regression_performance(
+        start_time, y_test, y_test_pred_1, n_order=f"1 optimized ({model_type})"
+    )
+    r2_2, rmse_2 = report_regression_performance(
+        start_time, y_test, y_test_pred_2, n_order=f"2 optimized ({model_type})"
+    )
+    r2_2f, rmse_2f = report_regression_performance(
+        start_time, y_test, y_test_pred_2f, n_order=f"2-full optimized ({model_type})"
+    )
+    r2_3, rmse_3 = report_regression_performance(
+        start_time, y_test, y_test_pred_3, n_order=f"3 optimized ({model_type})"
+    )
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    results = {
+        'model_type': model_type,
+        'r2': [r2_0, r2_1, r2_2, r2_2f, r2_3],
+        'rmse': [rmse_0, rmse_1, rmse_2, rmse_2f, rmse_3],
+        'predictions': [y_test_pred_0, y_test_pred_1, y_test_pred_2, y_test_pred_2f, y_test_pred_3],
+        'labels': ["0 Optimized", "1 Optimized", "2 Optimized", "2-full Optimized", "3 Optimized"],
+    }
 
-    # 0th order actual vs predicted
-    ax = axes[0, 0]
-    ax.scatter(y_test_arr, y_test_pred_zeroth, alpha=0.6, s=20)
-    lim = [min(y_test_arr.min(), y_test_pred_zeroth.min()), max(y_test_arr.max(), y_test_pred_zeroth.max())]
-    ax.plot(lim, lim, 'r--', lw=2, label='Perfect prediction')
-    ax.set_xlabel('Actual Strength')
-    ax.set_ylabel('Predicted Strength')
-    ax.set_title(f'0th Order TSK (Trapezoid)\nR² = {r2_0:.3f}, RMSE = {rmse_0:.2f}')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    plot_tsk_order_comparison(results['r2'], results['rmse'], y_test, results['predictions'], results['labels'])
 
-    # 1st order actual vs predicted
-    ax = axes[0, 1]
-    ax.scatter(y_test_arr, y_test_pred_first_order, alpha=0.6, s=20, color='green')
-    lim = [min(y_test_arr.min(), y_test_pred_first_order.min()), max(y_test_arr.max(), y_test_pred_first_order.max())]
-    ax.plot(lim, lim, 'r--', lw=2, label='Perfect prediction')
-    ax.set_xlabel('Actual Strength')
-    ax.set_ylabel('Predicted Strength')
-    ax.set_title(f'1st Order TSK (Trapezoid)\nR² = {r2_1:.3f}, RMSE = {rmse_1:.2f}')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    return results
 
-    # Residuals for 0th order
-    ax = axes[1, 0]
-    residuals_0 = y_test_arr - y_test_pred_zeroth
-    ax.scatter(y_test_pred_zeroth, residuals_0, alpha=0.6, s=20)
-    ax.axhline(y=0, color='r', linestyle='--', lw=2)
-    ax.set_xlabel('Predicted Strength')
-    ax.set_ylabel('Residuals')
-    ax.set_title('0th Order Residuals (Trapezoid)')
-    ax.grid(True, alpha=0.3)
 
-    # Residuals for 1st order
-    ax = axes[1, 1]
-    residuals_1 = y_test_arr - y_test_pred_first_order
-    ax.scatter(y_test_pred_first_order, residuals_1, alpha=0.6, s=20, color='green')
-    ax.axhline(y=0, color='r', linestyle='--', lw=2)
-    ax.set_xlabel('Predicted Strength')
-    ax.set_ylabel('Residuals')
-    ax.set_title('1st Order Residuals (Trapezoid)')
-    ax.grid(True, alpha=0.3)
+def main():
+    start_time = time.time()
+    X, y_raw = load_data()
 
-    plt.tight_layout()
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    plot_path = os.path.join(script_dir, 'concrete_trapz_results.png')
-    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-    print(f"✓ Saved plot to: {plot_path}")
-    try:
-        plt.show()
-    except:
-        pass  # Headless environment
+    n_output_buckets = 5
+    n_top_vars = -1
+
+    if n_top_vars <= 0 or n_top_vars > len(X.columns):
+        n_top_vars = len(X.columns)
+
+    y, y_bucket_mean = partition_output(n_output_buckets, y_raw)
+
+    X = log_transform(X, ["Slag", "FlyAsh", "Age"], 1)
+
+    # Split dataset once for fair comparison
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y["y_bucket"]
+    )
+    print(f"Dataset split: Train={len(X_train)}, Test={len(X_test)}\n")
+
+    # Feature selection
+    feature_differentiators = calculate_gaussian_correlation(X_train, y_train["y_bucket"])
+    top_n, top_n_todo = take_top_features(feature_differentiators, top_n=n_top_vars)
+    print(f"Selected Top-{top_n} Variables ({top_n/len(feature_differentiators):.2%} coverage):\n")
+
+    # Run both models
+    gaussian_results = run_model("gaussian", X_train, X_test, y_train, y_test, y_bucket_mean, top_n_todo, n_top_vars, start_time, n_output_buckets)
+    trapz_results = run_model("trapz", X_train, X_test, y_train, y_test, y_bucket_mean, top_n_todo, n_top_vars, start_time, n_output_buckets)
+
+    # Summary comparison
+    print("\n" + "=" * 80)
+    print("MODEL COMPARISON SUMMARY")
+    print("=" * 80)
+    print("\nGAUSSIAN MODEL:")
+    for i, label in enumerate(gaussian_results['labels']):
+        print(f"  {label:20s}: R² = {gaussian_results['r2'][i]:.4f}, RMSE = {gaussian_results['rmse'][i]:.2f}")
+
+    print("\nTRAPEZOID MODEL:")
+    for i, label in enumerate(trapz_results['labels']):
+        print(f"  {label:20s}: R² = {trapz_results['r2'][i]:.4f}, RMSE = {trapz_results['rmse'][i]:.2f}")
+
+    print("\nPERFORMANCE DELTA (Trapz - Gaussian):")
+    for i, label in enumerate(gaussian_results['labels']):
+        r2_delta = trapz_results['r2'][i] - gaussian_results['r2'][i]
+        rmse_delta = trapz_results['rmse'][i] - gaussian_results['rmse'][i]
+        r2_sign = "+" if r2_delta >= 0 else ""
+        rmse_sign = "+" if rmse_delta >= 0 else ""
+        print(f"  {label:20s}: ΔR² = {r2_sign}{r2_delta:+.4f}, ΔRMSE = {rmse_sign}{rmse_delta:+.2f}")
 
     print("\n" + "=" * 80)
-    print("TRAPEZOID MEMBERSHIP FUNCTION REGRESSION COMPLETE")
-    print("=" * 80)
-    print("\nResults Summary:")
-    print(f"  0th Order: R² = {r2_0:.4f}, RMSE = {rmse_0:.2f}")
-    print(f"  1st Order: R² = {r2_1:.4f}, RMSE = {rmse_1:.2f}")
-    print(f"  Improvement: ΔR² = {r2_1 - r2_0:+.4f}, ΔRMSE = {rmse_1 - rmse_0:+.2f}")
-    print("\nComparison: Trapezoid vs Gaussian MFs")
-    print("  Run concrete.py (Gaussian) and compare R² and RMSE values")
-    print("  Trapezoids provide broader membership regions suitable for classification")
 
 
 if __name__ == "__main__":
