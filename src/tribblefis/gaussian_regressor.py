@@ -194,7 +194,11 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
 
         # Get firing strengths for each rule
         firing_strengths, labels = tsk_firing_strengths(X_df[self.top_features_], self.model_)
-        norm_firing_strength = firing_strengths / firing_strengths.sum(axis=1, keepdims=True)
+        strengths_sum = firing_strengths.sum(axis=1, keepdims=True)
+        # Only normalize the rows which are well-posed.
+        # TODO - Parameterize the sum limit.
+        strengths_sum[strengths_sum < 1e-6] = 1
+        norm_firing_strength = firing_strengths / strengths_sum
 
         # Initialize predictions
         y_pred = np.zeros(len(X_df))
