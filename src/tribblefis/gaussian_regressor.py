@@ -7,7 +7,8 @@ from .gauss_math import (
     calculate_gaussian_correlation,
     take_top_features,
     create_gaussian_membership_dict,
-    tsk_firing_strengths
+    tsk_firing_strengths,
+    detect_and_apply_log_transform,
 )
 from .regression import (
     partition_output,
@@ -75,34 +76,12 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         if not self.log_transform:
             return X
 
-        X_transformed = X.copy()
+        X_transformed, features = detect_and_apply_log_transform(
+            X, already_fitted=self.is_fitted_, fitted_features=self.log_transformed_features_
+        )
 
-        if self.is_fitted_:
-            for col in self.log_transformed_features_:
-                X_transformed[col] = np.log1p(X_transformed[col].clip(lower=0))
-            return X_transformed
-
-        self.log_transformed_features_ = []
-        for col in X.columns:
-            vals = X[col].dropna()
-            if len(vals) == 0:
-                continue
-
-            v_min = vals.min()
-            v_max = vals.max()
-
-            if v_max > v_min and v_max > 0:
-                if v_min > 0:
-                    ratio = v_max / v_min
-                else:
-                    ratio = v_max / (vals[vals > 0].min() if any(vals > 0) else 1e-6)
-
-                if ratio > 1000:
-                    self.log_transformed_features_.append(col)
-                    print(f"  Suggesting log-transform for feature '{col}' (ratio max/min: {ratio:.2f})")
-
-        for col in self.log_transformed_features_:
-            X_transformed[col] = np.log1p(X_transformed[col].clip(lower=0))
+        if not self.is_fitted_:
+            self.log_transformed_features_ = features
 
         return X_transformed
 

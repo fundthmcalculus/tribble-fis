@@ -69,8 +69,7 @@ def partition_output(
     n_output_buckets: int, y_raw: pd.Series | pd.DataFrame | typing.Any
 ) -> tuple[pd.DataFrame, typing.Any]:
     # Partition y into n_output_buckets, but ensure one bucket is essentially at each end of the range.
-    y_part = pd.cut(y_raw, bins=n_output_buckets, labels=False, include_lowest=True)
-    # y_part = pd.qcut(y_raw, q=n_output_buckets, labels=False)
+    y_part = pd.qcut(y_raw, q=n_output_buckets, labels=False)
     y_part.name = "y_bucket"
     # Build a full-length array indexed by bucket label (0..n_output_buckets-1).
     # groupby silently drops empty buckets, so reconstruct with correct label alignment
