@@ -10,9 +10,11 @@ Tests verify:
 6. Edge cases (unimodal, bimodal, multimodal data)
 7. Numerical stability (log-likelihood tracking)
 8. Degenerate component handling
+9. Performance comparison with fast histogram method
 """
 
 import unittest
+import time
 import numpy as np
 import pandas as pd
 from src.tribblefis.trapz_math import (
@@ -22,6 +24,10 @@ from src.tribblefis.trapz_math import (
     find_optimal_trapezoids,
     fit_trapezoids,
     create_trapz_membership_dict,
+)
+from src.tribblefis.trapz_math_fast import (
+    fit_trapezoids_fast,
+    trapz_pdf_fast,
 )
 from src.tribblefis.gauss_data import TrapezoidMembership, GaussianMixtureModel
 
@@ -335,6 +341,177 @@ class TestNumericalStability(unittest.TestCase):
         self.assertEqual(len(model.trapezoids_), 1)
         trapz = model.trapezoids_[0]
         self.assertLess(trapz.d, 0)
+
+
+class TestFastHistogramMethod(unittest.TestCase):
+    """Test the fast histogram-based fitting method."""
+
+    def test_fast_method_basic(self):
+        """Test basic fast trapezoid fitting."""
+        np.random.seed(42)
+        data = np.random.normal(0, 1, 500)
+        trapezoids, weights = fit_trapezoids_fast(data, n_bins=50)
+
+        self.assertGreater(len(trapezoids), 0)
+        self.assertTrue(np.allclose(weights.sum(), 1.0))
+
+    def test_fast_method_unimodal(self):
+        """Test fast method on unimodal data."""
+        np.random.seed(42)
+        data = np.random.normal(0, 1, 1000)
+        trapezoids, weights = fit_trapezoids_fast(data, n_bins=50)
+
+        # Fast method should create multiple trapezoids for contiguous bins
+        self.assertGreaterEqual(len(trapezoids), 1)
+        # All trapezoids should be valid
+        for trapz in trapezoids:
+            self.assertLessEqual(trapz.a, trapz.b)
+            self.assertLessEqual(trapz.b, trapz.c)
+            self.assertLessEqual(trapz.c, trapz.d)
+
+    def test_fast_method_bimodal(self):
+        """Test fast method on bimodal data."""
+        np.random.seed(42)
+        data = np.concatenate([
+            np.random.normal(-3, 0.5, 500),
+            np.random.normal(3, 0.5, 500)
+        ])
+        trapezoids, weights = fit_trapezoids_fast(data, n_bins=50)
+
+        self.assertGreater(len(trapezoids), 0)
+        self.assertTrue(np.allclose(weights.sum(), 1.0))
+
+    def test_fast_method_equal_weights(self):
+        """Test that fast method uses equal weights."""
+        np.random.seed(42)
+        data = np.random.normal(0, 1, 500)
+        trapezoids, weights = fit_trapezoids_fast(data, n_bins=50)
+
+        # All weights should be equal (uniform distribution)
+        expected_weight = 1.0 / len(trapezoids)
+        self.assertTrue(np.allclose(weights, expected_weight))
+
+    def test_fast_method_edge_case_empty(self):
+        """Test fast method with empty data."""
+        data = np.array([])
+        trapezoids, weights = fit_trapezoids_fast(data, n_bins=50)
+
+        self.assertEqual(len(trapezoids), 0)
+        self.assertEqual(len(weights), 0)
+
+    def test_fast_method_single_value(self):
+        """Test fast method when all data is identical."""
+        data = np.ones(100) * 5.0
+        trapezoids, weights = fit_trapezoids_fast(data, n_bins=50)
+
+        self.assertGreaterEqual(len(trapezoids), 1)
+        # Trapezoid should be centered at the single value
+        trapz = trapezoids[0]
+        self.assertAlmostEqual(trapz.a, 5.0, places=1)
+        self.assertAlmostEqual(trapz.d, 5.0, places=1)
+
+
+class TestPerformanceComparison(unittest.TestCase):
+    """Performance benchmark comparing EM vs Fast methods."""
+
+    def test_performance_speedup_unimodal(self):
+        """Verify fast method is significantly faster on unimodal data."""
+        np.random.seed(42)
+        data = np.random.normal(0, 1, 1000)
+
+        # Time EM method
+        start_em = time.perf_counter()
+        em_result = TrapzMixtureModel(n_components=1).fit(data)
+        em_time = time.perf_counter() - start_em
+
+        # Time fast method
+        start_fast = time.perf_counter()
+        fit_trapezoids_fast(data, n_bins=50)
+        fast_time = time.perf_counter() - start_fast
+
+        # Fast should be significantly faster (at least 100x)
+        speedup = em_time / fast_time
+        self.assertGreater(speedup, 100)
+        # Print for informational purposes
+        print(f"\nUnimodal Speedup: {speedup:.1f}x (EM: {em_time:.4f}s, Fast: {fast_time:.6f}s)")
+
+    def test_performance_speedup_bimodal(self):
+        """Verify fast method is significantly faster on bimodal data."""
+        np.random.seed(42)
+        data = np.concatenate([
+            np.random.normal(-3, 0.5, 500),
+            np.random.normal(3, 0.5, 500)
+        ])
+
+        # Time EM method
+        start_em = time.perf_counter()
+        em_result = TrapzMixtureModel(n_components=2).fit(data)
+        em_time = time.perf_counter() - start_em
+
+        # Time fast method
+        start_fast = time.perf_counter()
+        fit_trapezoids_fast(data, n_bins=50)
+        fast_time = time.perf_counter() - start_fast
+
+        # Fast should be significantly faster (at least 100x)
+        speedup = em_time / fast_time
+        self.assertGreater(speedup, 100)
+        print(f"\nBimodal Speedup: {speedup:.1f}x (EM: {em_time:.4f}s, Fast: {fast_time:.6f}s)")
+
+    def test_performance_consistency_fast(self):
+        """Verify fast method produces consistent results."""
+        np.random.seed(42)
+        data = np.random.normal(0, 1, 500)
+
+        # Run twice
+        trapz1, weights1 = fit_trapezoids_fast(data, n_bins=50)
+        trapz2, weights2 = fit_trapezoids_fast(data, n_bins=50)
+
+        # Results should be identical (deterministic)
+        self.assertEqual(len(trapz1), len(trapz2))
+        for t1, t2 in zip(trapz1, trapz2):
+            self.assertEqual(t1.a, t2.a)
+            self.assertEqual(t1.b, t2.b)
+            self.assertEqual(t1.c, t2.c)
+            self.assertEqual(t1.d, t2.d)
+        self.assertTrue(np.allclose(weights1, weights2))
+
+    def test_fast_method_pdf_evaluation(self):
+        """Test that fast trapezoid PDFs evaluate correctly."""
+        np.random.seed(42)
+        data = np.random.normal(0, 1, 500)
+        trapezoids, _ = fit_trapezoids_fast(data, n_bins=50)
+
+        # Evaluate PDF at multiple points
+        x = np.linspace(data.min() - 1, data.max() + 1, 100)
+        for trapz in trapezoids:
+            pdf_vals = trapz_pdf_fast(x, trapz.a, trapz.b, trapz.c, trapz.d)
+            # PDF values should be non-negative
+            self.assertTrue(np.all(pdf_vals >= 0))
+            # PDF should be zero outside [a, d]
+            self.assertTrue(np.allclose(pdf_vals[x < trapz.a], 0))
+            self.assertTrue(np.allclose(pdf_vals[x > trapz.d], 0))
+
+    def test_component_count_em_vs_fast(self):
+        """Compare component counts between EM and fast methods."""
+        np.random.seed(42)
+        data = np.concatenate([
+            np.random.normal(-3, 0.5, 500),
+            np.random.normal(3, 0.5, 500)
+        ])
+
+        # EM method (auto-selects components)
+        model_em = TrapzMixtureModel(n_components=0, max_components=4).fit(data)
+        n_em = len(model_em.trapezoids_)
+
+        # Fast method
+        trapz_fast, _ = fit_trapezoids_fast(data, n_bins=50)
+        n_fast = len(trapz_fast)
+
+        print(f"\nComponent Count - EM: {n_em}, Fast: {n_fast}")
+        # Fast typically creates more (literal) trapezoids
+        self.assertGreaterEqual(n_fast, 1)
+        self.assertGreaterEqual(n_em, 1)
 
 
 if __name__ == '__main__':
