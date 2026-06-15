@@ -13,7 +13,8 @@ Key differences from trapz_math.py:
 """
 
 import numpy as np
-from .gauss_data import TrapezoidMembership
+import pandas as pd
+from .gauss_data import TrapezoidMembership, GaussianMixtureModel, FeatureModel, LabelModel
 
 
 def fit_trapezoids_fast(data_1d: np.ndarray, n_bins: int = 50) -> tuple[list[TrapezoidMembership], np.ndarray]:
@@ -132,3 +133,46 @@ def trapz_pdf_fast(x: np.ndarray, a: float, b: float, c: float, d: float) -> np.
         y = y / area
 
     return y
+
+
+def create_trapz_membership_dict_fast(
+    X: pd.DataFrame,
+    y: pd.Series,
+    top_n_var_names: list[str],
+) -> GaussianMixtureModel:
+    """Create trapezoid membership model using fast histogram method.
+
+    Analogous to create_trapz_membership_dict from trapz_math.py but uses
+    the fast histogram-based method instead of EM for rapid fitting.
+
+    Args:
+        X: DataFrame of features
+        y: Series of labels
+        top_n_var_names: List of feature names to use
+
+    Returns:
+        GaussianMixtureModel with TrapezoidMembership objects
+    """
+    feature_models = {}
+
+    for feature_name in top_n_var_names:
+        label_models = {}
+
+        for label_value in y.unique():
+            # Get data for this label
+            mask = y == label_value
+            feature_data = X[feature_name][mask].values
+
+            # Fit trapezoids using fast method
+            trapezoids, weights = fit_trapezoids_fast(feature_data, n_bins=50)
+
+            # Create label model
+            label_model = LabelModel(memberships=trapezoids)
+            label_models[label_value] = label_model
+
+        # Create feature model
+        feature_model = FeatureModel(label_models=label_models)
+        feature_models[feature_name] = feature_model
+
+    # Create and return the overall model
+    return GaussianMixtureModel(feature_models=feature_models)

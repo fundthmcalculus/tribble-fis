@@ -33,7 +33,8 @@ def load_data():
 
 
 def main():
-    start_time = time.time()
+    from sklearn.metrics import accuracy_score
+
     X, y = load_data()
 
     # Get the number of unique values in y
@@ -44,17 +45,54 @@ def main():
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42, stratify=y)
     print(f"Dataset split: Train={len(X_train)}, Test={len(X_test)}")
 
-    # Initialize and fit the TRAPEZOID Mixture Classifier
-    print("\nTraining trapezoid-based classifier...")
-    clf = MixtureOfGaussiansFuzzyClassifier(member_function="trap")
-    clf.fit(X_train, y_train)
+    print("\n" + "="*80)
+    print("TRAPEZOID FITTING COMPARISON: EM vs Fast Method")
+    print("="*80)
 
-    top_n_todo = clf.top_features_
-    trapz_memberships = clf.model_
+    # Train using EM method
+    print("\n--- Training with EM Method ---")
+    start_em = time.time()
+    clf_em = MixtureOfGaussiansFuzzyClassifier(member_function="trap", trapz_method="em")
+    clf_em.fit(X_train, y_train)
+    time_em = time.time() - start_em
 
-    # Create the actual fuzzy model and predict on test set
-    print("\nEvaluating trapezoid classifier on test set...")
-    report_figures_of_merit(X_test, y_test, trapz_memberships, n_unique, start_time, top_n_todo, label="test (trapezoid)")
+    y_test_pred_em = clf_em.predict(X_test)
+    acc_em = accuracy_score(y_test, y_test_pred_em)
+    print(f"EM Method: {time_em:.2f}s training, {acc_em:.4f} test accuracy")
+
+    # Train using Fast method
+    print("\n--- Training with Fast Histogram Method ---")
+    start_fast = time.time()
+    clf_fast = MixtureOfGaussiansFuzzyClassifier(member_function="trap", trapz_method="fast")
+    clf_fast.fit(X_train, y_train)
+    time_fast = time.time() - start_fast
+
+    y_test_pred_fast = clf_fast.predict(X_test)
+    acc_fast = accuracy_score(y_test, y_test_pred_fast)
+    print(f"Fast Method: {time_fast:.2f}s training, {acc_fast:.4f} test accuracy")
+
+    # Comparison
+    print("\n" + "="*80)
+    print("COMPARISON RESULTS")
+    print("="*80)
+    speedup = time_em / time_fast if time_fast > 0 else float('inf')
+    print(f"\nSpeedup: {speedup:.1f}x")
+    print(f"EM:   {time_em:.2f}s,  {acc_em:.4f} accuracy")
+    print(f"Fast: {time_fast:.2f}s,  {acc_fast:.4f} accuracy")
+
+    if abs(acc_em - acc_fast) < 0.0001:
+        print(f"\n✓ Fast method matches EM accuracy while being {speedup:.0f}x faster!")
+    else:
+        print(f"\nAccuracy difference: {abs(acc_em - acc_fast):.4f}")
+
+    # Use fast method for final reporting
+    print("\n" + "="*80)
+    print("DETAILED EVALUATION (Fast Method)")
+    print("="*80)
+    top_n_todo = clf_fast.top_features_
+    trapz_memberships = clf_fast.model_
+
+    report_figures_of_merit(X_test, y_test, trapz_memberships, n_unique, time.time(), top_n_todo, label="test (trapezoid-fast)")
 
     # Now, plot a set of distributions for the most-differentiating variables
     # plot_var_gauss_dist(X_train, y_train, top_n_todo, trapz_memberships)

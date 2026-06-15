@@ -38,17 +38,31 @@ def main():
 
     results = {}
 
-    for mf_type in ["gaussian", "trap"]:
+    # Test configurations: (name, member_function, trapz_method)
+    configs = [
+        ("Gaussian (EM)", "gaussian", None),
+        ("Trapezoid (EM)", "trap", "em"),
+        ("Trapezoid (Fast)", "trap", "fast"),
+    ]
+
+    for config_name, mf_type, trapz_method in configs:
         print(f"\n{'-' * 80}")
-        print(f"Training {mf_type.upper()} Classifier...")
+        print(f"Training {config_name}...")
         print(f"{'-' * 80}")
 
         start = time.time()
-        clf = MixtureOfGaussiansFuzzyClassifier(
-            member_function=mf_type,
-            top_n=10,  # Use only top 10 features for speed
-            n_gaussians=1 if mf_type == "gaussian" else 1,
-        )
+        if trapz_method is None:
+            clf = MixtureOfGaussiansFuzzyClassifier(
+                member_function=mf_type,
+                top_n=10,  # Use only top 10 features for speed
+                n_gaussians=1,
+            )
+        else:
+            clf = MixtureOfGaussiansFuzzyClassifier(
+                member_function=mf_type,
+                trapz_method=trapz_method,
+                top_n=10,  # Use only top 10 features for speed
+            )
         clf.fit(X_train, y_train)
         train_time = time.time() - start
 
@@ -66,7 +80,7 @@ def main():
         print(f"Test accuracy:  {test_acc:.4f}")
         print(f"Confusion matrix:\n{cm}")
 
-        results[mf_type] = {
+        results[config_name] = {
             "time": train_time,
             "train_acc": train_acc,
             "test_acc": test_acc,
@@ -75,33 +89,44 @@ def main():
 
     # Summary
     print("\n" + "=" * 80)
-    print("SUMMARY")
+    print("SUMMARY - Three Methods Comparison")
     print("=" * 80)
-    print(f"\n{'Metric':<25} {'Gaussian':>20} {'Trapezoid':>20}")
-    print("-" * 65)
-    print(f"{'Training Time (sec)':<25} {results['gaussian']['time']:>20.2f} {results['trap']['time']:>20.2f}")
-    print(f"{'Train Accuracy':<25} {results['gaussian']['train_acc']:>20.4f} {results['trap']['train_acc']:>20.4f}")
-    print(f"{'Test Accuracy':<25} {results['gaussian']['test_acc']:>20.4f} {results['trap']['test_acc']:>20.4f}")
+    print(f"\n{'Metric':<25} {'Gaussian':<20} {'Trap (EM)':<20} {'Trap (Fast)':<20}")
+    print("-" * 85)
+    print(f"{'Training Time (sec)':<25} {results['Gaussian (EM)']['time']:>19.3f} {results['Trapezoid (EM)']['time']:>19.3f} {results['Trapezoid (Fast)']['time']:>19.3f}")
+    print(f"{'Train Accuracy':<25} {results['Gaussian (EM)']['train_acc']:>19.4f} {results['Trapezoid (EM)']['train_acc']:>19.4f} {results['Trapezoid (Fast)']['train_acc']:>19.4f}")
+    print(f"{'Test Accuracy':<25} {results['Gaussian (EM)']['test_acc']:>19.4f} {results['Trapezoid (EM)']['test_acc']:>19.4f} {results['Trapezoid (Fast)']['test_acc']:>19.4f}")
 
-    # Winner
+    # Speedup calculation
+    em_time = results['Trapezoid (EM)']['time']
+    fast_time = results['Trapezoid (Fast)']['time']
+    speedup = em_time / fast_time if fast_time > 0 else float('inf')
+    print(f"\n{'Speedup (Fast vs EM)':<25} {'N/A':>19} {'N/A':>19} {f'{speedup:.1f}x':>19}")
+
+    # Winner analysis
     print("\n" + "=" * 80)
-    gauss_acc = results['gaussian']['test_acc']
-    trap_acc = results['trap']['test_acc']
+    print("PERFORMANCE ANALYSIS")
+    print("=" * 80)
 
-    if gauss_acc > trap_acc:
-        diff = (gauss_acc - trap_acc) * 100
-        print(f"✓ GAUSSIAN wins: {gauss_acc:.4f} vs {trap_acc:.4f} (+{diff:.2f}%)")
-    elif trap_acc > gauss_acc:
-        diff = (trap_acc - gauss_acc) * 100
-        print(f"✓ TRAPEZOID wins: {trap_acc:.4f} vs {gauss_acc:.4f} (+{diff:.2f}%)")
-    else:
-        print(f"✓ TIE at {gauss_acc:.4f} accuracy")
+    gauss_acc = results['Gaussian (EM)']['test_acc']
+    em_acc = results['Trapezoid (EM)']['test_acc']
+    fast_acc = results['Trapezoid (Fast)']['test_acc']
 
-    print("\nInterpretation:")
-    print("• Gaussian: Sharp peaks → precise feature discrimination → better for complex tasks")
-    print("• Trapezoid: Broader regions → more interpretable → better for simple/plateau data")
-    print("• Darwin (450 handwriting features): Gaussian expected to win")
-    print("=" * 80 + "\n")
+    print(f"\nAccuracy Comparison:")
+    print(f"  Gaussian:       {gauss_acc:.4f}")
+    print(f"  Trapezoid (EM): {em_acc:.4f}")
+    print(f"  Trapezoid (Fast): {fast_acc:.4f}")
+
+    print(f"\nSpeed Comparison:")
+    print(f"  Gaussian:       {results['Gaussian (EM)']['time']:.3f}s")
+    print(f"  Trapezoid (EM): {results['Trapezoid (EM)']['time']:.3f}s")
+    print(f"  Trapezoid (Fast): {results['Trapezoid (Fast)']['time']:.3f}s")
+
+    print(f"\nKey Finding:")
+    print(f"  Fast trapezoid is {speedup:.0f}x faster than EM trapezoid")
+    print(f"  Accuracy difference (Fast vs EM): {abs(fast_acc - em_acc):.4f}")
+
+    print("\n" + "=" * 80 + "\n")
 
 
 if __name__ == "__main__":

@@ -109,48 +109,67 @@ def main():
         clf_gauss, X_train, X_test, y_train, y_test, "Gaussian"
     )
 
-    # Train Trapezoid classifier
-    clf_trapz = MixtureOfGaussiansFuzzyClassifier(member_function="trap", top_n=10)
-    results_trapz = evaluate_classifier(
-        clf_trapz, X_train, X_test, y_train, y_test, "Trapezoid"
+    # Train Trapezoid (EM) classifier
+    clf_trapz_em = MixtureOfGaussiansFuzzyClassifier(member_function="trap", trapz_method="em", top_n=10)
+    results_trapz_em = evaluate_classifier(
+        clf_trapz_em, X_train, X_test, y_train, y_test, "Trapezoid (EM)"
+    )
+
+    # Train Trapezoid (Fast) classifier
+    clf_trapz_fast = MixtureOfGaussiansFuzzyClassifier(member_function="trap", trapz_method="fast", top_n=10)
+    results_trapz_fast = evaluate_classifier(
+        clf_trapz_fast, X_train, X_test, y_train, y_test, "Trapezoid (Fast)"
     )
 
     # Comparison
     print("\n" + "=" * 80)
-    print("COMPARISON SUMMARY")
+    print("COMPARISON SUMMARY - Three Methods")
     print("=" * 80)
 
-    print(f"\n{'Metric':<30} {'Gaussian':>20} {'Trapezoid':>20}")
-    print("-" * 70)
-    print(f"{'Training Time (seconds)':<30} {results_gauss['train_time']:>20.2f} {results_trapz['train_time']:>20.2f}")
-    print(f"{'Training Accuracy':<30} {results_gauss['train_acc']:>20.4f} {results_trapz['train_acc']:>20.4f}")
-    print(f"{'Test Accuracy':<30} {results_gauss['test_acc']:>20.4f} {results_trapz['test_acc']:>20.4f}")
+    print(f"\n{'Metric':<30} {'Gaussian':>20} {'Trap (EM)':>20} {'Trap (Fast)':>20}")
+    print("-" * 90)
+    print(f"{'Training Time (seconds)':<30} {results_gauss['train_time']:>20.2f} {results_trapz_em['train_time']:>20.2f} {results_trapz_fast['train_time']:>20.2f}")
+    print(f"{'Training Accuracy':<30} {results_gauss['train_acc']:>20.4f} {results_trapz_em['train_acc']:>20.4f} {results_trapz_fast['train_acc']:>20.4f}")
+    print(f"{'Test Accuracy':<30} {results_gauss['test_acc']:>20.4f} {results_trapz_em['test_acc']:>20.4f} {results_trapz_fast['test_acc']:>20.4f}")
 
     model_gauss = results_gauss['model']
-    model_trapz = results_trapz['model']
-    print(f"\n{'Model Complexity':<30} {'Gaussian':>20} {'Trapezoid':>20}")
-    print("-" * 70)
-    print(f"{'Features Selected':<30} {len(results_gauss['top_features']):>20} {len(results_trapz['top_features']):>20}")
-    print(f"{'Total MFs':<30} {model_gauss.n_membership_functions:>20} {model_trapz.n_membership_functions:>20}")
-    print(f"{'Possible Rules':<30} {model_gauss.possible_rules:>20.0f} {model_trapz.possible_rules:>20.0f}")
+    model_trapz_em = results_trapz_em['model']
+    model_trapz_fast = results_trapz_fast['model']
+    print(f"\n{'Model Complexity':<30} {'Gaussian':>20} {'Trap (EM)':>20} {'Trap (Fast)':>20}")
+    print("-" * 90)
+    print(f"{'Features Selected':<30} {len(results_gauss['top_features']):>20} {len(results_trapz_em['top_features']):>20} {len(results_trapz_fast['top_features']):>20}")
+    print(f"{'Total MFs':<30} {model_gauss.n_membership_functions:>20} {model_trapz_em.n_membership_functions:>20} {model_trapz_fast.n_membership_functions:>20}")
+
+    # Speedup analysis
+    print(f"\n{'Performance Metrics':<30} {'Gaussian':>20} {'Trap (EM)':>20} {'Trap (Fast)':>20}")
+    print("-" * 90)
+    speedup = results_trapz_em['train_time'] / results_trapz_fast['train_time'] if results_trapz_fast['train_time'] > 0 else float('inf')
+    print(f"{'Speedup (Fast vs EM)':<30} {'N/A':>20} {'N/A':>20} {f'{speedup:.1f}x':>20}")
 
     # Winner
     print("\n" + "=" * 80)
-    if results_gauss['test_acc'] > results_trapz['test_acc']:
-        acc_diff = results_gauss['test_acc'] - results_trapz['test_acc']
-        print(f"✓ GAUSSIAN wins by {acc_diff:.4f} ({acc_diff*100:.2f}%)")
-    elif results_trapz['test_acc'] > results_gauss['test_acc']:
-        acc_diff = results_trapz['test_acc'] - results_gauss['test_acc']
-        print(f"✓ TRAPEZOID wins by {acc_diff:.4f} ({acc_diff*100:.2f}%)")
-    else:
-        print(f"✓ TIE: Both achieve {results_gauss['test_acc']:.4f} accuracy")
-
-    print("\nKey Takeaways:")
-    print("- Gaussian MFs: Sharp peaks, excellent classification performance")
-    print("- Trapezoid MFs: Broader regions, better for plateau-like distributions")
-    print("- For Darwin (complex handwriting), Gaussian likely superior")
-    print("- Trapezoids offer trade-off: interpretability vs. accuracy")
+    print("ACCURACY COMPARISON")
     print("=" * 80)
+    results_all = [
+        ("Gaussian", results_gauss['test_acc'], results_gauss['train_time']),
+        ("Trapezoid (EM)", results_trapz_em['test_acc'], results_trapz_em['train_time']),
+        ("Trapezoid (Fast)", results_trapz_fast['test_acc'], results_trapz_fast['train_time']),
+    ]
+
+    best_acc = max(r[1] for r in results_all)
+    for name, acc, train_time in results_all:
+        marker = "✓ BEST" if acc == best_acc else ""
+        print(f"{name:<20} Accuracy: {acc:.4f}  Time: {train_time:>7.2f}s  {marker}")
+
+    print("\nKey Finding:")
+    if abs(results_trapz_fast['test_acc'] - results_trapz_em['test_acc']) < 0.0001:
+        print(f"  → Fast trapezoid matches EM accuracy ({results_trapz_fast['test_acc']:.4f})")
+        print(f"  → But trains {speedup:.0f}x faster!")
+    else:
+        acc_diff = abs(results_trapz_fast['test_acc'] - results_trapz_em['test_acc'])
+        print(f"  → Accuracy difference: {acc_diff:.4f}")
+
+    print("\n" + "=" * 80)
 
 
 if __name__ == "__main__":
