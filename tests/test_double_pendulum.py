@@ -1,10 +1,10 @@
 """
-Test double pendulum simulation with Gaussian mixture regressor prediction.
+Test double pendulum simulation with exponential integrator + FIS prediction.
 
-Simulates double pendulum using Lagrangian mechanics, generates datasets
-with random initial conditions, trains fuzzy regressors to predict state
-transitions, and evaluates prediction accuracy on continuous outputs.
-Includes MIMO full-state prediction and iterative rollout with GIF animation.
+Uses exponential integration to separate linear from nonlinear dynamics.
+The linear component is integrated exactly, while the nonlinear residual
+is learned via fuzzy inference system (FIS). Combines exact linear dynamics
+with learned nonlinear corrections for improved long-term accuracy.
 """
 import sys
 import time
@@ -17,16 +17,197 @@ import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.linalg import expm
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
-from tests.ode_helpers import load_and_prepare_data, train_and_evaluate_single_step, set_axes_style
-from tests.test_fuzzy_ode import initialize_model
+from tests.ode_helpers import load_and_prepare_data, train_and_evaluate_single_step, set_axes_style, angles_to_xy
+from tests.test_fuzzy_ode import initialize_model, DoublePendulum
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from tribblefis.gaussian_regressor import MimoGaussianPredictor
 
 FeatureStep = namedtuple('FeatureStep', ['step_name', 'step_offset', 'col_name'])
+
+
+def linearized_jacobian(pendulum: DoublePendulum, state: np.ndarray) -> np.ndarray:
+    """
+    Compute the Jacobian (first-order linearization) of the double pendulum.
+
+    Uses small-angle approximation around equilibrium: sin(x) ≈ x, cos(x) ≈ 1
+    This gives the dominant linear restoring forces and coupling.
+
+    Returns the 4x4 Jacobian matrix for the system [θ₁, ω₁, θ₂, ω₂].
+    """
+    g = pendulum.g
+    l1 = pendulum.l1
+    l2 = pendulum.l2
+    m1 = pendulum.m1
+    m2 = pendulum.m2
+
+    J = np.zeros((4, 4))
+
+    # Kinematic terms: dθ/dt = ω
+    J[0, 1] = 1.0
+    J[2, 3] = 1.0
+
+    # Dynamic terms under small-angle approximation
+    # α₁ ≈ -g(2m₁+m₂)/(l₁(2m₁+m₂)) * θ₁ - gm₂/(l₁(2m₁+m₂)) * θ₂
+    # α₂ ≈ -g(m₁+m₂)/(l₂(2m₁+m₂)) * θ₂ + g(m₁+m₂)/(l₂(2m₁+m₂)) * θ₁
+
+    denom1 = l1 * (2*m1 + m2)
+    denom2 = l2 * (2*m1 + m2)
+
+    J[1, 0] = -g * (2*m1 + m2) / denom1      # ∂α₁/∂θ₁
+    J[1, 2] = -g * m2 / denom1              # ∂α₁/∂θ₂
+
+    J[3, 0] = g * (m1 + m2) / denom2        # ∂α₂/∂θ₁
+    J[3, 2] = -g * (m1 + m2) / denom2       # ∂α₂/∂θ₂
+
+    return J
+
+
+def exponential_step(pendulum: DoublePendulum, state: np.ndarray, dt: float) -> np.ndarray:
+    """
+    Integrate one step using exponential integrator on linearized dynamics.
+
+    Computes: state_new ≈ exp(J*dt) * state
+    where J is the Jacobian of the full nonlinear system at the current state.
+    """
+    J = linearized_jacobian(pendulum, state)
+    exp_J_dt = expm(J * dt)
+    return exp_J_dt @ state
+
+
+def compute_nonlinear_residual(
+    pendulum: DoublePendulum, state: np.ndarray, full_derivative: np.ndarray, dt: float
+) -> np.ndarray:
+    """
+    Extract the nonlinear residual from full dynamics.
+
+    nonlinear_residual = (full_derivative) - (linear_part)
+    where linear_part is approximated by (exp_J*state - state) / dt
+
+    Args:
+        pendulum: The ODE system
+        state: Current state vector
+        full_derivative: Full time derivative from equations_of_motion
+        dt: Timestep
+
+    Returns:
+        The nonlinear residual vector
+    """
+    # Linearized step
+    J = linearized_jacobian(pendulum, state)
+    linear_derivative = J @ state
+
+    # Nonlinear residual is the difference
+    return full_derivative - linear_derivative
+
+
+def compute_total_energy(pendulum: DoublePendulum, state: np.ndarray) -> float:
+    """
+    Compute total mechanical energy of the double pendulum.
+
+    E_total = KE1 + KE2 + PE1 + PE2
+
+    Args:
+        pendulum: The ODE system with mass and length parameters
+        state: [θ₁, ω₁, θ₂, ω₂]
+
+    Returns:
+        Total mechanical energy (in reference frame where hanging down is PE=0)
+    """
+    theta1, omega1, theta2, omega2 = state
+    g = pendulum.g
+    m1 = pendulum.m1
+    m2 = pendulum.m2
+    l1 = pendulum.l1
+    l2 = pendulum.l2
+
+    # Kinetic energies
+    ke1 = 0.5 * m1 * (l1 * omega1) ** 2
+    ke2 = 0.5 * m2 * (l2 * omega2) ** 2
+
+    # Potential energies (taking hanging down as zero reference)
+    # Height of mass 1: h1 = -l1*cos(θ1)
+    # Height of mass 2: h2 = -l1*cos(θ1) - l2*cos(θ2)
+    pe1 = m1 * g * l1 * (1 - np.cos(theta1))
+    pe2 = m2 * g * (l1 * (1 - np.cos(theta1)) + l2 * (1 - np.cos(theta2)))
+
+    return ke1 + ke2 + pe1 + pe2
+
+
+def enforce_energy_conservation(
+    pendulum: DoublePendulum,
+    state_current: np.ndarray,
+    state_predicted: np.ndarray,
+    allow_dissipation: bool = True,
+) -> tuple[np.ndarray, float]:
+    """
+    Enforce energy conservation by scaling velocities if necessary.
+
+    If predicted energy exceeds current energy (physically impossible),
+    scale angular velocities to match the initial energy.
+    If allow_dissipation=False, scale to exactly conserve energy.
+
+    Args:
+        pendulum: The ODE system
+        state_current: Current state [θ₁, ω₁, θ₂, ω₂]
+        state_predicted: Predicted state [θ₁, ω₁, θ₂, ω₂]
+        allow_dissipation: If True, only scale down if energy increased;
+                          if False, always conserve energy exactly
+
+    Returns:
+        (corrected_state, energy_ratio): Corrected state and E_pred/E_current ratio
+    """
+    energy_current = compute_total_energy(pendulum, state_current)
+    energy_predicted = compute_total_energy(pendulum, state_predicted)
+
+    # If energy is conserved or dissipated, return as-is
+    if energy_predicted <= energy_current and allow_dissipation:
+        return state_predicted, energy_predicted / max(energy_current, 1e-10)
+
+    # Energy increased (unphysical) - scale velocities
+    # Assume potential energy components are correct (angles are right)
+    theta1_pred, omega1_pred, theta2_pred, omega2_pred = state_predicted
+    g = pendulum.g
+    m1 = pendulum.m1
+    m2 = pendulum.m2
+    l1 = pendulum.l1
+    l2 = pendulum.l2
+
+    # Compute PE from predicted angles
+    pe_predicted = (
+        m1 * g * l1 * (1 - np.cos(theta1_pred)) +
+        m2 * g * (l1 * (1 - np.cos(theta1_pred)) + l2 * (1 - np.cos(theta2_pred)))
+    )
+
+    # Available KE = E_current - PE_predicted
+    available_ke = energy_current - pe_predicted
+
+    if available_ke < 0:
+        # Even with zero velocities, PE exceeds initial energy
+        # This means the pendulum climbed higher than it should
+        # Reset to predicted angles but zero velocities
+        return np.array([theta1_pred, 0.0, theta2_pred, 0.0]), 0.0
+
+    # Scale velocities to match available kinetic energy
+    # Total KE_current = 0.5 * m1 * (l1*ω1)² + 0.5 * m2 * (l2*ω2)²
+    ke_predicted = 0.5 * m1 * (l1 * omega1_pred) ** 2 + 0.5 * m2 * (l2 * omega2_pred) ** 2
+
+    if ke_predicted > 1e-10:
+        scale_factor = np.sqrt(available_ke / ke_predicted)
+        omega1_corrected = omega1_pred * scale_factor
+        omega2_corrected = omega2_pred * scale_factor
+    else:
+        omega1_corrected = 0.0
+        omega2_corrected = 0.0
+
+    state_corrected = np.array([theta1_pred, omega1_corrected, theta2_pred, omega2_corrected])
+    energy_corrected = compute_total_energy(pendulum, state_corrected)
+
+    return state_corrected, energy_corrected / max(energy_current, 1e-10)
 
 
 @contextmanager
@@ -70,13 +251,66 @@ def mimo_input_feature_names(window_size: int, feature_names: list[str] | None =
     ]
 
 
+def load_and_prepare_nonlinear_residual_data(
+    pendulum: DoublePendulum, trajectories: list[pd.DataFrame], dt: float = 0.01
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Extract nonlinear residuals from trajectories for exponential integrator approach.
+
+    For each state transition, compute:
+    - Input: current state [θ₁, ω₁, θ₂, ω₂]
+    - Output: nonlinear residual in ACCELERATIONS only [α₁, α₂]
+              (kinematic equations are already linear, so we skip them)
+
+    This trains the FIS only on the nonlinear component of accelerations,
+    while linear dynamics are handled exactly by exponential integration.
+
+    Args:
+        pendulum: DoublePendulum instance
+        trajectories: List of state DataFrames with columns matching state_labels
+        dt: Time step between samples
+
+    Returns:
+        (X_residual, y_residual): State and acceleration nonlinear residuals
+    """
+    print(f"Extracting nonlinear residuals from {len(trajectories)} trajectories...")
+
+    all_X = []
+    all_y = []
+
+    for df in trajectories:
+        # Get state values: [theta_1, omega_1, theta_2, omega_2]
+        states = df[['theta_1', 'omega_1', 'theta_2', 'omega_2']].values
+
+        # Compute full derivatives and extract nonlinear residuals
+        for i in range(len(states) - 1):
+            state = states[i]
+            full_derivative = np.array(pendulum.equations_of_motion(state, i * dt))
+
+            # Compute nonlinear residual
+            residual = compute_nonlinear_residual(pendulum, state, full_derivative, dt)
+
+            # Only keep acceleration components (indices 1 and 3)
+            # Kinematic equations are already linear, so residual is zero
+            accel_residual = residual[[1, 3]]  # [d_alpha_1, d_alpha_2]
+
+            all_X.append(state)
+            all_y.append(accel_residual)
+
+    X_residual = np.vstack(all_X)
+    y_residual = np.vstack(all_y)
+
+    print(f"Nonlinear residual data (accelerations only): X={X_residual.shape}, y={y_residual.shape}")
+    return X_residual, y_residual
+
+
 def load_and_prepare_mimo_data(trajectories: list[pd.DataFrame], window_size: int = 1):
     """
     Load all simulation files and prepare data for MIMO full-state prediction.
 
-    For window_size=1: input is full state at time t, output is full state at t+1.
+    For window_size=1: input is full state at time t, output is state delta (t+1) - (t).
     For window_size>1: input is the flattened states at [t-window+1, ..., t],
-                       output is the full state at t+1.
+                       output is the state delta (t+1) - (t).
     """
     print(f"Loading {len(trajectories)} simulation files for MIMO (window={window_size})...")
 
@@ -84,11 +318,16 @@ def load_and_prepare_mimo_data(trajectories: list[pd.DataFrame], window_size: in
     all_y = []
 
     for df in trajectories:
-        y = np.diff(df[OUTPUT_FEATURES].iloc[(window_size-1):].values, axis=0)
+        # Output is always the state difference (next - current)
+        y = np.diff(df[OUTPUT_FEATURES].values, axis=0)
+
         if window_size == 1:
-            X = df[INPUT_FEATURES].iloc[:-(window_size-1)].values
+            # Input is current state, output is next state
+            X = df[INPUT_FEATURES].iloc[:-1].values
         else:
+            # Input is windowed history
             X = get_mimo_df(df, window_size)
+
         all_X.append(X)
         all_y.append(y)
 
@@ -106,6 +345,54 @@ def get_mimo_df(df: pd.DataFrame, window_size: int) -> pd.DataFrame:
     for f_step in feature_steps:
         X[f_step.step_name] = df[f_step.col_name].iloc[f_step.step_offset:-(window_size - f_step.step_offset)].values
     return X
+
+
+def train_and_evaluate_exp_integrator(
+    pendulum: DoublePendulum, X_train, y_train, X_test, y_test
+):
+    """
+    Train a regressor on nonlinear residuals (exponential integrator approach).
+
+    The FIS is trained to predict only the nonlinear acceleration components,
+    while linear dynamics are handled exactly via exponential integration.
+    """
+    print("\n" + "="*60)
+    print("EXPONENTIAL INTEGRATOR + FIS MODEL")
+    print("="*60)
+
+    state_cols = ['theta_1', 'omega_1', 'theta_2', 'omega_2']
+    residual_cols = ['d_alpha_1', 'd_alpha_2']  # Only accelerations (kinematic is already linear)
+
+    regressor = MimoGaussianPredictor(
+        n_output_buckets=N_BINS, tsk_order="1st", optimize_coefficients=True,
+        random_state=42
+    )
+
+    X_train_df = pd.DataFrame(X_train, columns=state_cols)
+    y_train_df = pd.DataFrame(y_train, columns=residual_cols)
+    X_test_df = pd.DataFrame(X_test, columns=state_cols)
+    y_test_df = pd.DataFrame(y_test, columns=residual_cols)
+
+    regressor.fit(X_train_df, y_train_df)
+    y_pred_df = regressor.predict(X_test_df)
+
+    metrics = {}
+    print("\nNonlinear acceleration residual prediction metrics:")
+    for col in residual_cols:
+        mse = mean_squared_error(y_test_df[col], y_pred_df[col])
+        mae = mean_absolute_error(y_test_df[col], y_pred_df[col])
+        r2 = r2_score(y_test_df[col], y_pred_df[col])
+        metrics[col] = {'mse': mse, 'mae': mae, 'rmse': np.sqrt(mse), 'r2': r2}
+        print(f"  {col:12s}: R2={r2:.4f}  RMSE={np.sqrt(mse):.6f}  MAE={mae:.6f}")
+
+    return {
+        'model_type': 'exp_integrator',
+        'pendulum': pendulum,
+        'regressor': regressor,
+        'metrics': metrics,
+        'y_test': y_test_df,
+        'y_pred': y_pred_df,
+    }
 
 
 def train_and_evaluate_mimo(X_train, y_train, X_test, y_test, window_size: int = 1):
@@ -149,6 +436,100 @@ def train_and_evaluate_mimo(X_train, y_train, X_test, y_test, window_size: int =
     }
 
 
+def run_iterative_exp_integrator_prediction(
+    pendulum: DoublePendulum,
+    regressor,
+    initial_state: np.ndarray,
+    n_steps: int,
+    dt: float = 0.01,
+    verbose: bool = True,
+    enforce_energy: bool = True,
+) -> pd.DataFrame:
+    """
+    Iteratively predict using exponential integrator + FIS + energy conservation.
+
+    Combines:
+    1. Exact linear integration via exponential integrator
+    2. Learned nonlinear corrections to accelerations from FIS
+    3. Energy conservation enforcement (prevents unphysical energy increases)
+
+    Args:
+        pendulum: The ODE system
+        regressor: Trained regressor predicting acceleration nonlinear residuals
+        initial_state: Initial state [θ₁, ω₁, θ₂, ω₂]
+        n_steps: Number of integration steps
+        dt: Time step
+        verbose: Print warnings about divergence
+        enforce_energy: If True, enforce energy conservation by scaling velocities
+
+    Returns:
+        DataFrame with shape (n_steps, 4) containing full state trajectory
+    """
+    state_labels = ['theta_1', 'omega_1', 'theta_2', 'omega_2']
+    states = [initial_state.copy()]
+    diverged_at = None
+    energy_corrections = []
+
+    for step in range(n_steps):
+        if diverged_at:
+            # Pad with NaN after divergence
+            states.append(np.full(4, np.nan))
+            energy_corrections.append(np.nan)
+        else:
+            current_state = states[-1]
+
+            # Exponential integrator step (linear part)
+            J = linearized_jacobian(pendulum, current_state)
+            exp_J_dt = expm(J * dt)
+            linear_prediction = exp_J_dt @ current_state
+
+            # FIS prediction of nonlinear acceleration residuals
+            state_df = pd.DataFrame([current_state], columns=state_labels)
+            accel_residual_pred = regressor.predict(state_df).values.flatten()  # [d_alpha_1, d_alpha_2]
+
+            # Apply corrections only to acceleration components (indices 1, 3)
+            new_state = linear_prediction.copy()
+            new_state[1] += accel_residual_pred[0] * dt  # Correct α₁
+            new_state[3] += accel_residual_pred[1] * dt  # Correct α₂
+
+            # Enforce energy conservation if enabled
+            if enforce_energy:
+                new_state, energy_ratio = enforce_energy_conservation(
+                    pendulum, current_state, new_state, allow_dissipation=True
+                )
+                energy_corrections.append(energy_ratio)
+            else:
+                energy_corrections.append(1.0)
+
+            # Check for divergence
+            if np.any(np.isnan(new_state)) or np.any(np.abs(new_state) > 1e6):
+                if diverged_at is None:
+                    diverged_at = step + 1
+                    if verbose:
+                        print(f"  Warning: prediction diverged at step {diverged_at}")
+            else:
+                states.append(new_state)
+
+    if diverged_at is not None and verbose:
+        print(f"  Valid prediction steps: {diverged_at} / {n_steps}")
+
+    # Pad energy_corrections to match states length
+    # First state has no correction applied, so prepend 1.0
+    energy_corrections_padded = [1.0] + energy_corrections
+
+    # Add energy conservation statistics
+    valid_ratios = np.array(energy_corrections_padded[1:diverged_at if diverged_at else len(energy_corrections_padded)])
+    valid_ratios = valid_ratios[~np.isnan(valid_ratios)]
+    if len(valid_ratios) > 0 and verbose:
+        energy_increased = np.sum(valid_ratios > 1.001)  # Allow 0.1% tolerance
+        if energy_increased > 0:
+            print(f"  Energy conservation: {energy_increased} steps had unphysical energy increase (corrected)")
+
+    df = pd.DataFrame(states, columns=state_labels)
+    df['energy_ratio'] = energy_corrections_padded[:len(states)]  # Add energy ratio for reference
+    return df
+
+
 def run_iterative_prediction(
     regressor, initial_window_df: pd.DataFrame, n_steps,
     window_size: int = 1,
@@ -182,7 +563,7 @@ def run_iterative_prediction(
             running_state = pd.concat([running_state, pd.DataFrame([np.full(running_state.shape[1],np.nan)], columns=running_state.columns)],
                                       ignore_index=True)
         else:
-            # TODO - Predict DELTAS so we can scale to preserve energy!
+            # Predict DELTAS so we can scale to preserve energy!
             next_state_delta_df = regressor.predict(running_state[-window_size:])
             if window_size == 1:
                 new_state = running_state.iloc[-1,:] + next_state_delta_df
@@ -238,11 +619,12 @@ def create_pendulum_animation(actual_df, predicted_df, output_path, dt=0.01, max
     # Fill NaN in predicted frames with last valid value so the animation doesn't break
     pred_frames = pred_frames.copy().ffill().fillna(0.0)
 
+    l1, l2 = 1.0, 1.0  # default lengths
     x1_act, y1_act, x2_act, y2_act = angles_to_xy(
-        actual_frames['theta_1'].values, actual_frames['theta_2'].values
+        actual_frames['theta_1'].values, actual_frames['theta_2'].values, l1, l2
     )
     x1_pred, y1_pred, x2_pred, y2_pred = angles_to_xy(
-        pred_frames['theta_1'].values, pred_frames['theta_2'].values
+        pred_frames['theta_1'].values, pred_frames['theta_2'].values, l1, l2
     )
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
@@ -397,26 +779,33 @@ def plot_mimo_state_trajectories(actual_df, predicted_df, dt=0.01):
 def test_double_pendulum_fuzzy_prediction():
     """
     Main test: simulate double pendulum and train fuzzy regression models.
-    Includes MIMO full-state prediction and iterative rollout with GIF animation.
+    Includes exponential integrator approach + MIMO full-state prediction
+    and iterative rollout with GIF animation.
     """
 
     # Step 1: Generate simulation data
     with time_this("gen-sim-data"):
-        # 1) Create the simulation data for various initial conditions.
         train_results, test_results = initialize_model()
+        pendulum = train_results.model
 
-    # Step 2: Single-step prediction (theta_2 only)
+    # Step 2: Exponential integrator + FIS (nonlinear residual)
     print("\n" + "#"*60)
-    print("# STEP 2: Single-Step Prediction Model")
+    print("# STEP 2: Exponential Integrator + FIS Model")
     print("#"*60)
-    with time_this('train-single'):
-        X_single_train, y_single_train = load_and_prepare_data(train_results.trajectories,INPUT_FEATURES, OUTPUT_FEATURES, window_size=1)
-        X_single_test, y_single_test = load_and_prepare_data(test_results.trajectories,INPUT_FEATURES, OUTPUT_FEATURES, window_size=1)
-        results_single = train_and_evaluate_single_step(N_BINS,OUTPUT_FEATURES, X_single_train, y_single_train, X_single_test, y_single_test)
+    with time_this('train-exp-integrator'):
+        X_exp_train, y_exp_train = load_and_prepare_nonlinear_residual_data(
+            pendulum, train_results.trajectories, dt=train_results.params.dt
+        )
+        X_exp_test, y_exp_test = load_and_prepare_nonlinear_residual_data(
+            pendulum, test_results.trajectories, dt=test_results.params.dt
+        )
+        results_exp = train_and_evaluate_exp_integrator(
+            pendulum, X_exp_train, y_exp_train, X_exp_test, y_exp_test
+        )
 
-    # Step 4: MIMO full-state prediction
+    # Step 3: MIMO full-state prediction
     print("\n" + "#"*60)
-    print(f"# STEP 4: MIMO Full-State Prediction Model (window={MIMO_WINDOW_SIZE})")
+    print(f"# STEP 3: MIMO Full-State Prediction Model (window={MIMO_WINDOW_SIZE})")
     print("#"*60)
     with time_this('train-mimo'):
         X_mimo_train, y_mimo_train = load_and_prepare_mimo_data(train_results.trajectories, window_size=MIMO_WINDOW_SIZE)
@@ -425,29 +814,33 @@ def test_double_pendulum_fuzzy_prediction():
             X_mimo_train, y_mimo_train, X_mimo_test, y_mimo_test, window_size=MIMO_WINDOW_SIZE
         )
 
-    # Step 5: Iterative rollout from initial conditions
+    # Step 4: Iterative rollout using exponential integrator with energy conservation
     print("\n" + "#"*60)
-    print("# STEP 5: Iterative Rollout from Initial Conditions")
+    print("# STEP 4: Iterative Rollout - Exponential Integrator + Energy Conservation")
     print("#"*60)
-    # Seed window: first MIMO_WINDOW_SIZE rows; predict everything after the seed.
-    tst_df = test_trajectories[0]
-    n_steps = len(tst_df) - MIMO_WINDOW_SIZE
+    tst_df = test_results.trajectories[0]
+    initial_state = tst_df[['theta_1', 'omega_1', 'theta_2', 'omega_2']].iloc[0].values
+    n_steps = len(tst_df) - 1
 
-    print(f"Seed window ({MIMO_WINDOW_SIZE} rows)")
-    print(f"Running {n_steps} iterative prediction steps...")
+    print(f"Running {n_steps} iterative prediction steps with energy conservation...")
 
-    with time_this('iterative-rollout'):
-        predicted_trajectory = run_iterative_prediction(
-            results_mimo['regressor'], tst_df, n_steps, window_size=MIMO_WINDOW_SIZE
+    with time_this('iterative-exp-integrator'):
+        predicted_traj_with_energy = run_iterative_exp_integrator_prediction(
+            pendulum, results_exp['regressor'], initial_state, n_steps,
+            dt=test_results.params.dt, verbose=True, enforce_energy=True
         )
 
-    # Align actual to start at the last row of the seed window.
-    actual_trajectory = tst_df[OUTPUT_FEATURES].iloc[MIMO_WINDOW_SIZE - 1:].reset_index(drop=True)
-    n = min(len(actual_trajectory), len(predicted_trajectory))
+    # Extract energy ratio for analysis before removing it
+    energy_ratios = predicted_traj_with_energy['energy_ratio'].values
+    predicted_trajectory_exp = predicted_traj_with_energy[['theta_1', 'omega_1', 'theta_2', 'omega_2']]
+
+    actual_trajectory = tst_df[['theta_1', 'omega_1', 'theta_2', 'omega_2']].reset_index(drop=True)
+    n = min(len(actual_trajectory), len(predicted_trajectory_exp))
 
     def rollout_metrics(label, predicted, actual, n):
         print(f"\n{label}:")
-        for col in OUTPUT_FEATURES:
+        state_cols = ['theta_1', 'omega_1', 'theta_2', 'omega_2']
+        for col in state_cols:
             act = actual[col].values[:n]
             pred = predicted[col].values[:n]
             valid = ~np.isnan(pred)
@@ -458,42 +851,56 @@ def test_double_pendulum_fuzzy_prediction():
             r2 = r2_score(act[valid], pred[valid])
             print(f"  {col:10s}: MAE={mae:.4f}  R2={r2:.4f}  (valid={valid.sum()}/{n})")
 
-    rollout_metrics("Iterative Rollout Metrics", predicted_trajectory, actual_trajectory, n)
+    rollout_metrics("Exponential Integrator + Energy Conservation Rollout", predicted_trajectory_exp, actual_trajectory, n)
 
-    # Step 6: Summary
+    # Energy conservation analysis
+    valid_energy = energy_ratios[~np.isnan(energy_ratios)]
+    if len(valid_energy) > 0:
+        print(f"\nEnergy Conservation Statistics:")
+        print(f"  Initial energy: {compute_total_energy(pendulum, initial_state):.4f}")
+        print(f"  Min energy ratio (E_pred/E_init): {np.min(valid_energy):.4f}")
+        print(f"  Max energy ratio: {np.max(valid_energy):.4f}")
+        print(f"  Mean energy ratio: {np.mean(valid_energy):.4f}")
+        energy_increases = np.sum(energy_ratios[~np.isnan(energy_ratios)] > 1.001)
+        print(f"  Steps with unphysical energy increase (>0.1%): {energy_increases}")
+
+    # Step 5: Summary
     print("\n" + "="*60)
     print("EVALUATION SUMMARY")
     print("="*60)
-    print("\nSingle-Step Model:")
-    print(f"  R2:   {results_single['r2']:.6f}")
-    print(f"  RMSE: {results_single['rmse']:.6f}")
-    print(f"  MAE:  {results_single['mae']:.6f}")
 
-    print("\nMIMO Model (1-step):")
-    for col in OUTPUT_FEATURES:
+    print("\nExponential Integrator + FIS Model (nonlinear acceleration residual):")
+    residual_cols = ['d_alpha_1', 'd_alpha_2']
+    for col in residual_cols:
+        m = results_exp['metrics'][col]
+        print(f"  {col:12s}: R2={m['r2']:.4f}  RMSE={m['rmse']:.6f}")
+
+    print("\nMIMO Model (full-state, 1-step):")
+    output_cols = ['theta_1', 'theta_2']
+    for col in output_cols:
         m = results_mimo['metrics'][col]
         print(f"  {col:10s}: R2={m['r2']:.4f}  RMSE={m['rmse']:.4f}")
 
-    # Step 7: Plots
+    # Step 6: Plots
     print("\n" + "="*60)
     print("GENERATING VISUALIZATION PLOTS")
     print("="*60)
 
-    print("\nPlot 3: MIMO Iterative Rollout State Trajectories")
-    fig3 = plot_mimo_state_trajectories(
-        actual_trajectory, predicted_trajectory, dt=params.dt
+    print("\nPlot: Exponential Integrator Rollout State Trajectories")
+    fig_exp = plot_mimo_state_trajectories(
+        actual_trajectory, predicted_trajectory_exp, dt=train_results.params.dt
     )
-    fig3.savefig("mimo_iterative_trajectories.png", dpi=200, bbox_inches='tight')
-    plt.close(fig3)
+    fig_exp.savefig("exp_integrator_trajectories.png", dpi=200, bbox_inches='tight')
+    plt.close(fig_exp)
 
-    # Step 8: GIF animation (actual vs predicted rollout)
+    # Step 7: GIF animation (actual vs predicted exponential integrator rollout)
     print("\n" + "="*60)
     print("GENERATING GIF ANIMATION")
     print("="*60)
-    gif_path = "double_pendulum_comparison.gif"
+    gif_path = "double_pendulum_exp_integrator.gif"
     create_pendulum_animation(
-        actual_trajectory, predicted_trajectory,
-        gif_path, dt=params.dt, max_frames=300, fps=25
+        actual_trajectory, predicted_trajectory_exp,
+        gif_path, dt=train_results.params.dt, max_frames=300, fps=25
     )
 
     print("\nTest completed successfully!")

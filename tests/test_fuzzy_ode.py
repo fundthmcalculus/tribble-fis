@@ -250,7 +250,7 @@ def test_tribble_ode():
 def initialize_model() -> tuple[DataSimulation, DataSimulation]:
     pendulum = DoublePendulum()
     trajectories = []
-    theta2s = np.arange(1.5, 3.00001, 0.25)  # TODO - 0.1
+    theta2s = np.arange(1.5, 3.00001, 0.1)  # TODO - 0.1
     train_params = PendulumParameters(theta1=120 * np.pi / 180,
                                 omega1=0.0,
                                 omega2=0.0,
@@ -276,9 +276,9 @@ def initialize_model() -> tuple[DataSimulation, DataSimulation]:
     # Test trajectory
     test_params = PendulumParameters(theta1=train_params.theta1, theta2=2.05 * np.pi / 180.0,
                                      omega1=train_params.omega1, omega2=train_params.omega2,
-                                     dt=train_params.dt, duration=train_params.duration)
+                                     dt=train_params.dt, duration=train_params.duration*2)
     test_ic = np.array([test_params.theta1, test_params.omega1, test_params.theta2, test_params.omega2])
-    actual_trajectory = pendulum.simulate(test_ic, duration=train_params.duration, dt=train_params.dt)
+    actual_trajectory = pendulum.simulate(test_ic, duration=test_params.duration, dt=train_params.dt)
     test_results = DataSimulation(
         trajectories=[actual_trajectory],
         params=test_params,
