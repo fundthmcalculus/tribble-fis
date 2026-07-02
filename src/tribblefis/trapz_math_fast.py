@@ -17,20 +17,22 @@ import pandas as pd
 from .gauss_data import TrapezoidMembership, GaussianMixtureModel, FeatureModel, LabelModel
 
 
-def fit_trapezoids_fast(data_1d: np.ndarray, n_bins: int = 50) -> tuple[list[TrapezoidMembership], np.ndarray]:
+def fit_trapezoids_fast(data_1d: np.ndarray, n_bins: int = 50, ramp_width_ratio: float = 0.1, merge_width_ratio: float = 0.2) -> tuple[list[TrapezoidMembership], np.ndarray]:
     """Fast histogram-based trapezoid fitting without EM.
 
     Algorithm:
     1. Create histogram with n_bins
     2. Find contiguous bins with count > 0
-    3. Merge regions separated by 2 or fewer empty bins
+    3. Merge regions separated by fewer empty bins than merge_width
     4. For each region, create one trapezoid:
        - [a, d] spans the bin region
-       - [b, c] is the inner plateau (4 bin widths inset from edges)
+       - [b, c] is the inner plateau (ramp_width inset from edges)
 
     Args:
         data_1d: 1D array of data points
         n_bins: Number of histogram bins (default: 50)
+        ramp_width_ratio: Ramp width as fraction of total bin count (default: 0.1 = 10%)
+        merge_width_ratio: Merge width as fraction of total bin count (default: 0.2 = 2x ramp_width)
 
     Returns:
         (trapezoids, weights) where:
@@ -47,21 +49,25 @@ def fit_trapezoids_fast(data_1d: np.ndarray, n_bins: int = 50) -> tuple[list[Tra
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
     bin_width = bin_edges[1] - bin_edges[0]
 
+    # Calculate ramp and merge widths based on bin count
+    ramp_width_bins = max(1, int(n_bins * ramp_width_ratio))
+    merge_width_bins = max(1, int(n_bins * merge_width_ratio))
+
     # Identify contiguous regions with count > 0
     active_bins = counts > 0
     trapezoids = []
 
-    # Find contiguous regions and merge those separated by 2 or fewer gaps
+    # Find contiguous regions and merge those separated by fewer empty bins than merge_width
     regions = _find_contiguous_regions(active_bins)
-    regions = _merge_nearby_regions(regions, max_gap=2)
+    regions = _merge_nearby_regions(regions, max_gap=merge_width_bins - 1)
 
     for start_idx, end_idx in regions:
         # Get the bin range for this region
         a = bin_edges[start_idx]  # Left edge of first bin
         d = bin_edges[end_idx + 1]  # Right edge of last bin
 
-        # Inner plateau: ramp down over 4 bin sections
-        ramp_width = bin_width * 4
+        # Inner plateau: ramp down over ramp_width bins
+        ramp_width = bin_width * ramp_width_bins
         b = a + ramp_width
         c = d - ramp_width
 
@@ -77,7 +83,7 @@ def fit_trapezoids_fast(data_1d: np.ndarray, n_bins: int = 50) -> tuple[list[Tra
         d = data_1d.max()
         if a == d:
             a = d - 0.5
-        ramp_width = (d - a) * 0.2
+        ramp_width = (d - a) * ramp_width_ratio
         b = a + ramp_width
         c = d - ramp_width
         trapezoids = [TrapezoidMembership(a=a, b=b, c=c, d=d)]
@@ -171,6 +177,9 @@ def create_trapz_membership_dict_fast(
     X: pd.DataFrame,
     y: pd.Series,
     top_n_var_names: list[str],
+    n_bins: int = 50,
+    ramp_width_ratio: float = 0.1,
+    merge_width_ratio: float = 0.2,
 ) -> GaussianMixtureModel:
     """Create trapezoid membership model using fast histogram method.
 
@@ -181,6 +190,9 @@ def create_trapz_membership_dict_fast(
         X: DataFrame of features
         y: Series of labels
         top_n_var_names: List of feature names to use
+        n_bins: Number of histogram bins (default: 50)
+        ramp_width_ratio: Ramp width as fraction of total bin count (default: 0.1 = 10%)
+        merge_width_ratio: Merge width as fraction of total bin count (default: 0.2 = 2x ramp_width)
 
     Returns:
         GaussianMixtureModel with TrapezoidMembership objects
@@ -196,7 +208,12 @@ def create_trapz_membership_dict_fast(
             feature_data = X[feature_name][mask].values
 
             # Fit trapezoids using fast method
-            trapezoids, weights = fit_trapezoids_fast(feature_data, n_bins=50)
+            trapezoids, weights = fit_trapezoids_fast(
+                feature_data,
+                n_bins=n_bins,
+                ramp_width_ratio=ramp_width_ratio,
+                merge_width_ratio=merge_width_ratio,
+            )
 
             # Create label model
             label_model = LabelModel(memberships=trapezoids)
