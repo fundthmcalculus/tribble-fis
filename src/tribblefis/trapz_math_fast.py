@@ -23,9 +23,10 @@ def fit_trapezoids_fast(data_1d: np.ndarray, n_bins: int = 50) -> tuple[list[Tra
     Algorithm:
     1. Create histogram with n_bins
     2. Find contiguous bins with count > 0
-    3. For each contiguous region, create one trapezoid:
+    3. Merge regions separated by 2 or fewer empty bins
+    4. For each region, create one trapezoid:
        - [a, d] spans the bin region
-       - [b, c] is the inner plateau (slightly inset from bin edges)
+       - [b, c] is the inner plateau (4 bin widths inset from edges)
 
     Args:
         data_1d: 1D array of data points
@@ -50,18 +51,19 @@ def fit_trapezoids_fast(data_1d: np.ndarray, n_bins: int = 50) -> tuple[list[Tra
     active_bins = counts > 0
     trapezoids = []
 
-    # Find contiguous regions
+    # Find contiguous regions and merge those separated by 2 or fewer gaps
     regions = _find_contiguous_regions(active_bins)
+    regions = _merge_nearby_regions(regions, max_gap=2)
 
     for start_idx, end_idx in regions:
         # Get the bin range for this region
         a = bin_edges[start_idx]  # Left edge of first bin
         d = bin_edges[end_idx + 1]  # Right edge of last bin
 
-        # Inner plateau: slightly inset from outer edges
-        inset = bin_width * 0.15  # 15% inset
-        b = a + inset
-        c = d - inset
+        # Inner plateau: ramp down over 4 bin sections
+        ramp_width = bin_width * 4
+        b = a + ramp_width
+        c = d - ramp_width
 
         # Ensure valid trapezoid (b <= c)
         if b > c:
@@ -75,8 +77,9 @@ def fit_trapezoids_fast(data_1d: np.ndarray, n_bins: int = 50) -> tuple[list[Tra
         d = data_1d.max()
         if a == d:
             a = d - 0.5
-        b = a + (d - a) * 0.15
-        c = d - (d - a) * 0.15
+        ramp_width = (d - a) * 0.2
+        b = a + ramp_width
+        c = d - ramp_width
         trapezoids = [TrapezoidMembership(a=a, b=b, c=c, d=d)]
 
     # Equal weights for all trapezoids
@@ -109,6 +112,35 @@ def _find_contiguous_regions(active: np.ndarray) -> list[tuple[int, int]]:
         regions.append((start, len(active) - 1))
 
     return regions
+
+
+def _merge_nearby_regions(regions: list[tuple[int, int]], max_gap: int = 2) -> list[tuple[int, int]]:
+    """Merge regions separated by max_gap or fewer empty bins.
+
+    Args:
+        regions: List of (start_idx, end_idx) tuples
+        max_gap: Maximum number of empty bins to allow between regions for merging
+
+    Returns:
+        Merged list of (start_idx, end_idx) tuples
+    """
+    if not regions:
+        return regions
+
+    merged = [regions[0]]
+
+    for current_start, current_end in regions[1:]:
+        last_start, last_end = merged[-1]
+        gap = current_start - last_end - 1
+
+        if gap <= max_gap:
+            # Merge regions
+            merged[-1] = (last_start, current_end)
+        else:
+            # Add as new region
+            merged.append((current_start, current_end))
+
+    return merged
 
 
 def trapz_pdf_fast(x: np.ndarray, a: float, b: float, c: float, d: float) -> np.ndarray:
