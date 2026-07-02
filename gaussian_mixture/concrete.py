@@ -6,11 +6,11 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from tribblefis.gauss_math import (
-    log_transform,
+    detect_and_apply_log_transform,
     calculate_gaussian_correlation,
     create_gaussian_membership_dict,
     take_top_features,
-    tsk_firing_strengths,
+    tsk_firing_strengths, standard_transform,
 )
 from tribblefis.regression import (
     report_regression_performance,
@@ -47,7 +47,7 @@ def load_data():
     y = X["Strength"]
     y.name = "y_value"
     X.drop("Strength", axis=1, inplace=True)
-    X = X.select_dtypes(include=[np.number])
+    X = X.select_dtypes(include=[np.number]).astype(np.float64)
     return X, y
 
 
@@ -55,7 +55,9 @@ def main():
     start_time = time.time()
     X, y_raw = load_data()
 
-    n_output_buckets: int = 2
+    y_raw = standard_transform(y_raw)
+
+    n_output_buckets: int = 4
     n_top_vars: int = -1
     n_gaussians: int = -1
     b_optimize_coeff: bool = True
@@ -65,10 +67,13 @@ def main():
 
     y, y_bucket_mean = partition_output(n_output_buckets, y_raw)
 
-    X = log_transform(X, ["Slag", "FlyAsh", "Age"], 1)
+    X, log_transformed_features = detect_and_apply_log_transform(X, min_dynamic_range=2)
+    X = standard_transform(X, column=X.columns)
+    if log_transformed_features:
+        print(f"Auto-detected log transform for: {log_transformed_features}")
 
     # Split dataset into train/test
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y["y_bucket"])
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     print(f"Dataset split: Train={len(X_train)}, Test={len(X_test)}")
 
     # Calculate correlation coefficient between Gaussian distributions using training data
