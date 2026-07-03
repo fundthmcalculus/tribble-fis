@@ -206,18 +206,14 @@ def _trapz_log_likelihood(
     Returns:
         Total weighted log-likelihood
     """
-    ll = 0.0
-    for i, x_i in enumerate(bin_centers):
-        # Mixture PDF at this bin center
-        mixture_pdf = 0.0
-        for k, (a, b, c, d) in enumerate(params_list):
-            mixture_pdf += weights[k] * trapz_pdf(np.array([x_i]), a, b, c, d)[0]
+    # Vectorized mixture PDF over all bin centers at once.
+    mixture_pdf = np.zeros_like(bin_centers, dtype=float)
+    for k, (a, b, c, d) in enumerate(params_list):
+        mixture_pdf += weights[k] * trapz_pdf(bin_centers, a, b, c, d)
 
-        # Avoid log(0)
-        mixture_pdf = max(mixture_pdf, eps)
-        ll += bin_counts[i] * np.log(mixture_pdf)
-
-    return ll
+    # Avoid log(0)
+    mixture_pdf = np.maximum(mixture_pdf, eps)
+    return float(np.sum(bin_counts * np.log(mixture_pdf)))
 
 
 def _em_e_step(
@@ -241,22 +237,19 @@ def _em_e_step(
     """
     n_bins = len(bin_centers)
     n_components = len(params_list)
-    responsibilities = np.zeros((n_bins, n_components))
 
-    for i, x_i in enumerate(bin_centers):
-        # Compute weighted PDF for each component
-        densities = np.array([
-            weights[k] * trapz_pdf(np.array([x_i]), a, b, c, d)[0]
-            for k, (a, b, c, d) in enumerate(params_list)
-        ])
+    # Weighted PDF for each component, vectorized over all bins: shape (n_bins, K)
+    densities = np.empty((n_bins, n_components))
+    for k, (a, b, c, d) in enumerate(params_list):
+        densities[:, k] = weights[k] * trapz_pdf(bin_centers, a, b, c, d)
 
-        # Normalize to get responsibilities
-        denom = np.sum(densities)
-        if denom > eps:
-            responsibilities[i, :] = densities / denom
-        else:
-            # Uniform responsibility if all densities are near zero
-            responsibilities[i, :] = 1.0 / n_components
+    # Normalize each row to get responsibilities.
+    denom = densities.sum(axis=1)
+    valid = denom > eps
+    responsibilities = np.empty((n_bins, n_components))
+    # Where the mixture density is non-negligible, normalize; otherwise use uniform.
+    responsibilities[valid] = densities[valid] / denom[valid, None]
+    responsibilities[~valid] = 1.0 / n_components
 
     return responsibilities
 
@@ -311,25 +304,28 @@ def _em_m_step_params(
     n_components = responsibilities.shape[1]
     new_params = []
 
+    bin_centers = np.asarray(bin_centers, dtype=float)
+    bin_counts = np.asarray(bin_counts, dtype=float)
+
     for k in range(n_components):
         a_k, b_k, c_k, d_k = params_list[k]
-        weights_k = responsibilities[:, k]
+        # Per-bin coefficient c_i = responsibility * count, precomputed once so the
+        # SLSQP objective (called many times per iteration) is a single vectorized pass.
+        coeff_k = responsibilities[:, k] * bin_counts
 
-        def objective(params):
+        def objective(params, _coeff=coeff_k):
             a, b, c, d = params
-            # Compute negative weighted log-likelihood
-            nll = 0.0
-            for i, x_i in enumerate(bin_centers):
-                pdf_val = trapz_pdf(np.array([x_i]), a, b, c, d)[0]
-                pdf_val = max(pdf_val, 1e-10)
-                nll -= weights_k[i] * bin_counts[i] * np.log(pdf_val)
-            return nll
+            pdf_vals = np.maximum(trapz_pdf(bin_centers, a, b, c, d), 1e-10)
+            return -np.dot(_coeff, np.log(pdf_vals))
 
-        # Constraints: a <= b <= c <= d
+        # Constraints: a <= b <= c <= d (with analytic linear Jacobians)
         constraints = [
-            {'type': 'ineq', 'fun': lambda p: p[1] - p[0]},  # b >= a
-            {'type': 'ineq', 'fun': lambda p: p[2] - p[1]},  # c >= b
-            {'type': 'ineq', 'fun': lambda p: p[3] - p[2]},  # d >= c
+            {'type': 'ineq', 'fun': lambda p: p[1] - p[0],
+             'jac': lambda p: np.array([-1.0, 1.0, 0.0, 0.0])},  # b >= a
+            {'type': 'ineq', 'fun': lambda p: p[2] - p[1],
+             'jac': lambda p: np.array([0.0, -1.0, 1.0, 0.0])},  # c >= b
+            {'type': 'ineq', 'fun': lambda p: p[3] - p[2],
+             'jac': lambda p: np.array([0.0, 0.0, -1.0, 1.0])},  # d >= c
         ]
 
         # Bounds: all parameters within data range
