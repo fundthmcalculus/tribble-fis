@@ -46,7 +46,7 @@ def main():
 
     # Initialize and fit the TRAPEZOID Mixture Classifier (using fast method by default)
     print("\nTraining trapezoid-based classifier (fast method)...")
-    clf = MixtureOfGaussiansFuzzyClassifier(member_function="trap")  # trapz_method="fast" is now default
+    clf = MixtureOfGaussiansFuzzyClassifier(member_function="trap", trapz_method="em")  # trapz_method="fast" is now default
     clf.fit(X_train, y_train)
 
     top_n_todo = clf.top_features_
