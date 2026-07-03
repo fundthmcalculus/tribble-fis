@@ -27,10 +27,12 @@ from tribblefis.regression import (
     compute_second_order_corrections,
     compute_third_order_corrections,
     compute_full_second_order_corrections,
+    optimize_tsk_coefficients,
     plot_tsk_order_comparison,
     partition_output,
 )
 from tribblefis.report import print_membership_details
+from tribblefis.trapz_math import create_trapz_membership_dict
 from tribblefis.trapz_math_fast import create_trapz_membership_dict_fast
 
 
@@ -57,6 +59,8 @@ def load_data():
     y.name = "y_value"
     X.drop("Strength", axis=1, inplace=True)
     X = X.select_dtypes(include=[np.number])
+    X = _standardize(X)
+    X = _normalize(X)
     return X, y
 
 
@@ -71,8 +75,12 @@ def run_model(model_type, X_train, X_test, y_train, y_test, y_bucket_mean, top_n
         memberships = create_gaussian_membership_dict(
             X_train, y_train["y_bucket"], top_n_var_names=top_n_todo, n_gaussians=-1
         )
-    else:  # trapz
+    elif model_type == "trapz-fast":
         memberships = create_trapz_membership_dict_fast(
+            X_train, y_train["y_bucket"], top_n_var_names=top_n_todo,
+        )
+    elif model_type == "trapz":
+        memberships = create_trapz_membership_dict(
             X_train, y_train["y_bucket"], top_n_var_names=top_n_todo,
         )
 
@@ -83,7 +91,7 @@ def run_model(model_type, X_train, X_test, y_train, y_test, y_bucket_mean, top_n
     )
     print_membership_details(memberships)
 
-    # Compute correction terms
+    # Compute correction terms (used as initial guess for coefficient optimization)
     print("\nComputing TSK correction terms...")
     corr_terms_1 = compute_first_order_corrections(
         X_train, memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train
@@ -98,7 +106,37 @@ def run_model(model_type, X_train, X_test, y_train, y_test, y_bucket_mean, top_n
         X_train, memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train
     )
 
-    # TODO - Optimize coefficients
+    # Jointly optimize the output (consequent) coefficients against the
+    # firing-strength-weighted training error. This tunes both the constant
+    # bucket-mean terms and the per-rule correction terms, rather than fixing
+    # the constants at the raw bucket means.
+    #
+    # Trapezoids have bounded support, so their high-order least-squares initial
+    # guess is ill-conditioned (coefficients ~1e4) and overfits badly without a
+    # mild ridge penalty. Gaussian MFs have infinite support and generalize best
+    # unregularized, so only regularize the trapezoid consequents.
+    l2_reg = 1e-4 if model_type in ("trapz", "trapz-fast") else 0.0
+    print("\nOptimizing TSK output coefficients...")
+    corr_terms_1, y_bucket_mean_1 = optimize_tsk_coefficients(
+        X_train, memberships, top_n_todo, y_bucket_mean, y_train,
+        n_output_buckets=n_output_buckets, initial_corr_terms=corr_terms_1, order="1st", l2_reg=l2_reg,
+    )
+    corr_terms_2, y_bucket_mean_2 = optimize_tsk_coefficients(
+        X_train, memberships, top_n_todo, y_bucket_mean, y_train,
+        n_output_buckets=n_output_buckets, initial_corr_terms=corr_terms_2, order="2nd", l2_reg=l2_reg,
+    )
+    corr_terms_2f, y_bucket_mean_2f = optimize_tsk_coefficients(
+        X_train, memberships, top_n_todo, y_bucket_mean, y_train,
+        n_output_buckets=n_output_buckets, initial_corr_terms=corr_terms_2f, order="full-2nd", l2_reg=l2_reg,
+    )
+    corr_terms_3, y_bucket_mean_3 = optimize_tsk_coefficients(
+        X_train, memberships, top_n_todo, y_bucket_mean, y_train,
+        n_output_buckets=n_output_buckets, initial_corr_terms=corr_terms_3, order="3rd", l2_reg=l2_reg,
+    )
+    _, y_bucket_mean_0 = optimize_tsk_coefficients(
+        X_train, memberships, top_n_todo, y_bucket_mean, y_train,
+        n_output_buckets=n_output_buckets, order="0th", l2_reg=l2_reg,
+    )
 
     # Evaluate on test set
     print("\nEvaluating on TEST set...")
@@ -118,7 +156,7 @@ def run_model(model_type, X_train, X_test, y_train, y_test, y_bucket_mean, top_n
         norm_firing_strength[zero_rows] = 1.0 / len(labels)
 
     # 0th order
-    y_test_pred_0 = np.dot(norm_firing_strength, y_bucket_mean)
+    y_test_pred_0 = np.dot(norm_firing_strength, y_bucket_mean_0)
     r2_0, rmse_0 = report_regression_performance(
         start_time, y_test, y_test_pred_0, n_order=f"0 optimized ({model_type})"
     )
@@ -149,16 +187,16 @@ def run_model(model_type, X_train, X_test, y_train, y_test, y_bucket_mean, top_n
 
     for ij, y_id in enumerate(labels):
         y_test_pred_1[:] += (
-            y_bucket_mean[y_id] + X_test_rule @ corr_terms_1[y_id, :]
+            y_bucket_mean_1[y_id] + X_test_rule @ corr_terms_1[y_id, :]
         ) * norm_firing_strength[:, ij]
         y_test_pred_2[:] += (
-            y_bucket_mean[y_id] + X_test_rule2 @ corr_terms_2[y_id, :]
+            y_bucket_mean_2[y_id] + X_test_rule2 @ corr_terms_2[y_id, :]
         ) * norm_firing_strength[:, ij]
         y_test_pred_2f[:] += (
-            y_bucket_mean[y_id] + X_test_rule2f @ corr_terms_2f[y_id, :]
+            y_bucket_mean_2f[y_id] + X_test_rule2f @ corr_terms_2f[y_id, :]
         ) * norm_firing_strength[:, ij]
         y_test_pred_3[:] += (
-            y_bucket_mean[y_id] + X_test_rule3 @ corr_terms_3[y_id, :]
+            y_bucket_mean_3[y_id] + X_test_rule3 @ corr_terms_3[y_id, :]
         ) * norm_firing_strength[:, ij]
 
     r2_1, rmse_1 = report_regression_performance(

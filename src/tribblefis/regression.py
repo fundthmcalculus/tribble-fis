@@ -7,6 +7,7 @@ from itertools import combinations
 from matplotlib import pyplot as plt
 from numpy import ndarray
 from numpy.linalg import LinAlgError
+from scipy.optimize import minimize
 
 from tribblefis.gauss_data import GaussianMixtureModel
 from tribblefis.gauss_math import tsk_firing_strengths
@@ -222,6 +223,7 @@ def optimize_tsk_coefficients(
     n_output_buckets: int,
     initial_corr_terms: ndarray | None = None,
     order: typing.Literal["0th", "1st", "2nd", "3rd", "full-2nd"] = "2nd",
+    l2_reg: float = 0.0,
 ) -> tuple[typing.Any, typing.Any]:
     """
     Optimize TSK coefficients for different polynomial orders.
@@ -233,6 +235,11 @@ def optimize_tsk_coefficients(
             - '2nd': Constant + linear + squared terms (no cross-products)
             - 'full-2nd': Constant + linear + squared + cross-product terms
             - '3rd': Constant + linear + sqquared + cubic terms (no cross-products)
+        l2_reg: Ridge penalty on the correction (non-constant) coefficients. Guards
+            against ill-conditioned high-order fits (e.g. cubic consequents on
+            standardized features) whose least-squares initial guess can have
+            coefficients of magnitude ~1e4 that overfit badly. The constant
+            bucket-mean terms are never penalized. Set to 0 to disable.
     """
     # Optimize coefficients based on order
     print(f"\nOptimizing {order.capitalize()} Order TSK Coefficients...")
@@ -251,6 +258,13 @@ def optimize_tsk_coefficients(
     norm_firing_strength_train[valid_rows] = (
         firing_strengths_train[valid_rows] / row_sums[valid_rows, np.newaxis]
     )
+    # Rows with no firing (common for bounded-support trapezoids) must match the
+    # evaluation convention of a uniform blend; otherwise the optimizer sees those
+    # rows as identically zero, leaving a null space that L-BFGS-B can wander into
+    # and blow up the coefficients (near-zero training-error change, huge test error).
+    n_labels = firing_strengths_train.shape[1]
+    if np.any(~valid_rows) and n_labels > 0:
+        norm_firing_strength_train[~valid_rows] = 1.0 / n_labels
     X_train_rule = X_train[top_n_todo].to_numpy()
 
     n_top_vars = len(top_n_todo)
@@ -300,24 +314,42 @@ def optimize_tsk_coefficients(
                 y_pred[:] += (coeffs[y_id, 0] + X_data @ coeffs[y_id, 1:]) * norm_fs[:, ij]
         return y_pred
 
+    def _correction_penalty(coeffs_flat):
+        """Ridge penalty on correction coefficients only (constants excluded)."""
+        if l2_reg <= 0 or order == "0th":
+            return 0.0
+        coeffs = coeffs_flat.reshape(n_output_buckets, n_terms + 1)
+        return l2_reg * float(np.sum(coeffs[:, 1:] ** 2))
+
     def objective(coeffs_flat):
-        """RMSE objective function."""
+        """Mean squared error plus a ridge penalty on the correction terms."""
         y_pred = predict(
             coeffs_flat, X_train_features, norm_firing_strength_train, labels_train, n_output_buckets, n_terms
         )
-        return _mse(y_train["y_value"].values, y_pred)
+        return _mse(y_train["y_value"].values, y_pred) + _correction_penalty(coeffs_flat)
 
     # Optimize using L-BFGS-B
+    initial_obj = objective(initial_coeffs_flat)
     result = minimize(objective, initial_coeffs_flat, method="L-BFGS-B", options={"maxiter": 1000})
+
+    # Ill-conditioned problems (e.g. high-order trapezoid rules with sparse firing
+    # strengths) can leave L-BFGS-B at a point worse than where it started. Never
+    # return coefficients worse than the initial least-squares guess.
+    if result.fun <= initial_obj:
+        best_flat, best_obj = result.x, result.fun
+    else:
+        best_flat, best_obj = initial_coeffs_flat, initial_obj
+        print("  Optimizer did not improve on the initial guess; keeping initial coefficients.")
 
     # Extract optimized coefficients
     if order == "0th":
-        y_bucket_mean_opt = result.x
+        y_bucket_mean_opt = best_flat
         corr_terms_opt = np.zeros((n_output_buckets, 0))
     else:
-        optimized_coeffs = result.x.reshape(n_output_buckets, n_terms + 1)
+        optimized_coeffs = best_flat.reshape(n_output_buckets, n_terms + 1)
         y_bucket_mean_opt = optimized_coeffs[:, 0]
         corr_terms_opt = optimized_coeffs[:, 1:]
 
-    print(f"Optimization completed. Final RMSE on training set: {result.fun:.4f}")
+    data_mse = best_obj - _correction_penalty(best_flat)
+    print(f"Optimization completed. Final training MSE: {data_mse:.4f}")
     return corr_terms_opt, y_bucket_mean_opt
