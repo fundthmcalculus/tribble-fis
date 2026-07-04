@@ -14,6 +14,8 @@ from collections import namedtuple
 from contextlib import contextmanager
 from pathlib import Path
 
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
@@ -28,6 +30,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from tribblefis.gaussian_regressor import MimoGaussianPredictor
 
 FeatureStep = namedtuple('FeatureStep', ['step_name', 'step_offset', 'col_name'])
+
+
+class SimulationParams:
+    """Simulation parameters for double pendulum."""
+    dt = 0.01  # timestep in seconds
 
 
 @contextmanager
@@ -87,7 +94,7 @@ def load_and_prepare_mimo_data(trajectories: list[pd.DataFrame], window_size: in
     for df in trajectories:
         y = np.diff(df[OUTPUT_FEATURES].iloc[(window_size-1):].values, axis=0)
         if window_size == 1:
-            X = df[INPUT_FEATURES].iloc[:-(window_size-1)].values
+            X = df[INPUT_FEATURES].iloc[:-1].values
         else:
             X = get_mimo_df(df, window_size)
         all_X.append(X)
@@ -240,10 +247,10 @@ def create_pendulum_animation(actual_df, predicted_df, output_path, dt=0.01, max
     pred_frames = pred_frames.copy().ffill().fillna(0.0)
 
     x1_act, y1_act, x2_act, y2_act = angles_to_xy(
-        actual_frames['theta_1'].values, actual_frames['theta_2'].values
+        actual_frames['theta_1'].values, actual_frames['theta_2'].values, 1.0, 1.0
     )
     x1_pred, y1_pred, x2_pred, y2_pred = angles_to_xy(
-        pred_frames['theta_1'].values, pred_frames['theta_2'].values
+        pred_frames['theta_1'].values, pred_frames['theta_2'].values, 1.0, 1.0
     )
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
@@ -434,7 +441,7 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
         print("# STEP 5: Iterative Rollout from Initial Conditions")
         print("#"*60)
         # Seed window: first MIMO_WINDOW_SIZE rows; predict everything after the seed.
-        tst_df = test_trajectories[0]
+        tst_df = test_results.trajectories[0]
         n_steps = len(tst_df) - MIMO_WINDOW_SIZE
 
         print(f"Seed window ({MIMO_WINDOW_SIZE} rows)")
@@ -484,7 +491,7 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
         print("="*60)
 
         print("\nPlot 3: MIMO Iterative Rollout State Trajectories")
-        fig3 = plot_mimo_state_trajectories(actual_trajectory, predicted_trajectory, dt=params.dt)
+        fig3 = plot_mimo_state_trajectories(actual_trajectory, predicted_trajectory, dt=SimulationParams.dt)
         fig3.savefig("mimo_iterative_trajectories.png", dpi=200, bbox_inches='tight')
         plt.close(fig3)
 
@@ -495,7 +502,7 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
         gif_path = "double_pendulum_comparison.gif"
         create_pendulum_animation(
             actual_trajectory, predicted_trajectory,
-        gif_path, dt=params.dt, max_frames=300, fps=25
+        gif_path, dt=SimulationParams.dt, max_frames=300, fps=25
         )
 
         print("\nTest completed successfully!")
