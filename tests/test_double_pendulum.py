@@ -355,33 +355,41 @@ def create_pendulum_animation_with_training(actual_df, predicted_df, train_traje
             'idx': train_idx, 'dist': dist, 'color': colors_train[rank]
         })
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+    fig, ax = plt.subplots(figsize=(10, 10))
     fig.patch.set_facecolor('#1a1a2e')
-    for ax in axes.flat:
-        set_axes_style(ax)
+    set_axes_style(ax)
 
-    axes[0, 0].set_title('Actual (Test)', color='white', fontsize=12, fontweight='bold')
-    axes[0, 1].set_title('Predicted (Rollout)', color='white', fontsize=12, fontweight='bold')
-    axes[1, 0].set_title(f'Training {nearest_data[0]["idx"]} (d={nearest_data[0]["dist"]:.4f})', color='white', fontsize=12, fontweight='bold')
-    axes[1, 1].set_title(f'Training {nearest_data[1]["idx"]} (d={nearest_data[1]["dist"]:.4f})', color='white', fontsize=12, fontweight='bold')
-    fig.suptitle('Double Pendulum: Test Case + Prediction + 2 Nearest Training', color='white', fontsize=14, fontweight='bold')
+    ax.set_title('Double Pendulum: All Trajectories Overlaid', color='white', fontsize=14, fontweight='bold')
+    fig.suptitle(f'Training (bg) → Test Reference → Test FIS (front)', color='white', fontsize=12)
 
     trail_len = 40
 
-    # Create plot objects for each panel
-    colors_panels = ['#00d4ff', '#ff6b6b', colors_train[0], colors_train[1]]
-    artists = {}
-    for panel_idx, ax_row in enumerate(axes):
-        for panel_col, ax in enumerate(ax_row):
-            key = f'{panel_idx}{panel_col}'
-            color_idx = panel_idx * 2 + panel_col
-            artists[key] = {
-                'trail2': ax.plot([], [], '-', color=colors_panels[color_idx], linewidth=1.2, alpha=0.5)[0],
-                'rod1': ax.plot([], [], 'o-', color='#e0e0e0', lw=2.5, ms=6, markerfacecolor='white')[0],
-                'rod2': ax.plot([], [], 'o-', color='#e0e0e0', lw=2.5, ms=6, markerfacecolor=colors_panels[color_idx])[0],
-            }
+    artists = {
+        'train1': {
+            'trail2': ax.plot([], [], '-', color=colors_train[0], linewidth=1.0, alpha=0.3)[0],
+            'rod1': ax.plot([], [], 'o-', color='#e0e0e0', lw=2, ms=5, markerfacecolor='white', alpha=0.3)[0],
+            'rod2': ax.plot([], [], 'o-', color='#e0e0e0', lw=2, ms=5, markerfacecolor=colors_train[0], alpha=0.3)[0],
+        },
+        'train2': {
+            'trail2': ax.plot([], [], '-', color=colors_train[1], linewidth=1.0, alpha=0.3)[0],
+            'rod1': ax.plot([], [], 'o-', color='#e0e0e0', lw=2, ms=5, markerfacecolor='white', alpha=0.3)[0],
+            'rod2': ax.plot([], [], 'o-', color='#e0e0e0', lw=2, ms=5, markerfacecolor=colors_train[1], alpha=0.3)[0],
+        },
+        'actual': {
+            'trail2': ax.plot([], [], '-', color='#00d4ff', linewidth=1.5, alpha=0.6)[0],
+            'rod1': ax.plot([], [], 'o-', color='#e0e0e0', lw=2.5, ms=6, markerfacecolor='white', alpha=0.8)[0],
+            'rod2': ax.plot([], [], 'o-', color='#e0e0e0', lw=2.5, ms=6, markerfacecolor='#00d4ff')[0],
+        },
+        'predicted': {
+            'trail2': ax.plot([], [], '-', color='#ff6b6b', linewidth=1.5, alpha=0.8)[0],
+            'rod1': ax.plot([], [], 'o-', color='#e0e0e0', lw=2.5, ms=6, markerfacecolor='white')[0],
+            'rod2': ax.plot([], [], 'o-', color='#e0e0e0', lw=2.5, ms=6, markerfacecolor='#ff6b6b')[0],
+        },
+    }
 
-    time_text = fig.text(0.5, 0.01, '', ha='center', color='#aaaaaa', fontsize=10)
+    time_text = fig.text(0.5, 0.01, '', ha='center', color='#aaaaaa', fontsize=11)
+    legend_text = fig.text(0.5, 0.05, 'Train1 (orange) · Train2 (green) · Test Ref (cyan) · Test FIS (red)',
+                           ha='center', color='#aaaaaa', fontsize=10)
 
     def init():
         for key in artists:
@@ -392,35 +400,34 @@ def create_pendulum_animation_with_training(actual_df, predicted_df, train_traje
         for key in artists:
             for a in artists[key].values():
                 result.append(a)
-        result.append(time_text)
+        result.extend([time_text, legend_text])
         return result
 
     def update(frame):
         i = frame
         t_start = max(0, i - trail_len)
-        result = []
 
-        # Actual
-        artists['00']['trail2'].set_data(x2_act[t_start:i+1], y2_act[t_start:i+1])
-        artists['00']['rod1'].set_data([0, x1_act[i]], [0, y1_act[i]])
-        artists['00']['rod2'].set_data([x1_act[i], x2_act[i]], [y1_act[i], y2_act[i]])
-
-        # Predicted
-        artists['01']['trail2'].set_data(x2_pred[t_start:i+1], y2_pred[t_start:i+1])
-        artists['01']['rod1'].set_data([0, x1_pred[i]], [0, y1_pred[i]])
-        artists['01']['rod2'].set_data([x1_pred[i], x2_pred[i]], [y1_pred[i], y2_pred[i]])
-
-        # Nearest 1
+        # Training 1 (background)
         if i < len(nearest_data[0]['x2']):
-            artists['10']['trail2'].set_data(nearest_data[0]['x2'][t_start:i+1], nearest_data[0]['y2'][t_start:i+1])
-            artists['10']['rod1'].set_data([0, nearest_data[0]['x1'][i]], [0, nearest_data[0]['y1'][i]])
-            artists['10']['rod2'].set_data([nearest_data[0]['x1'][i], nearest_data[0]['x2'][i]], [nearest_data[0]['y1'][i], nearest_data[0]['y2'][i]])
+            artists['train1']['trail2'].set_data(nearest_data[0]['x2'][t_start:i+1], nearest_data[0]['y2'][t_start:i+1])
+            artists['train1']['rod1'].set_data([0, nearest_data[0]['x1'][i]], [0, nearest_data[0]['y1'][i]])
+            artists['train1']['rod2'].set_data([nearest_data[0]['x1'][i], nearest_data[0]['x2'][i]], [nearest_data[0]['y1'][i], nearest_data[0]['y2'][i]])
 
-        # Nearest 2
+        # Training 2 (background)
         if i < len(nearest_data[1]['x2']):
-            artists['11']['trail2'].set_data(nearest_data[1]['x2'][t_start:i+1], nearest_data[1]['y2'][t_start:i+1])
-            artists['11']['rod1'].set_data([0, nearest_data[1]['x1'][i]], [0, nearest_data[1]['y1'][i]])
-            artists['11']['rod2'].set_data([nearest_data[1]['x1'][i], nearest_data[1]['x2'][i]], [nearest_data[1]['y1'][i], nearest_data[1]['y2'][i]])
+            artists['train2']['trail2'].set_data(nearest_data[1]['x2'][t_start:i+1], nearest_data[1]['y2'][t_start:i+1])
+            artists['train2']['rod1'].set_data([0, nearest_data[1]['x1'][i]], [0, nearest_data[1]['y1'][i]])
+            artists['train2']['rod2'].set_data([nearest_data[1]['x1'][i], nearest_data[1]['x2'][i]], [nearest_data[1]['y1'][i], nearest_data[1]['y2'][i]])
+
+        # Actual (test reference)
+        artists['actual']['trail2'].set_data(x2_act[t_start:i+1], y2_act[t_start:i+1])
+        artists['actual']['rod1'].set_data([0, x1_act[i]], [0, y1_act[i]])
+        artists['actual']['rod2'].set_data([x1_act[i], x2_act[i]], [y1_act[i], y2_act[i]])
+
+        # Predicted (front)
+        artists['predicted']['trail2'].set_data(x2_pred[t_start:i+1], y2_pred[t_start:i+1])
+        artists['predicted']['rod1'].set_data([0, x1_pred[i]], [0, y1_pred[i]])
+        artists['predicted']['rod2'].set_data([x1_pred[i], x2_pred[i]], [y1_pred[i], y2_pred[i]])
 
         time_text.set_text(f't = {i * step * dt:.2f} s')
 
@@ -428,7 +435,7 @@ def create_pendulum_animation_with_training(actual_df, predicted_df, train_traje
         for key in artists:
             for a in artists[key].values():
                 result.append(a)
-        result.append(time_text)
+        result.extend([time_text, legend_text])
         return result
 
     ani = animation.FuncAnimation(
