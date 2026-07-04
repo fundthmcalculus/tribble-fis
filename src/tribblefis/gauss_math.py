@@ -283,7 +283,7 @@ def create_gaussian_membership_dict(
             if label_n_gaussians > 0:
                 feature_n_gaussians = label_n_gaussians
             gaussians_params = fit_gaussians(X, y, feature_name, label_value, feature_n_gaussians)
-            label_models[label_value] = LabelModel(gaussians=gaussians_params)
+            label_models[label_value] = LabelModel(memberships=gaussians_params)
 
         return feature_name, FeatureModel(label_models=label_models)
 
@@ -408,18 +408,15 @@ def tsk_firing_strengths(
             feature_data = X[feature_name].values
             label_model = feature_model.label_models[label_value]
 
-            # If multiple Gaussians exist for a feature-label pair,
+            # If multiple membership functions exist for a feature-label pair,
             # we combine them (e.g., using OR/max or weighted sum)
-            # Here, we use the sum of Gaussian PDFs weighted by their fit weights
             feature_membership = np.zeros(n_samples)
-            for g in label_model.gaussians:
-                # Calculate Gaussian membership value
+            for mf in label_model.memberships:
+                # Evaluate membership function (works for both Gaussian and Trapezoid)
                 # Logic-OR
                 feature_membership = t_conorm(
                     feature_membership,
-                    membership(
-                        feature_data, g.mu, g.sigma, anomaly_details.member_function if anomaly_details else None
-                    ),
+                    mf.evaluate(feature_data),
                     anomaly_details.norm_conorm if anomaly_details else None,
                 )
 
@@ -480,7 +477,7 @@ def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierMode
             matched_mfs = model.get_mfs(mf_ids)
             local_vals = np.zeros(n_samples)
             for j, mf in enumerate(matched_mfs):
-                local_vals = t_conorm(local_vals, membership(X[feature_name].values, mf.mu, mf.sigma, member_fcn), norm_conorm)
+                local_vals = t_conorm(local_vals, mf.evaluate(X[feature_name].values), norm_conorm)
             rule_firing[:, i] = t_norm(local_vals, rule_firing[:, i], norm_conorm)
 
     # Aggregate rule firing strengths by consequent label
@@ -589,17 +586,25 @@ def generate_synthetic_data(
                 continue
 
             label_model = feature_model.label_models[label]
-            gaussians = label_model.gaussians
+            memberships = label_model.memberships
 
-            if not gaussians:
+            if not memberships:
+                label_samples[feature_name] = X[feature_name].mean()
+                continue
+
+            # Check if all memberships are Gaussian (sampling is only implemented for Gaussian)
+            from .gauss_data import GaussianMembership
+            has_non_gaussian = any(not isinstance(mf, GaussianMembership) for mf in memberships)
+            if has_non_gaussian:
+                # Placeholder: fall back to mean for non-Gaussian (e.g., Trapezoid)
                 label_samples[feature_name] = X[feature_name].mean()
                 continue
 
             # Sample from the mixture of Gaussians
-            choices = np.random.choice(len(gaussians), size=n_to_generate)
+            choices = np.random.choice(len(memberships), size=n_to_generate)
 
             feature_values = np.zeros(n_to_generate)
-            for i, g in enumerate(gaussians):
+            for i, g in enumerate(memberships):
                 mask = choices == i
                 if np.any(mask):
                     n_samples_g = np.sum(mask)
