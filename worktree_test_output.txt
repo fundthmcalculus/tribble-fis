@@ -1,0 +1,808 @@
+test_double_pendulum_fuzzy_prediction (tests.test_double_pendulum.TestDoublePendulumFuzzyPrediction.test_double_pendulum_fuzzy_prediction)
+Main test: simulate double pendulum and train fuzzy regression models. ... Generated 7 trajectories
+First trajectory shape: (3000, 4)
+gen-sim-data took 0.3218 seconds
+
+############################################################
+# STEP 2: Single-Step Prediction Model
+############################################################
+Loading 7 simulation files...
+Combined data shape: X=(20993, 2), y=(20993, 2)
+Loading 1 simulation files...
+Combined data shape: X=(2999, 2), y=(2999, 2)
+
+============================================================
+SINGLE-STEP PREDICTION MODEL
+============================================================
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. feature_0                      - Score: 1.0000
+ 2. feature_1                      - Score: 0.1269
+================================================================================
+  Automatically selected 4 Gaussians for feature_0 (label 2)
+  Automatically selected 4 Gaussians for feature_1 (label 2)
+  Automatically selected 4 Gaussians for feature_0 (label 1)
+  Automatically selected 3 Gaussians for feature_1 (label 1)
+  Automatically selected 4 Gaussians for feature_0 (label 0)
+  Automatically selected 4 Gaussians for feature_1 (label 0)
+
+Optimizing 2nd Order TSK Coefficients...
+================================================================================
+Optimization completed. Final training MSE: 0.0236
+
+theta_1:
+  MSE:  0.017415
+  RMSE: 0.131966
+  MAE:  0.096479
+  R²:   0.979582
+train-single took 3.1461 seconds
+
+############################################################
+# STEP 4: MIMO Full-State Prediction Model (window=1)
+############################################################
+Loading 7 simulation files for MIMO (window=1)...
+MIMO combined data shape: X=(20993, 2), y=(20993, 2)
+Loading 1 simulation files for MIMO (window=1)...
+MIMO combined data shape: X=(2999, 2), y=(2999, 2)
+
+============================================================
+MIMO FULL-STATE PREDICTION MODEL (window=1)
+============================================================
+  Fitting regressor for output 'theta_1' (1/2)
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. theta_1                        - Score: 1.0000
+ 2. theta_2                        - Score: 0.3438
+================================================================================
+  Automatically selected 3 Gaussians for theta_1 (label 1)
+  Automatically selected 3 Gaussians for theta_2 (label 1)
+  Automatically selected 4 Gaussians for theta_1 (label 0)
+  Automatically selected 3 Gaussians for theta_1 (label 2)
+  Automatically selected 4 Gaussians for theta_2 (label 0)
+  Automatically selected 4 Gaussians for theta_2 (label 2)
+
+Optimizing 1st Order TSK Coefficients...
+================================================================================
+Optimization completed. Final training MSE: 0.0010
+  Fitting regressor for output 'theta_2' (2/2)
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. theta_2                        - Score: 1.0000
+ 2. theta_1                        - Score: 0.8520
+================================================================================
+  Automatically selected 4 Gaussians for theta_1 (label 1)
+  Automatically selected 4 Gaussians for theta_2 (label 1)
+  Automatically selected 4 Gaussians for theta_1 (label 2)
+  Automatically selected 4 Gaussians for theta_1 (label 0)
+  Automatically selected 3 Gaussians for theta_2 (label 2)
+  Automatically selected 4 Gaussians for theta_2 (label 0)
+
+Optimizing 1st Order TSK Coefficients...
+================================================================================
+Optimization completed. Final training MSE: 0.0020
+
+Per-output metrics:
+  theta_1   : R2=0.0100  RMSE=0.0303  MAE=0.0255
+  theta_2   : R2=-0.0194  RMSE=0.0444  MAE=0.0336
+train-mimo-window1 took 0.7336 seconds
+
+############################################################
+# STEP 4b: MIMO Full-State Prediction Model (window=3)
+############################################################
+Loading 7 simulation files for MIMO (window=3)...
+MIMO combined data shape: X=(20979, 6), y=(20979, 2)
+Loading 1 simulation files for MIMO (window=3)...
+MIMO combined data shape: X=(2997, 6), y=(2997, 2)
+
+============================================================
+MIMO FULL-STATE PREDICTION MODEL (window=3)
+============================================================
+  Fitting regressor for output 'theta_1' (1/2)
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. theta_1_step0                  - Score: 1.0000
+ 2. theta_1_step1                  - Score: 0.9718
+ 3. theta_1_step2                  - Score: 0.9631
+ 4. theta_2_step2                  - Score: 0.3289
+ 5. theta_2_step1                  - Score: 0.3229
+ 6. theta_2_step0                  - Score: 0.3201
+================================================================================
+  Automatically selected 4 Gaussians for theta_1_step2 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step0 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step1 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step2 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 0)
+  Automatically selected 3 Gaussians for theta_1_step2 (label 0)
+  Automatically selected 3 Gaussians for theta_1_step0 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step2 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step1 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 2)
+
+Optimizing 1st Order TSK Coefficients...
+================================================================================
+Optimization completed. Final training MSE: 0.0000
+  Fitting regressor for output 'theta_2' (2/2)
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. theta_2_step2                  - Score: 1.0000
+ 2. theta_2_step1                  - Score: 0.9824
+ 3. theta_2_step0                  - Score: 0.9748
+ 4. theta_1_step2                  - Score: 0.8527
+ 5. theta_1_step0                  - Score: 0.8476
+ 6. theta_1_step1                  - Score: 0.8435
+================================================================================
+  Automatically selected 4 Gaussians for theta_1_step1 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 1)
+  Automatically selected 3 Gaussians for theta_1_step1 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step0 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 0)
+  Automatically selected 3 Gaussians for theta_2_step1 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step0 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step2 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 0)
+
+Optimizing 1st Order TSK Coefficients...
+================================================================================
+Optimization completed. Final training MSE: 0.0001
+
+Per-output metrics:
+  theta_1   : R2=0.9860  RMSE=0.0036  MAE=0.0025
+  theta_2   : R2=0.9660  RMSE=0.0081  MAE=0.0063
+train-mimo-window3 took 4.9610 seconds
+
+############################################################
+# STEP 4c: Multi-Window Stability Comparison
+############################################################
+Training MIMO models with different memory windows to assess stability...
+
+  Training window_size=1...
+Loading 7 simulation files for MIMO (window=1)...
+MIMO combined data shape: X=(20993, 2), y=(20993, 2)
+Loading 1 simulation files for MIMO (window=1)...
+MIMO combined data shape: X=(2999, 2), y=(2999, 2)
+
+============================================================
+MIMO FULL-STATE PREDICTION MODEL (window=1)
+============================================================
+  Fitting regressor for output 'theta_1' (1/2)
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. theta_1                        - Score: 1.0000
+ 2. theta_2                        - Score: 0.3438
+================================================================================
+  Automatically selected 3 Gaussians for theta_2 (label 1)
+  Automatically selected 3 Gaussians for theta_1 (label 1)
+  Automatically selected 4 Gaussians for theta_1 (label 0)
+  Automatically selected 3 Gaussians for theta_1 (label 2)
+  Automatically selected 4 Gaussians for theta_2 (label 0)
+  Automatically selected 4 Gaussians for theta_2 (label 2)
+
+Optimizing 1st Order TSK Coefficients...
+================================================================================
+Optimization completed. Final training MSE: 0.0010
+  Fitting regressor for output 'theta_2' (2/2)
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. theta_2                        - Score: 1.0000
+ 2. theta_1                        - Score: 0.8520
+================================================================================
+  Automatically selected 4 Gaussians for theta_1 (label 1)
+  Automatically selected 4 Gaussians for theta_2 (label 1)
+  Automatically selected 4 Gaussians for theta_1 (label 2)
+  Automatically selected 4 Gaussians for theta_1 (label 0)
+  Automatically selected 3 Gaussians for theta_2 (label 2)
+  Automatically selected 4 Gaussians for theta_2 (label 0)
+
+Optimizing 1st Order TSK Coefficients...
+================================================================================
+Optimization completed. Final training MSE: 0.0020
+
+Per-output metrics:
+  theta_1   : R2=0.0100  RMSE=0.0303  MAE=0.0255
+  theta_2   : R2=-0.0194  RMSE=0.0444  MAE=0.0336
+train-mimo-window1 took 0.8176 seconds
+
+  Training window_size=3...
+Loading 7 simulation files for MIMO (window=3)...
+MIMO combined data shape: X=(20979, 6), y=(20979, 2)
+Loading 1 simulation files for MIMO (window=3)...
+MIMO combined data shape: X=(2997, 6), y=(2997, 2)
+
+============================================================
+MIMO FULL-STATE PREDICTION MODEL (window=3)
+============================================================
+  Fitting regressor for output 'theta_1' (1/2)
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. theta_1_step0                  - Score: 1.0000
+ 2. theta_1_step1                  - Score: 0.9718
+ 3. theta_1_step2                  - Score: 0.9631
+ 4. theta_2_step2                  - Score: 0.3289
+ 5. theta_2_step1                  - Score: 0.3229
+ 6. theta_2_step0                  - Score: 0.3201
+================================================================================
+  Automatically selected 4 Gaussians for theta_1_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step0 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step1 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step2 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 0)
+  Automatically selected 3 Gaussians for theta_1_step2 (label 0)
+  Automatically selected 3 Gaussians for theta_1_step0 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step1 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step2 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 2)
+
+Optimizing 1st Order TSK Coefficients...
+================================================================================
+Optimization completed. Final training MSE: 0.0000
+  Fitting regressor for output 'theta_2' (2/2)
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. theta_2_step2                  - Score: 1.0000
+ 2. theta_2_step1                  - Score: 0.9824
+ 3. theta_2_step0                  - Score: 0.9748
+ 4. theta_1_step2                  - Score: 0.8527
+ 5. theta_1_step0                  - Score: 0.8476
+ 6. theta_1_step1                  - Score: 0.8435
+================================================================================
+  Automatically selected 4 Gaussians for theta_1_step2 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 1)
+  Automatically selected 3 Gaussians for theta_1_step1 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step0 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 0)
+  Automatically selected 3 Gaussians for theta_2_step1 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 0)
+  Automatically selected 3 Gaussians for theta_2_step2 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step0 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 0)
+
+Optimizing 1st Order TSK Coefficients...
+================================================================================
+Optimization completed. Final training MSE: 0.0001
+
+Per-output metrics:
+  theta_1   : R2=0.9860  RMSE=0.0036  MAE=0.0025
+  theta_2   : R2=0.9660  RMSE=0.0081  MAE=0.0063
+train-mimo-window3 took 4.9524 seconds
+
+  Training window_size=5...
+Loading 7 simulation files for MIMO (window=5)...
+MIMO combined data shape: X=(20965, 10), y=(20965, 2)
+Loading 1 simulation files for MIMO (window=5)...
+MIMO combined data shape: X=(2995, 10), y=(2995, 2)
+
+============================================================
+MIMO FULL-STATE PREDICTION MODEL (window=5)
+============================================================
+  Fitting regressor for output 'theta_1' (1/2)
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. theta_1_step0                  - Score: 1.0000
+ 2. theta_1_step1                  - Score: 0.9519
+ 3. theta_1_step2                  - Score: 0.9129
+ 4. theta_1_step3                  - Score: 0.8870
+ 5. theta_1_step4                  - Score: 0.8790
+ 6. theta_2_step4                  - Score: 0.3016
+ 7. theta_2_step0                  - Score: 0.2995
+ 8. theta_2_step3                  - Score: 0.2964
+ 9. theta_2_step1                  - Score: 0.2942
+10. theta_2_step2                  - Score: 0.2940
+================================================================================
+  Automatically selected 4 Gaussians for theta_1_step3 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step4 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step0 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step4 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step2 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step1 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step3 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step4 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step3 (label 0)
+  Automatically selected 3 Gaussians for theta_1_step4 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step0 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step1 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step3 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step2 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step4 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step3 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step4 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step3 (label 2)
+
+Optimizing 1st Order TSK Coefficients...
+================================================================================
+Optimization completed. Final training MSE: 0.0002
+  Fitting regressor for output 'theta_2' (2/2)
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. theta_2_step4                  - Score: 1.0000
+ 2. theta_2_step0                  - Score: 0.9834
+ 3. theta_2_step3                  - Score: 0.9823
+ 4. theta_2_step1                  - Score: 0.9752
+ 5. theta_2_step2                  - Score: 0.9745
+ 6. theta_1_step0                  - Score: 0.8831
+ 7. theta_1_step1                  - Score: 0.8625
+ 8. theta_1_step4                  - Score: 0.8541
+ 9. theta_1_step2                  - Score: 0.8491
+10. theta_1_step3                  - Score: 0.8454
+================================================================================
+  Automatically selected 4 Gaussians for theta_1_step4 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step3 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step4 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step3 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 1)
+  Automatically selected 3 Gaussians for theta_1_step2 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step3 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step4 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step0 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step1 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step3 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step4 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 0)
+  Automatically selected 3 Gaussians for theta_2_step3 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 0)
+  Automatically selected 3 Gaussians for theta_2_step4 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step1 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step2 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step0 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step3 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step4 (label 0)
+
+Optimizing 1st Order TSK Coefficients...
+================================================================================
+Optimization completed. Final training MSE: 0.0006
+
+Per-output metrics:
+  theta_1   : R2=0.8534  RMSE=0.0116  MAE=0.0070
+  theta_2   : R2=0.8390  RMSE=0.0177  MAE=0.0121
+train-mimo-window5 took 9.7877 seconds
+
+  Training window_size=7...
+Loading 7 simulation files for MIMO (window=7)...
+MIMO combined data shape: X=(20951, 14), y=(20951, 2)
+Loading 1 simulation files for MIMO (window=7)...
+MIMO combined data shape: X=(2993, 14), y=(2993, 2)
+
+============================================================
+MIMO FULL-STATE PREDICTION MODEL (window=7)
+============================================================
+  Fitting regressor for output 'theta_1' (1/2)
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. theta_1_step0                  - Score: 1.0000
+ 2. theta_1_step1                  - Score: 0.9463
+ 3. theta_1_step2                  - Score: 0.8983
+ 4. theta_1_step3                  - Score: 0.8550
+ 5. theta_1_step4                  - Score: 0.8200
+ 6. theta_1_step5                  - Score: 0.7966
+ 7. theta_1_step6                  - Score: 0.7897
+ 8. theta_2_step0                  - Score: 0.2876
+ 9. theta_2_step1                  - Score: 0.2770
+10. theta_2_step6                  - Score: 0.2712
+11. theta_2_step2                  - Score: 0.2694
+12. theta_2_step5                  - Score: 0.2666
+13. theta_2_step3                  - Score: 0.2646
+14. theta_2_step4                  - Score: 0.2642
+================================================================================
+  Automatically selected 4 Gaussians for theta_1_step6 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step5 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step4 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step3 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step2 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step1 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step6 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step5 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step6 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step5 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step4 (label 0)
+  Automatically selected 3 Gaussians for theta_1_step2 (label 0)
+  Automatically selected 3 Gaussians for theta_1_step3 (label 0)
+  Automatically selected 3 Gaussians for theta_1_step6 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step0 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step4 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step5 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step1 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step2 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step3 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step6 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step5 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step6 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step5 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step3 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step4 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step3 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step4 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step3 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step4 (label 2)
+
+Optimizing 1st Order TSK Coefficients...
+================================================================================
+Optimization completed. Final training MSE: 0.0003
+  Fitting regressor for output 'theta_2' (2/2)
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. theta_2_step0                  - Score: 1.0000
+ 2. theta_2_step6                  - Score: 0.9917
+ 3. theta_2_step1                  - Score: 0.9896
+ 4. theta_2_step2                  - Score: 0.9757
+ 5. theta_2_step5                  - Score: 0.9741
+ 6. theta_2_step3                  - Score: 0.9670
+ 7. theta_2_step4                  - Score: 0.9663
+ 8. theta_1_step0                  - Score: 0.9462
+ 9. theta_1_step1                  - Score: 0.9153
+10. theta_1_step2                  - Score: 0.8900
+11. theta_1_step3                  - Score: 0.8696
+12. theta_1_step6                  - Score: 0.8622
+13. theta_1_step4                  - Score: 0.8565
+14. theta_1_step5                  - Score: 0.8529
+================================================================================
+  Automatically selected 4 Gaussians for theta_1_step6 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step3 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step4 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step5 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step3 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step6 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step6 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step0 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step1 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step3 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step2 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step6 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step3 (label 0)
+  Automatically selected 3 Gaussians for theta_2_step4 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step5 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step1 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step3 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 0)
+  Automatically selected 3 Gaussians for theta_2_step0 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step6 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step2 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step5 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step4 (label 1)
+  Automatically selected 3 Gaussians for theta_1_step5 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step4 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step3 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step4 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step5 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step6 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step5 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step4 (label 0)
+
+Optimizing 1st Order TSK Coefficients...
+================================================================================
+Optimization completed. Final training MSE: 0.0012
+
+Per-output metrics:
+  theta_1   : R2=0.8188  RMSE=0.0130  MAE=0.0089
+  theta_2   : R2=0.6609  RMSE=0.0257  MAE=0.0175
+train-mimo-window7 took 12.7253 seconds
+
+  Training window_size=10...
+Loading 7 simulation files for MIMO (window=10)...
+MIMO combined data shape: X=(20930, 20), y=(20930, 2)
+Loading 1 simulation files for MIMO (window=10)...
+MIMO combined data shape: X=(2990, 20), y=(2990, 2)
+
+============================================================
+MIMO FULL-STATE PREDICTION MODEL (window=10)
+============================================================
+  Fitting regressor for output 'theta_1' (1/2)
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. theta_1_step0                  - Score: 1.0000
+ 2. theta_1_step1                  - Score: 0.9465
+ 3. theta_1_step2                  - Score: 0.8957
+ 4. theta_1_step3                  - Score: 0.8485
+ 5. theta_1_step4                  - Score: 0.8031
+ 6. theta_1_step5                  - Score: 0.7625
+ 7. theta_1_step6                  - Score: 0.7257
+ 8. theta_1_step7                  - Score: 0.6958
+ 9. theta_1_step8                  - Score: 0.6761
+10. theta_1_step9                  - Score: 0.6703
+11. theta_2_step0                  - Score: 0.2823
+12. theta_2_step1                  - Score: 0.2684
+13. theta_2_step2                  - Score: 0.2560
+14. theta_2_step3                  - Score: 0.2439
+15. theta_2_step4                  - Score: 0.2355
+16. theta_2_step9                  - Score: 0.2308
+17. theta_2_step5                  - Score: 0.2294
+18. theta_2_step8                  - Score: 0.2269
+19. theta_2_step6                  - Score: 0.2254
+20. theta_2_step7                  - Score: 0.2251
+================================================================================
+  Automatically selected 3 Gaussians for theta_1_step8 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step3 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step4 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step5 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step7 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step6 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step9 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step8 (label 0)
+  Automatically selected 3 Gaussians for theta_2_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 0)
+  Automatically selected 3 Gaussians for theta_2_step1 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step3 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step4 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step5 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step7 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step6 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step9 (label 0)
+  Automatically selected 3 Gaussians for theta_1_step8 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step0 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step2 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step4 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step3 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step1 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step5 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step7 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step6 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step9 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step1 (label 0)
+  Automatically selected 3 Gaussians for theta_2_step0 (label 0)
+  Automatically selected 3 Gaussians for theta_2_step2 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step3 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step4 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step9 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step5 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step8 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step6 (label 1)
+  Automatically selected 3 Gaussians for theta_2_step7 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step3 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step4 (label 0)
+  Automatically selected 3 Gaussians for theta_2_step2 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step9 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step8 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step5 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step6 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step7 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step3 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step9 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step4 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step8 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step5 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step6 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step7 (label 2)
+
+Optimizing 1st Order TSK Coefficients...
+================================================================================
+Optimization completed. Final training MSE: 0.0003
+  Fitting regressor for output 'theta_2' (2/2)
+
+Features Ranked by Differentiation Strength:
+================================================================================
+ 1. theta_1_step0                  - Score: 1.0000
+ 2. theta_2_step0                  - Score: 0.9864
+ 3. theta_2_step1                  - Score: 0.9646
+ 4. theta_1_step1                  - Score: 0.9573
+ 5. theta_2_step2                  - Score: 0.9441
+ 6. theta_2_step3                  - Score: 0.9277
+ 7. theta_2_step9                  - Score: 0.9213
+ 8. theta_2_step4                  - Score: 0.9181
+ 9. theta_1_step2                  - Score: 0.9174
+10. theta_2_step5                  - Score: 0.9054
+11. theta_2_step8                  - Score: 0.9046
+12. theta_2_step6                  - Score: 0.8974
+13. theta_2_step7                  - Score: 0.8970
+14. theta_1_step3                  - Score: 0.8832
+15. theta_1_step4                  - Score: 0.8543
+16. theta_1_step5                  - Score: 0.8307
+17. theta_1_step6                  - Score: 0.8112
+18. theta_1_step9                  - Score: 0.8006
+19. theta_1_step7                  - Score: 0.7980
+20. theta_1_step8                  - Score: 0.7933
+================================================================================
+  Automatically selected 4 Gaussians for theta_1_step2 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step4 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step3 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step9 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step8 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step5 (label 1)
+  Automatically selected 4 Gaussians for theta_2_step6 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 1)
+  Automatically selected 3 Gaussians for theta_1_step2 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step0 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step1 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step9 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step4 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step6 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step2 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step8 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step5 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step2 (label 0)
+  Automatically selected 3 Gaussians for theta_2_step3 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step0 (label 2)
+  Automatically selected 3 Gaussians for theta_2_step1 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step0 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step7 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step3 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step4 (label 1)
+  Automatically selected 3 Gaussians for theta_1_step3 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step9 (label 0)
+  Automatically selected 3 Gaussians for theta_1_step4 (label 2)
+  Automatically selected 4 Gaussians for theta_2_step4 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step8 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step6 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step2 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step3 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step5 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step1 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step0 (label 0)
+  Automatically selected 3 Gaussians for theta_2_step7 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step3 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step4 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step9 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step5 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step8 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step6 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step7 (label 1)
+  Automatically selected 4 Gaussians for theta_1_step9 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step5 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step8 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step6 (label 2)
+  Automatically selected 3 Gaussians for theta_1_step7 (label 2)
+  Automatically selected 4 Gaussians for theta_1_step9 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step8 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step5 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step6 (label 0)
+  Automatically selected 4 Gaussians for theta_1_step7 (label 0)
+  Automatically selected 4 Gaussians for theta_2_step7 (label 0)
+
+Optimizing 1st Order TSK Coefficients...
+================================================================================ERROR
+
+======================================================================
+ERROR: test_double_pendulum_fuzzy_prediction (tests.test_double_pendulum.TestDoublePendulumFuzzyPrediction.test_double_pendulum_fuzzy_prediction)
+Main test: simulate double pendulum and train fuzzy regression models.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/scott/PycharmProjects/tribble-fis/.venv/lib/python3.13/site-packages/pandas/core/indexes/base.py", line 3641, in get_loc
+    return self._engine.get_loc(casted_key)
+           ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "pandas/_libs/index.pyx", line 168, in pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/index.pyx", line 197, in pandas._libs.index.IndexEngine.get_loc
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7668, in pandas._libs.hashtable.PyObjectHashTable.get_item
+  File "pandas/_libs/hashtable_class_helper.pxi", line 7676, in pandas._libs.hashtable.PyObjectHashTable.get_item
+KeyError: 'theta_1'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/PycharmProjects/tribble-fis/.claude/worktrees/extend-simulation-mimo-memory/tests/test_double_pendulum.py", line 619, in test_double_pendulum_fuzzy_prediction
+    predicted_traj = run_iterative_prediction(
+        mimo_results_by_window[ws]['regressor'], tst_df, n_steps, window_size=ws, verbose=False
+    )
+  File "/home/scott/PycharmProjects/tribble-fis/.claude/worktrees/extend-simulation-mimo-memory/tests/test_double_pendulum.py", line 210, in run_iterative_prediction
+    new_row[fs.step_name] = running_state.iloc[-1][fs.col_name] + next_state_delta_df.iloc[0][
+                            ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/scott/PycharmProjects/tribble-fis/.venv/lib/python3.13/site-packages/pandas/core/series.py", line 959, in __getitem__
+    return self._get_value(key)
+           ~~~~~~~~~~~~~~~^^^^^
+  File "/home/scott/PycharmProjects/tribble-fis/.venv/lib/python3.13/site-packages/pandas/core/series.py", line 1046, in _get_value
+    loc = self.index.get_loc(label)
+  File "/home/scott/PycharmProjects/tribble-fis/.venv/lib/python3.13/site-packages/pandas/core/indexes/base.py", line 3648, in get_loc
+    raise KeyError(key) from err
+KeyError: 'theta_1'
+
+----------------------------------------------------------------------
+Ran 1 test in 53.198s
+
+FAILED (errors=1)
+
+Optimization completed. Final training MSE: 0.0254
+
+Per-output metrics:
+  theta_1   : R2=0.7804  RMSE=0.0143  MAE=0.0104
+  theta_2   : R2=-1.7753  RMSE=0.0734  MAE=0.0286
+train-mimo-window10 took 15.4898 seconds
+
+############################################################
+# STEP 5: Iterative Rollout from Initial Conditions (Multiple Window Sizes)
+############################################################
+
+Window size 1: running 2999 iterative prediction steps...
+iterative-rollout-window1 took 0.2566 seconds
+  Window 1: Diverged at step 3000 (30.00s) / 3000 total steps
+
+Window size 3: running 2997 iterative prediction steps...

@@ -255,7 +255,7 @@ def initialize_model() -> tuple[DataSimulation, DataSimulation]:
                                 omega1=0.0,
                                 omega2=0.0,
                                 dt=0.01,
-                                duration=4.001,
+                                duration=30.0,
                                 theta2=0.0)
     for ij in range(len(theta2s)):
         theta2 = theta2s[ij]
