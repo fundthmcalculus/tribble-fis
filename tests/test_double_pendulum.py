@@ -362,7 +362,13 @@ def create_pendulum_animation_with_training(actual_df, predicted_df, train_traje
     ax.set_title('Double Pendulum: All Trajectories Overlaid', color='white', fontsize=14, fontweight='bold')
     fig.suptitle(f'Training (bg) → Test Reference → Test FIS (front)', color='white', fontsize=12)
 
-    trail_len = 40
+    # Different tail lengths for each trajectory to make them visually distinct
+    trail_lens = {
+        'train1': 15,      # shortest (orange)
+        'train2': 25,      # medium (green)
+        'actual': 35,      # longer (cyan)
+        'predicted': 50,   # longest (red)
+    }
 
     artists = {
         'train1': {
@@ -388,8 +394,8 @@ def create_pendulum_animation_with_training(actual_df, predicted_df, train_traje
     }
 
     time_text = fig.text(0.5, 0.01, '', ha='center', color='#aaaaaa', fontsize=11)
-    legend_text = fig.text(0.5, 0.05, 'Train1 (orange) · Train2 (green) · Test Ref (cyan) · Test FIS (red)',
-                           ha='center', color='#aaaaaa', fontsize=10)
+    legend_text = fig.text(0.5, 0.05, 'Train1 (orange, tail=15) · Train2 (green, tail=25) · Test Ref (cyan, tail=35) · Test FIS (red, tail=50)',
+                           ha='center', color='#aaaaaa', fontsize=9)
 
     def init():
         for key in artists:
@@ -405,26 +411,29 @@ def create_pendulum_animation_with_training(actual_df, predicted_df, train_traje
 
     def update(frame):
         i = frame
-        t_start = max(0, i - trail_len)
 
-        # Training 1 (background)
+        # Training 1 (background) - shortest tail
+        t_start = max(0, i - trail_lens['train1'])
         if i < len(nearest_data[0]['x2']):
             artists['train1']['trail2'].set_data(nearest_data[0]['x2'][t_start:i+1], nearest_data[0]['y2'][t_start:i+1])
             artists['train1']['rod1'].set_data([0, nearest_data[0]['x1'][i]], [0, nearest_data[0]['y1'][i]])
             artists['train1']['rod2'].set_data([nearest_data[0]['x1'][i], nearest_data[0]['x2'][i]], [nearest_data[0]['y1'][i], nearest_data[0]['y2'][i]])
 
-        # Training 2 (background)
+        # Training 2 (background) - medium tail
+        t_start = max(0, i - trail_lens['train2'])
         if i < len(nearest_data[1]['x2']):
             artists['train2']['trail2'].set_data(nearest_data[1]['x2'][t_start:i+1], nearest_data[1]['y2'][t_start:i+1])
             artists['train2']['rod1'].set_data([0, nearest_data[1]['x1'][i]], [0, nearest_data[1]['y1'][i]])
             artists['train2']['rod2'].set_data([nearest_data[1]['x1'][i], nearest_data[1]['x2'][i]], [nearest_data[1]['y1'][i], nearest_data[1]['y2'][i]])
 
-        # Actual (test reference)
+        # Actual (test reference) - longer tail
+        t_start = max(0, i - trail_lens['actual'])
         artists['actual']['trail2'].set_data(x2_act[t_start:i+1], y2_act[t_start:i+1])
         artists['actual']['rod1'].set_data([0, x1_act[i]], [0, y1_act[i]])
         artists['actual']['rod2'].set_data([x1_act[i], x2_act[i]], [y1_act[i], y2_act[i]])
 
-        # Predicted (front)
+        # Predicted (front) - longest tail
+        t_start = max(0, i - trail_lens['predicted'])
         artists['predicted']['trail2'].set_data(x2_pred[t_start:i+1], y2_pred[t_start:i+1])
         artists['predicted']['rod1'].set_data([0, x1_pred[i]], [0, y1_pred[i]])
         artists['predicted']['rod2'].set_data([x1_pred[i], x2_pred[i]], [y1_pred[i], y2_pred[i]])
