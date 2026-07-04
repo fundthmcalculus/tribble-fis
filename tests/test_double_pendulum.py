@@ -20,7 +20,8 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
-from tests.ode_helpers import load_and_prepare_data, train_and_evaluate_single_step, set_axes_style, angles_to_xy
+from tests.ode_helpers import (load_and_prepare_data, train_and_evaluate_single_step, set_axes_style,
+                              angles_to_xy, plot_test_vs_nearest_training)
 from tests.test_fuzzy_ode import initialize_model
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -28,6 +29,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from tribblefis.gaussian_regressor import MimoGaussianPredictor
 
 FeatureStep = namedtuple('FeatureStep', ['step_name', 'step_offset', 'col_name'])
+
+
+class SimulationParams:
+    """Simulation parameters for double pendulum."""
+    dt = 0.01  # timestep in seconds
 
 
 @contextmanager
@@ -434,7 +440,7 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
         print("# STEP 5: Iterative Rollout from Initial Conditions")
         print("#"*60)
         # Seed window: first MIMO_WINDOW_SIZE rows; predict everything after the seed.
-        tst_df = test_trajectories[0]
+        tst_df = test_results.trajectories[0]
         n_steps = len(tst_df) - MIMO_WINDOW_SIZE
 
         print(f"Seed window ({MIMO_WINDOW_SIZE} rows)")
@@ -495,8 +501,20 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
         gif_path = "double_pendulum_comparison.gif"
         create_pendulum_animation(
             actual_trajectory, predicted_trajectory,
-        gif_path, dt=params.dt, max_frames=300, fps=25
+        gif_path, dt=SimulationParams.dt, max_frames=300, fps=25
         )
+
+        # Step 9: Plot test vs nearest training trajectories to visualize stability
+        print("\n" + "="*60)
+        print("TEST VS NEAREST TRAINING TRAJECTORIES")
+        print("="*60)
+        fig_nearest = plot_test_vs_nearest_training(
+            actual_trajectory, train_results.trajectories, dt=SimulationParams.dt,
+            features=OUTPUT_FEATURES, k=2
+        )
+        fig_nearest.savefig("test_vs_nearest_training.png", dpi=200, bbox_inches='tight')
+        plt.close(fig_nearest)
+        print("  Saved to: test_vs_nearest_training.png")
 
         print("\nTest completed successfully!")
 
