@@ -207,7 +207,8 @@ def run_iterative_prediction(
                         new_row[fs.step_name] = running_state.iloc[-1][next_step_name]
                     else:
                         # Most recent step gets the new prediction
-                        new_row[fs.step_name] = running_state.iloc[-1][fs.col_name] + next_state_delta_df.iloc[0][
+                        most_recent_col = f"{fs.col_name}_step{window_size - 1}"
+                        new_row[fs.step_name] = running_state.iloc[-1][most_recent_col] + next_state_delta_df.iloc[0][
                             fs.col_name]
                 new_state = pd.DataFrame([new_row])
 
@@ -588,23 +589,78 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
                 X_mimo_train_w3, y_mimo_train_w3, X_mimo_test_w3, y_mimo_test_w3, window_size=3
             )
 
-        # Step 5: Iterative rollout from initial conditions
+        # Step 4c: Multi-window stability comparison
         print("\n" + "#"*60)
-        print("# STEP 5: Iterative Rollout from Initial Conditions")
+        print("# STEP 4c: Multi-Window Stability Comparison")
         print("#"*60)
-        # Seed window: first MIMO_WINDOW_SIZE rows; predict everything after the seed.
+        print("Training MIMO models with different memory windows to assess stability...")
+
+        window_sizes = [1, 3, 5, 7, 10]
+        mimo_results_by_window = {}
+
+        for ws in window_sizes:
+            print(f"\n  Training window_size={ws}...")
+            with time_this(f'train-mimo-window{ws}'):
+                X_train_ws, y_train_ws = load_and_prepare_mimo_data(train_results.trajectories, window_size=ws)
+                X_test_ws, y_test_ws = load_and_prepare_mimo_data(test_results.trajectories, window_size=ws)
+                results_ws = train_and_evaluate_mimo(
+                    X_train_ws, y_train_ws, X_test_ws, y_test_ws, window_size=ws
+                )
+                mimo_results_by_window[ws] = results_ws
+
+        # Step 5: Iterative rollout from initial conditions with all window sizes
+        print("\n" + "#"*60)
+        print("# STEP 5: Iterative Rollout from Initial Conditions (Multiple Window Sizes)")
+        print("#"*60)
+        # Run iterative predictions for all window sizes
         tst_df = test_results.trajectories[0]
-        n_steps = len(tst_df) - MIMO_WINDOW_SIZE
+        actual_trajectory_base = tst_df[OUTPUT_FEATURES].reset_index(drop=True)
 
-        print(f"Seed window ({MIMO_WINDOW_SIZE} rows)")
-        print(f"Running {n_steps} iterative prediction steps...")
+        predicted_trajectories_by_window = {}
+        stability_summary = []
 
-        with time_this('iterative-rollout'):
-            predicted_trajectory = run_iterative_prediction(
-            results_mimo['regressor'], tst_df, n_steps, window_size=MIMO_WINDOW_SIZE
-            )
+        for ws in window_sizes:
+            n_steps = len(tst_df) - ws
+            print(f"\nWindow size {ws}: running {n_steps} iterative prediction steps...")
 
-        # Align actual to start at the last row of the seed window.
+            with time_this(f'iterative-rollout-window{ws}'):
+                predicted_traj = run_iterative_prediction(
+                    mimo_results_by_window[ws]['regressor'], tst_df, n_steps, window_size=ws, verbose=False
+                )
+                predicted_trajectories_by_window[ws] = predicted_traj
+
+            # Find divergence point (where predictions become NaN)
+            # For window_size > 1, extract the most recent state columns
+            if ws == 1:
+                check_col = 'theta_1'
+            else:
+                check_col = f'theta_1_step{ws - 1}'
+
+            if check_col in predicted_traj.columns:
+                valid_mask = ~np.isnan(predicted_traj[check_col].values)
+                if valid_mask.any():
+                    divergence_idx = np.where(~valid_mask)[0]
+                    if len(divergence_idx) > 0:
+                        divergence_idx = divergence_idx[0]
+                    else:
+                        divergence_idx = len(predicted_traj)
+                else:
+                    divergence_idx = 0
+            else:
+                divergence_idx = len(predicted_traj)
+
+            divergence_time = divergence_idx * SimulationParams.dt
+            stability_summary.append({
+                'window_size': ws,
+                'divergence_step': divergence_idx,
+                'divergence_time_s': divergence_time,
+                'trajectory_length': len(predicted_traj)
+            })
+
+            print(f"  Window {ws}: Diverged at step {divergence_idx} ({divergence_time:.2f}s) / {len(tst_df)} total steps")
+
+        # Use default window size for detailed analysis
+        predicted_trajectory = predicted_trajectories_by_window[MIMO_WINDOW_SIZE]
         actual_trajectory = tst_df[OUTPUT_FEATURES].iloc[MIMO_WINDOW_SIZE - 1:].reset_index(drop=True)
         n = min(len(actual_trajectory), len(predicted_trajectory))
 
@@ -621,7 +677,21 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
                 r2 = r2_score(act[valid], pred[valid])
                 print(f"  {col:10s}: MAE={mae:.4f}  R2={r2:.4f}  (valid={valid.sum()}/{n})")
 
-        rollout_metrics("Iterative Rollout Metrics", predicted_trajectory, actual_trajectory, n)
+        rollout_metrics("Iterative Rollout Metrics (window=1)", predicted_trajectory, actual_trajectory, n)
+
+        # Step 5b: Stability comparison summary
+        print("\n" + "="*70)
+        print("STABILITY COMPARISON: DIVERGENCE ANALYSIS BY MEMORY WINDOW")
+        print("="*70)
+        print(f"\n{'Window Size':<15} {'Divergence Step':<20} {'Divergence Time (s)':<25} {'Total Duration (s)':<20}")
+        print("-" * 80)
+        for summary in stability_summary:
+            print(f"{summary['window_size']:<15} {summary['divergence_step']:<20} {summary['divergence_time_s']:<25.2f} {summary['trajectory_length']*SimulationParams.dt:<20.2f}")
+
+        best_window = max(stability_summary, key=lambda x: x['divergence_time_s'])
+        print("\n" + "="*70)
+        print(f"Best Stability: Window size {best_window['window_size']} stays stable for {best_window['divergence_time_s']:.2f}s")
+        print("="*70)
 
         # Step 6: Summary
         print("\n" + "="*60)
@@ -687,8 +757,12 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
         self.assertIsNotNone(results_single['regressor'])
         self.assertIsNotNone(results_mimo['regressor'])
         self.assertIsNotNone(results_mimo_w3['regressor'])
+        for ws in window_sizes:
+            self.assertIn(ws, mimo_results_by_window)
+            self.assertIsNotNone(mimo_results_by_window[ws]['regressor'])
         self.assertGreater(len(actual_trajectory), 0)
         self.assertGreater(len(predicted_trajectory), 0)
+        self.assertGreater(len(stability_summary), 0)
 
 
 if __name__ == '__main__':
