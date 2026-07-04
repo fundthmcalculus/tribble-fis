@@ -89,6 +89,62 @@ class DoublePendulum(OdeSystem):
         return [omega1, alpha1, omega2, alpha2]
 
 
+class DoublePendulumDamped(OdeSystem):
+    """Double pendulum simulator with damping using Lagrangian mechanics with dissipation."""
+
+    def __init__(self, m1=1.0, m2=1.0, l1=1.0, l2=1.0, g=9.81, c1=0.1, c2=0.1):
+        self.m1 = m1
+        self.m2 = m2
+        self.l1 = l1
+        self.l2 = l2
+        self.g = g
+        self.c1 = c1
+        self.c2 = c2
+
+    @property
+    def state_labels(self) -> list[str]:
+        return ['theta_1', 'omega_1', 'theta_2', 'omega_2']
+
+    @property
+    def derivative_labels(self) -> list[str]:
+        return ["omega_1", "alpha_1", "omega_2", "alpha_2"]
+
+    def equations_of_motion(self, state, t):
+        """
+        Compute damped double pendulum equations of motion using Lagrangian approach with Rayleigh dissipation.
+
+        Damping dissipation function: F = (1/2)*c1*omega_1^2 + (1/2)*c2*omega_2^2
+
+        State: [theta_1, omega_1, theta_2, omega_2]
+        Returns: [omega_1, alpha_1, omega_2, alpha_2]
+        """
+        theta1, omega1, theta2, omega2 = state
+        delta_theta = theta1 - theta2
+
+        # Common denominator term: μ = m₁ + m₂*sin²(Δ)
+        mu = self.m1 + self.m2 * np.sin(delta_theta)**2
+
+        # Isolated equation for α₁ (upper pendulum angular acceleration)
+        num1_1 = -self.g * (self.m1 + self.m2) * np.sin(theta1)
+        num1_2 = -self.m2 * self.g * np.sin(theta2) * np.cos(delta_theta)
+        num1_3 = -self.m2 * self.l2 * omega2**2 * np.sin(delta_theta)
+        num1_4 = -self.m2 * self.l1 * omega1**2 * np.sin(delta_theta) * np.cos(delta_theta)
+        num1_5 = -(self.c1 * omega1) / self.l1
+        num1_6 = (self.c2 * omega2 * np.cos(delta_theta)) / self.l2
+        alpha1 = (num1_1 + num1_2 + num1_3 + num1_4 + num1_5 + num1_6) / (self.l1 * mu)
+
+        # Isolated equation for α₂ (lower pendulum angular acceleration)
+        num2_1 = self.g * (self.m1 + self.m2) * np.sin(theta1) * np.cos(delta_theta)
+        num2_2 = -self.g * (self.m1 + self.m2) * np.sin(theta2)
+        num2_3 = self.l1 * omega1**2 * (self.m1 + self.m2) * np.sin(delta_theta)
+        num2_4 = self.m2 * self.l2 * omega2**2 * np.sin(delta_theta) * np.cos(delta_theta)
+        num2_5 = (self.c1 * omega1 * np.cos(delta_theta)) / self.l1
+        num2_6 = -(self.c2 * omega2 * (self.m1 + self.m2)) / (self.m2 * self.l2)
+        alpha2 = (num2_1 + num2_2 + num2_3 + num2_4 + num2_5 + num2_6) / (self.l2 * mu)
+
+        return [omega1, alpha1, omega2, alpha2]
+
+
 def test_tribble_ode():
     """Test ODE system with fuzzy regression model."""
     # 1) Create the simulation data for various initial conditions.
