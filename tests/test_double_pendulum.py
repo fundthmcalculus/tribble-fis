@@ -623,15 +623,24 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
                 predicted_trajectories_by_window[ws] = predicted_traj
 
             # Find divergence point (where predictions become NaN)
-            valid_mask = ~np.isnan(predicted_traj['theta_1'].values)
-            if valid_mask.any():
-                divergence_idx = np.where(~valid_mask)[0]
-                if len(divergence_idx) > 0:
-                    divergence_idx = divergence_idx[0]
-                else:
-                    divergence_idx = len(predicted_traj)
+            # For window_size > 1, extract the most recent state columns
+            if ws == 1:
+                check_col = 'theta_1'
             else:
-                divergence_idx = 0
+                check_col = f'theta_1_step{ws - 1}'
+
+            if check_col in predicted_traj.columns:
+                valid_mask = ~np.isnan(predicted_traj[check_col].values)
+                if valid_mask.any():
+                    divergence_idx = np.where(~valid_mask)[0]
+                    if len(divergence_idx) > 0:
+                        divergence_idx = divergence_idx[0]
+                    else:
+                        divergence_idx = len(predicted_traj)
+                else:
+                    divergence_idx = 0
+            else:
+                divergence_idx = len(predicted_traj)
 
             divergence_time = divergence_idx * SimulationParams.dt
             stability_summary.append({
