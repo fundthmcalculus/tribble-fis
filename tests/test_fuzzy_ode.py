@@ -6,7 +6,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from pandas import DataFrame
-from scipy.integrate import odeint
 
 from tests.ode_helpers import angles_to_xy, set_axes_style
 from tests.odemodel import OdeSystem
@@ -108,7 +107,7 @@ def test_tribble_ode():
     actual_trajectory = test_results.trajectories[0]
     state = test_results.params.np
     states = [state.copy()]
-    for _ in range(len(t_span) - 1):
+    for ij in range(len(t_span) - 1):
         ds = gauss_fcn(state, t_span[ij])
         state += ds * test_results.params.dt
         if not np.isfinite(state).all():
@@ -250,7 +249,7 @@ def test_tribble_ode():
 def initialize_model() -> tuple[DataSimulation, DataSimulation]:
     pendulum = DoublePendulum()
     trajectories = []
-    theta2s = np.arange(1.5, 3.00001, 0.25)  # TODO - 0.1
+    theta2s = np.arange(1.5, 3.00001, 0.1)  # TODO - 0.1
     train_params = PendulumParameters(theta1=120 * np.pi / 180,
                                 omega1=0.0,
                                 omega2=0.0,
