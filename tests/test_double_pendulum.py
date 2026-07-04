@@ -310,6 +310,139 @@ def create_pendulum_animation(actual_df, predicted_df, output_path, dt=0.01, max
     return output_path
 
 
+def create_pendulum_animation_with_training(actual_df, predicted_df, train_trajectories, output_path, dt=0.01, max_frames=500, fps=30):
+    """
+    Create a GIF animation showing test case, prediction, and 2 nearest training trajectories.
+
+    Args:
+        actual_df: DataFrame with actual test trajectory
+        predicted_df: DataFrame with predicted trajectory
+        train_trajectories: list of training trajectory DataFrames
+        output_path: path to save the .gif file
+        dt: timestep between rows
+        max_frames: cap on frames to keep the GIF manageable
+        fps: frames per second in the output GIF
+    """
+    from tests.ode_helpers import find_nearest_trajectories
+
+    # Find nearest training trajectories
+    nearest_list = find_nearest_trajectories(actual_df, train_trajectories, k=2, features=OUTPUT_FEATURES)
+
+    step = max(1, len(actual_df) // max_frames)
+    actual_frames = actual_df.iloc[::step].head(max_frames)
+    pred_frames = predicted_df.iloc[::step].head(max_frames)
+    n_frames = min(len(actual_frames), len(pred_frames))
+
+    pred_frames = pred_frames.copy().ffill().fillna(0.0)
+
+    x1_act, y1_act, x2_act, y2_act = angles_to_xy(
+        actual_frames['theta_1'].values, actual_frames['theta_2'].values, 1.0, 1.0
+    )
+    x1_pred, y1_pred, x2_pred, y2_pred = angles_to_xy(
+        pred_frames['theta_1'].values, pred_frames['theta_2'].values, 1.0, 1.0
+    )
+
+    # Prepare nearest training trajectories
+    nearest_data = []
+    colors_train = ['#ffa500', '#00ff00']
+    for rank, (train_idx, dist, train_traj) in enumerate(nearest_list):
+        train_frames = train_traj[OUTPUT_FEATURES].iloc[::step].head(max_frames)
+        x1_t, y1_t, x2_t, y2_t = angles_to_xy(
+            train_frames['theta_1'].values, train_frames['theta_2'].values, 1.0, 1.0
+        )
+        nearest_data.append({
+            'x1': x1_t, 'y1': y1_t, 'x2': x2_t, 'y2': y2_t,
+            'idx': train_idx, 'dist': dist, 'color': colors_train[rank]
+        })
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+    fig.patch.set_facecolor('#1a1a2e')
+    for ax in axes.flat:
+        set_axes_style(ax)
+
+    axes[0, 0].set_title('Actual (Test)', color='white', fontsize=12, fontweight='bold')
+    axes[0, 1].set_title('Predicted (Rollout)', color='white', fontsize=12, fontweight='bold')
+    axes[1, 0].set_title(f'Training {nearest_data[0]["idx"]} (d={nearest_data[0]["dist"]:.4f})', color='white', fontsize=12, fontweight='bold')
+    axes[1, 1].set_title(f'Training {nearest_data[1]["idx"]} (d={nearest_data[1]["dist"]:.4f})', color='white', fontsize=12, fontweight='bold')
+    fig.suptitle('Double Pendulum: Test Case + Prediction + 2 Nearest Training', color='white', fontsize=14, fontweight='bold')
+
+    trail_len = 40
+
+    # Create plot objects for each panel
+    colors_panels = ['#00d4ff', '#ff6b6b', colors_train[0], colors_train[1]]
+    artists = {}
+    for panel_idx, ax_row in enumerate(axes):
+        for panel_col, ax in enumerate(ax_row):
+            key = f'{panel_idx}{panel_col}'
+            color_idx = panel_idx * 2 + panel_col
+            artists[key] = {
+                'trail2': ax.plot([], [], '-', color=colors_panels[color_idx], linewidth=1.2, alpha=0.5)[0],
+                'rod1': ax.plot([], [], 'o-', color='#e0e0e0', lw=2.5, ms=6, markerfacecolor='white')[0],
+                'rod2': ax.plot([], [], 'o-', color='#e0e0e0', lw=2.5, ms=6, markerfacecolor=colors_panels[color_idx])[0],
+            }
+
+    time_text = fig.text(0.5, 0.01, '', ha='center', color='#aaaaaa', fontsize=10)
+
+    def init():
+        for key in artists:
+            for artist in artists[key].values():
+                artist.set_data([], [])
+        time_text.set_text('')
+        result = []
+        for key in artists:
+            for a in artists[key].values():
+                result.append(a)
+        result.append(time_text)
+        return result
+
+    def update(frame):
+        i = frame
+        t_start = max(0, i - trail_len)
+        result = []
+
+        # Actual
+        artists['00']['trail2'].set_data(x2_act[t_start:i+1], y2_act[t_start:i+1])
+        artists['00']['rod1'].set_data([0, x1_act[i]], [0, y1_act[i]])
+        artists['00']['rod2'].set_data([x1_act[i], x2_act[i]], [y1_act[i], y2_act[i]])
+
+        # Predicted
+        artists['01']['trail2'].set_data(x2_pred[t_start:i+1], y2_pred[t_start:i+1])
+        artists['01']['rod1'].set_data([0, x1_pred[i]], [0, y1_pred[i]])
+        artists['01']['rod2'].set_data([x1_pred[i], x2_pred[i]], [y1_pred[i], y2_pred[i]])
+
+        # Nearest 1
+        if i < len(nearest_data[0]['x2']):
+            artists['10']['trail2'].set_data(nearest_data[0]['x2'][t_start:i+1], nearest_data[0]['y2'][t_start:i+1])
+            artists['10']['rod1'].set_data([0, nearest_data[0]['x1'][i]], [0, nearest_data[0]['y1'][i]])
+            artists['10']['rod2'].set_data([nearest_data[0]['x1'][i], nearest_data[0]['x2'][i]], [nearest_data[0]['y1'][i], nearest_data[0]['y2'][i]])
+
+        # Nearest 2
+        if i < len(nearest_data[1]['x2']):
+            artists['11']['trail2'].set_data(nearest_data[1]['x2'][t_start:i+1], nearest_data[1]['y2'][t_start:i+1])
+            artists['11']['rod1'].set_data([0, nearest_data[1]['x1'][i]], [0, nearest_data[1]['y1'][i]])
+            artists['11']['rod2'].set_data([nearest_data[1]['x1'][i], nearest_data[1]['x2'][i]], [nearest_data[1]['y1'][i], nearest_data[1]['y2'][i]])
+
+        time_text.set_text(f't = {i * step * dt:.2f} s')
+
+        result = []
+        for key in artists:
+            for a in artists[key].values():
+                result.append(a)
+        result.append(time_text)
+        return result
+
+    ani = animation.FuncAnimation(
+        fig, update, frames=n_frames, init_func=init,
+        interval=1000 // fps, blit=True
+    )
+
+    writer = animation.PillowWriter(fps=fps)
+    ani.save(str(output_path), writer=writer)
+    plt.close(fig)
+    print(f"  Animation saved to: {output_path}")
+    return output_path
+
+
 def plot_prediction_comparison(results_single, results_window):
     """Plot comparison of predicted vs actual values for both models."""
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -426,15 +559,26 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
             X_single_test, y_single_test = load_and_prepare_data(test_results.trajectories,INPUT_FEATURES, OUTPUT_FEATURES, window_size=1)
             results_single = train_and_evaluate_single_step(N_BINS,OUTPUT_FEATURES, X_single_train, y_single_train, X_single_test, y_single_test)
 
-        # Step 4: MIMO full-state prediction
+        # Step 4: MIMO full-state prediction (window=1)
         print("\n" + "#"*60)
         print(f"# STEP 4: MIMO Full-State Prediction Model (window={MIMO_WINDOW_SIZE})")
         print("#"*60)
-        with time_this('train-mimo'):
+        with time_this('train-mimo-window1'):
             X_mimo_train, y_mimo_train = load_and_prepare_mimo_data(train_results.trajectories, window_size=MIMO_WINDOW_SIZE)
             X_mimo_test, y_mimo_test = load_and_prepare_mimo_data(test_results.trajectories, window_size=MIMO_WINDOW_SIZE)
             results_mimo = train_and_evaluate_mimo(
                 X_mimo_train, y_mimo_train, X_mimo_test, y_mimo_test, window_size=MIMO_WINDOW_SIZE
+            )
+
+        # Step 4b: MIMO with window_size=3 for temporal context
+        print("\n" + "#"*60)
+        print("# STEP 4b: MIMO Full-State Prediction Model (window=3)")
+        print("#"*60)
+        with time_this('train-mimo-window3'):
+            X_mimo_train_w3, y_mimo_train_w3 = load_and_prepare_mimo_data(train_results.trajectories, window_size=3)
+            X_mimo_test_w3, y_mimo_test_w3 = load_and_prepare_mimo_data(test_results.trajectories, window_size=3)
+            results_mimo_w3 = train_and_evaluate_mimo(
+                X_mimo_train_w3, y_mimo_train_w3, X_mimo_test_w3, y_mimo_test_w3, window_size=3
             )
 
         # Step 5: Iterative rollout from initial conditions
@@ -481,9 +625,14 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
         print(f"  RMSE: {results_single['rmse']:.6f}")
         print(f"  MAE:  {results_single['mae']:.6f}")
 
-        print("\nMIMO Model (1-step):")
+        print("\nMIMO Model (window=1):")
         for col in OUTPUT_FEATURES:
             m = results_mimo['metrics'][col]
+            print(f"  {col:10s}: R2={m['r2']:.4f}  RMSE={m['rmse']:.4f}")
+
+        print("\nMIMO Model (window=3):")
+        for col in OUTPUT_FEATURES:
+            m = results_mimo_w3['metrics'][col]
             print(f"  {col:10s}: R2={m['r2']:.4f}  RMSE={m['rmse']:.4f}")
 
         # Step 7: Plots
@@ -496,15 +645,22 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
         fig3.savefig("mimo_iterative_trajectories.png", dpi=200, bbox_inches='tight')
         plt.close(fig3)
 
-        # Step 8: GIF animation (actual vs predicted rollout)
+        # Step 8: GIF animations
         print("\n" + "="*60)
-        print("GENERATING GIF ANIMATION")
+        print("GENERATING GIF ANIMATIONS")
         print("="*60)
         gif_path = "double_pendulum_comparison.gif"
         create_pendulum_animation(
             actual_trajectory, predicted_trajectory,
         gif_path, dt=SimulationParams.dt, max_frames=300, fps=25
         )
+
+        gif_path_with_training = "double_pendulum_with_training.gif"
+        with time_this("create-animation-with-training"):
+            create_pendulum_animation_with_training(
+                actual_trajectory, predicted_trajectory, train_results.trajectories,
+                gif_path_with_training, dt=SimulationParams.dt, max_frames=300, fps=25
+            )
 
         # Step 9: Plot test vs nearest training trajectories to visualize stability
         print("\n" + "="*60)
@@ -523,6 +679,7 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
         # Basic assertions to verify models trained successfully
         self.assertIsNotNone(results_single['regressor'])
         self.assertIsNotNone(results_mimo['regressor'])
+        self.assertIsNotNone(results_mimo_w3['regressor'])
         self.assertGreater(len(actual_trajectory), 0)
         self.assertGreater(len(predicted_trajectory), 0)
 
