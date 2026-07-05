@@ -191,7 +191,7 @@ def run_iterative_prediction(
             running_state = pd.concat([running_state, pd.DataFrame([np.full(running_state.shape[1],np.nan)], columns=running_state.columns)],
                                       ignore_index=True)
         else:
-            # TODO - Predict DELTAS so we can scale to preserve energy!
+            # Predict DELTAS so we can scale to preserve energy!
             next_state_delta_df = regressor.predict(running_state[-window_size:])
             if window_size == 1:
                 new_state = running_state.iloc[-1,:] + next_state_delta_df
@@ -212,8 +212,8 @@ def run_iterative_prediction(
                             fs.col_name]
                 new_state = pd.DataFrame([new_row])
 
-            # TODO - Set better bounds
-            if np.any(np.isnan(new_state)) or np.any(np.abs(new_state) > 1e6):
+            # Set better bounds
+            if np.any(np.isnan(new_state)) or np.any(np.abs(new_state) > 1e4):
                 if diverged_at is None:
                     diverged_at = step + 1
                     if verbose:
