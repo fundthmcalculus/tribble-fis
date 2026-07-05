@@ -1,0 +1,34 @@
+"""fuzzytree -- a hierarchical fuzzy (soft) decision/regression tree built on the
+TRIBBLE TSK fuzzy inference primitives.
+
+Each internal node splits one input variable into fuzzy linguistic terms; samples
+flow down all branches with partial membership; leaves hold local TSK consequents
+(regression) or fuzzy class votes (classification). Variable-to-node assignment is
+automatic by a split criterion but user-overridable via ``VariablePlan``.
+"""
+
+from .plan import AUTO, NodePin, VariablePlan
+from .node import FuzzyTreeNode
+from .regressor import FuzzyRegressionTree, MimoFuzzyTreeRegressor
+from .classifier import FuzzyClassificationTree
+from .hme import (
+    HierarchicalFuzzyExpertsClassifier,
+    HierarchicalFuzzyExpertsRegressor,
+)
+from .render import render_tree_text, plot_fuzzy_tree, render_hme_text, plot_hme
+
+__all__ = [
+    "VariablePlan",
+    "NodePin",
+    "AUTO",
+    "FuzzyTreeNode",
+    "FuzzyRegressionTree",
+    "MimoFuzzyTreeRegressor",
+    "FuzzyClassificationTree",
+    "HierarchicalFuzzyExpertsRegressor",
+    "HierarchicalFuzzyExpertsClassifier",
+    "render_tree_text",
+    "plot_fuzzy_tree",
+    "render_hme_text",
+    "plot_hme",
+]
