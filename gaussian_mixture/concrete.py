@@ -10,17 +10,16 @@ from tribblefis.gauss_math import (
     calculate_gaussian_correlation,
     create_gaussian_membership_dict,
     take_top_features,
-    tsk_firing_strengths, standard_transform,
+    standard_transform,
 )
 from tribblefis.regression import (
     report_regression_performance,
-    compute_first_order_corrections,
-    compute_second_order_corrections,
     plot_tsk_order_comparison,
-    compute_full_second_order_corrections,
-    compute_third_order_corrections,
     partition_output,
-    optimize_tsk_coefficients,
+    solve_tsk_consequents,
+    predict_tsk,
+    select_interaction_terms,
+    select_consequent_hyperparams,
 )
 from tribblefis.report import print_membership_details
 
@@ -57,10 +56,14 @@ def main():
 
     y_raw = standard_transform(y_raw)
 
-    n_output_buckets: int = 4
+    n_output_buckets: int = 3
     n_top_vars: int = -1
     n_gaussians: int = -1
-    b_optimize_coeff: bool = True
+    # Phase 1 consequent-solver configuration.
+    consequent_basis: str = "orthogonal"  # "raw" or "orthogonal" (better conditioned)
+    consequent_l2: float = 1e-3      # ridge on correction terms (constants unpenalized)
+    b_sparse_interactions: bool = True    # LassoCV-select cross terms for full-2nd
+    b_cv_hyperparams: bool = True         # report the CV-selected (order, basis, l2)
 
     if n_top_vars <= 0 or n_top_vars > len(X.columns):
         n_top_vars = len(X.columns)
@@ -97,151 +100,55 @@ def main():
 
     print_membership_details(gaussian_memberships)
 
-    print("\nEvaluating Zeroth-Order TSK Model on TEST set:")
-    print("=" * 80)
+    # For full-2nd, optionally prune uninformative cross terms via LassoCV. The
+    # selected pairs must be used identically at fit and predict time.
+    cross_pairs = None
+    if b_sparse_interactions:
+        cross_pairs = select_interaction_terms(
+            X_train, top_n_todo, y_train, y_bucket_mean
+        )
 
-    # Allocate the correction terms (1st-order TSK)
-    corr_terms_1 = compute_first_order_corrections(
-        X_train, gaussian_memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train
-    )
-    corr_terms_2 = compute_second_order_corrections(
-        X_train, gaussian_memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train
-    )
-    corr_terms_3 = compute_third_order_corrections(
-        X_train, gaussian_memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train
-    )
-    corr_terms_2f = compute_full_second_order_corrections(
-        X_train, gaussian_memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train
-    )
-
-    if b_optimize_coeff:
-        _, y_bucket_mean_opt_0 = optimize_tsk_coefficients(
-            X_train,
-            gaussian_memberships,
-            top_n_todo,
-            y_bucket_mean,
-            y_train,
-            n_output_buckets=n_output_buckets,
-            order="0th",
-        )
-        corr_terms_1_opt, y_bucket_mean_opt_1 = optimize_tsk_coefficients(
-            X_train,
-            gaussian_memberships,
-            top_n_todo,
-            y_bucket_mean,
-            y_train,
-            n_output_buckets=n_output_buckets,
-            initial_corr_terms=corr_terms_1,
-            order="1st",
-        )
-        corr_terms_2_opt, y_bucket_mean_opt_2 = optimize_tsk_coefficients(
-            X_train,
-            gaussian_memberships,
-            top_n_todo,
-            y_bucket_mean,
-            y_train,
-            n_output_buckets=n_output_buckets,
-            initial_corr_terms=corr_terms_2,
-            order="2nd",
-        )
-        corr_terms_2f_opt, y_bucket_mean_opt_2f = optimize_tsk_coefficients(
-            X_train,
-            gaussian_memberships,
-            top_n_todo,
-            y_bucket_mean,
-            y_train,
-            n_output_buckets=n_output_buckets,
-            initial_corr_terms=corr_terms_2f,
-            order='full-2nd'
-        )
-        corr_terms_3_opt, y_bucket_mean_opt_3 = optimize_tsk_coefficients(
-            X_train,
-            gaussian_memberships,
-            top_n_todo,
-            y_bucket_mean,
-            y_train,
-            n_output_buckets=n_output_buckets,
-            initial_corr_terms=corr_terms_3,
-            order="3rd",
-        )
-    else:
-        y_bucket_mean_opt_0 = y_bucket_mean
-        corr_terms_1_opt = corr_terms_1
-        y_bucket_mean_opt_1 = y_bucket_mean
-        corr_terms_2_opt = corr_terms_2
-        y_bucket_mean_opt_2 = y_bucket_mean
-        corr_terms_3_opt = corr_terms_3
-        y_bucket_mean_opt_3 = y_bucket_mean
-        y_bucket_mean_opt_2f = y_bucket_mean
-        corr_terms_2f_opt = corr_terms_2f
-
-    # Now, we need to evaluate the model
+    # Closed-form consequent solve for each polynomial order. Because the TSK
+    # output is linear in the consequent coefficients for fixed firing strengths,
+    # a single ridge least-squares solve yields the exact optimum -- no iterative
+    # optimizer needed. The ridge strength (and basis) is chosen per order on an
+    # inner validation fold so higher orders don't overfit the test set.
     print("\nEvaluating Multi-Order TSK Model on TEST set:")
     print("=" * 80)
-    firing_strengths, labels = tsk_firing_strengths(X_test[top_n_todo], gaussian_memberships)
-    norm_firing_strength = firing_strengths / firing_strengths.sum(axis=1)[:, np.newaxis]
 
-    # Evaluate optimized order-0 model
-    y_test_pred_zeroth_opt = np.dot(norm_firing_strength, y_bucket_mean_opt_0)
+    orders = ["0th", "1st", "2nd", "full-2nd", "3rd"]
+    order_labels = ["0 Optimized", "1 Optimized", "2 Optimized", "2-full Optimized", "3 Optimized"]
 
-    # Calculate correction term for each sample
-    y_test_pred_first_order_opt = np.zeros(len(X_test))
-    y_test_pred_second_order_opt = np.zeros(len(X_test))
-    y_test_pred_third_order_opt = np.zeros(len(X_test))
-    y_test_pred_second_order_full_opt = np.zeros(len(X_test))
-    for ij, y_id in enumerate(labels):
-        X_test_rule = X_test[top_n_todo].to_numpy()
-        X_test_rule2 = np.hstack([X_test_rule, X_test_rule**2])
-        X_test_rule3 = np.hstack([X_test_rule, X_test_rule**2, X_test_rule**3])
-        # Augment with the second-order terms, including cross-power terms
-        cross_terms = []
-        for i in range(X_test_rule.shape[1]):
-            for j in range(i + 1, X_test_rule.shape[1]):
-                cross_terms.append(X_test_rule[:, i] * X_test_rule[:, j])
-        if cross_terms:
-            cross_terms = np.column_stack(cross_terms)
-            X_test_rule2f = np.hstack([X_test_rule2, cross_terms])
+    r2_list, rmse_list, pred_list = [], [], []
+    for order, label in zip(orders, order_labels):
+        pairs = cross_pairs if order == "full-2nd" else None
+
+        if b_cv_hyperparams and order != "0th":
+            sel = select_consequent_hyperparams(
+                X_train, gaussian_memberships, top_n_todo, y_bucket_mean, y_train,
+                n_output_buckets=n_output_buckets,
+                candidate_orders=(order,),
+                candidate_bases=("raw", "orthogonal"),
+            )
+            basis, l2 = sel["basis"], sel["l2_reg"]
         else:
-            X_test_rule2f = X_test_rule2
+            basis, l2 = consequent_basis, consequent_l2
 
-        y_test_pred_first_order_opt[:] += (
-            y_bucket_mean_opt_1[y_id] + X_test_rule @ corr_terms_1_opt[y_id, :]
-        ) * norm_firing_strength[:, ij]
-        y_test_pred_second_order_opt[:] += (
-            y_bucket_mean_opt_2[y_id] + X_test_rule2 @ corr_terms_2_opt[y_id, :]
-        ) * norm_firing_strength[:, ij]
-        y_test_pred_second_order_full_opt[:] += (y_bucket_mean_opt_2f[y_id] + X_test_rule2f @ corr_terms_2f_opt[y_id,:])*norm_firing_strength[:,ij]
-        y_test_pred_third_order_opt[:] += (
-            y_bucket_mean_opt_3[y_id] + X_test_rule3 @ corr_terms_3_opt[y_id, :]
-        ) * norm_firing_strength[:, ij]
+        corr_terms, y_bucket_mean_opt = solve_tsk_consequents(
+            X_train, gaussian_memberships, top_n_todo, y_bucket_mean, y_train,
+            n_output_buckets=n_output_buckets, order=order,
+            l2_reg=l2, basis=basis, cross_pairs=pairs,
+        )
+        y_test_pred = predict_tsk(
+            X_test, gaussian_memberships, top_n_todo, y_bucket_mean_opt, corr_terms,
+            order=order, basis=basis, cross_pairs=pairs,
+        )
+        r2, rmse = report_regression_performance(start_time, y_test, y_test_pred, n_order=label)
+        r2_list.append(r2)
+        rmse_list.append(rmse)
+        pred_list.append(y_test_pred)
 
-    r2_0opt, rmse_0opt = report_regression_performance(
-        start_time, y_test, y_test_pred_zeroth_opt, n_order="0 optimized"
-    )
-    r2_1opt, rmse_1opt = report_regression_performance(
-        start_time, y_test, y_test_pred_first_order_opt, n_order="1 optimized"
-    )
-    r2_2opt, rmse_2opt = report_regression_performance(
-        start_time, y_test, y_test_pred_second_order_opt, n_order="2 optimized"
-    )
-    r2_2fopt, rmse_2fopt = report_regression_performance(start_time, y_test, y_test_pred_second_order_full_opt,
-                                                       n_order='2-full optimized')
-    r2_3opt, rmse_3opt = report_regression_performance(
-        start_time, y_test, y_test_pred_third_order_opt, n_order="3rd"
-    )
-    plot_tsk_order_comparison(
-        [r2_0opt, r2_1opt, r2_2opt, r2_2fopt, r2_3opt],
-        [rmse_0opt, rmse_1opt, rmse_2opt, rmse_2fopt, rmse_3opt],
-        y_test,
-        [
-            y_test_pred_zeroth_opt,
-            y_test_pred_first_order_opt,
-            y_test_pred_second_order_opt,
-            y_test_pred_second_order_full_opt,
-            y_test_pred_third_order_opt,
-        ],
-        ["0 Optimized", "1 Optimized", "2 Optimized", "2-full Optimized", "3 Optimized"],
-    )
+    plot_tsk_order_comparison(r2_list, rmse_list, y_test, pred_list, order_labels)
 
 
 if __name__ == "__main__":
