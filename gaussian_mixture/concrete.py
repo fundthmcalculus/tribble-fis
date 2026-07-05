@@ -21,6 +21,7 @@ from tribblefis.regression import (
     select_interaction_terms,
     select_consequent_hyperparams,
 )
+from tribblefis.refine import refine_antecedents_local
 from tribblefis.report import print_membership_details
 
 
@@ -59,11 +60,14 @@ def main():
     n_output_buckets: int = 3
     n_top_vars: int = -1
     n_gaussians: int = -1
-    # Phase 1 consequent-solver configuration.
-    consequent_basis: str = "orthogonal"  # "raw" or "orthogonal" (better conditioned)
-    consequent_l2: float = 1e-3      # ridge on correction terms (constants unpenalized)
+    # Phase 2 antecedent refinement (default path). Each order's Gaussian
+    # (mu, sigma) are tuned for that order via local L-BFGS-B; consequents are the
+    # closed-form ridge solve at basis="raw", l2=refine_l2, all cross terms.
+    b_refine_antecedents: bool = True     # local (L-BFGS-B) tuning of the Gaussian (mu, sigma)
+    refine_l2: float = 1e-2               # ridge on correction terms (constants unpenalized)
+    # Phase 1 consequent-only path (used when b_refine_antecedents is False):
     b_sparse_interactions: bool = True    # LassoCV-select cross terms for full-2nd
-    b_cv_hyperparams: bool = True         # report the CV-selected (order, basis, l2)
+    b_cv_hyperparams: bool = True         # CV-select the consequent (order, basis, l2)
 
     if n_top_vars <= 0 or n_top_vars > len(X.columns):
         n_top_vars = len(X.columns)
@@ -100,19 +104,19 @@ def main():
 
     print_membership_details(gaussian_memberships)
 
-    # For full-2nd, optionally prune uninformative cross terms via LassoCV. The
-    # selected pairs must be used identically at fit and predict time.
-    cross_pairs = None
-    if b_sparse_interactions:
-        cross_pairs = select_interaction_terms(
-            X_train, top_n_todo, y_train, y_bucket_mean
-        )
-
     # Closed-form consequent solve for each polynomial order. Because the TSK
     # output is linear in the consequent coefficients for fixed firing strengths,
     # a single ridge least-squares solve yields the exact optimum -- no iterative
-    # optimizer needed. The ridge strength (and basis) is chosen per order on an
-    # inner validation fold so higher orders don't overfit the test set.
+    # optimizer needed.
+    #
+    # Phase 2: when refinement is enabled, each order gets its OWN membership model
+    # whose Gaussian (mu, sigma) are tuned (local L-BFGS-B, closed-form consequents
+    # as the inner step) for that order's complexity. Refining a single model for a
+    # high order and reusing it distorts the fuzzy sets for the others (e.g. it
+    # wrecks the 0th-order firing-weighted mean), so refinement is per-order. The
+    # refinement fitness uses ALL cross terms for full-2nd -- constraining it to the
+    # sparse subset markedly weakens the antecedent search -- and the evaluation
+    # config is matched to the refinement config so fit and test cannot diverge.
     print("\nEvaluating Multi-Order TSK Model on TEST set:")
     print("=" * 80)
 
@@ -121,26 +125,34 @@ def main():
 
     r2_list, rmse_list, pred_list = [], [], []
     for order, label in zip(orders, order_labels):
-        pairs = cross_pairs if order == "full-2nd" else None
+        model_o = gaussian_memberships
+        basis, l2, pairs = "raw", refine_l2, None
 
-        if b_cv_hyperparams and order != "0th":
+        if b_refine_antecedents:
+            # Per-order antecedent refinement (all cross terms, matched config).
+            model_o, _ = refine_antecedents_local(
+                gaussian_memberships, X_train, y_train, top_n_todo,
+                n_output_buckets=n_output_buckets, order=order,
+                l2_reg=l2, basis=basis, cross_pairs=pairs,
+            )
+        elif b_cv_hyperparams and order != "0th":
+            # Phase 1 path: CV-select the consequent (basis, l2); sparse full-2nd.
+            pairs = (select_interaction_terms(X_train, top_n_todo, y_train, y_bucket_mean)
+                     if (b_sparse_interactions and order == "full-2nd") else None)
             sel = select_consequent_hyperparams(
                 X_train, gaussian_memberships, top_n_todo, y_bucket_mean, y_train,
                 n_output_buckets=n_output_buckets,
-                candidate_orders=(order,),
-                candidate_bases=("raw", "orthogonal"),
+                candidate_orders=(order,), candidate_bases=("raw", "orthogonal"),
             )
             basis, l2 = sel["basis"], sel["l2_reg"]
-        else:
-            basis, l2 = consequent_basis, consequent_l2
 
         corr_terms, y_bucket_mean_opt = solve_tsk_consequents(
-            X_train, gaussian_memberships, top_n_todo, y_bucket_mean, y_train,
+            X_train, model_o, top_n_todo, y_bucket_mean, y_train,
             n_output_buckets=n_output_buckets, order=order,
             l2_reg=l2, basis=basis, cross_pairs=pairs,
         )
         y_test_pred = predict_tsk(
-            X_test, gaussian_memberships, top_n_todo, y_bucket_mean_opt, corr_terms,
+            X_test, model_o, top_n_todo, y_bucket_mean_opt, corr_terms,
             order=order, basis=basis, cross_pairs=pairs,
         )
         r2, rmse = report_regression_performance(start_time, y_test, y_test_pred, n_order=label)

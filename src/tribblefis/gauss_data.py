@@ -252,7 +252,7 @@ class GaussianMixtureModel(NamedTuple):
                 label_model = feature_model.label_models.get(label, None)
                 if label_model is None:
                     continue
-                antecedent_ids[feature_name] = [dedup_mfs.get(mf, mf).id for mf in label_model.gaussians]  # type: ignore[misc]
+                antecedent_ids[feature_name] = [dedup_mfs.get(mf, mf).id for mf in label_model.memberships]  # type: ignore[misc]
             rules.append(Rule(antecedents=antecedent_ids, consequent=label))
 
         # Get the input membership functions from the rules

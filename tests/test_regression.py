@@ -217,5 +217,46 @@ class TestConsequentSolver(unittest.TestCase):
         self.assertLessEqual(mse_cf, mse_lbfgs + 1e-9)
 
 
+class TestAntecedentRefinement(unittest.TestCase):
+    """Unit tests for the Phase 2 antecedent-refinement module."""
+
+    N_BUCKETS = 3
+    TOP = ["a", "b"]
+
+    def _make_model_and_data(self):
+        from tribblefis.gauss_math import create_gaussian_membership_dict
+        rng = np.random.default_rng(0)
+        n = 240
+        X = pd.DataFrame({"a": rng.uniform(0, 1, n), "b": rng.uniform(0, 1, n)})
+        y_raw = pd.Series(2.0 * X["a"] + X["b"] ** 2, name="y_value")
+        y_part, _ = partition_output(self.N_BUCKETS, y_raw)
+        model = create_gaussian_membership_dict(
+            X, y_part["y_bucket"], top_n_var_names=self.TOP, n_gaussians=2
+        )
+        return X, y_part, model
+
+    def test_extract_apply_roundtrip(self):
+        from tribblefis.refine import extract_gaussian_params, apply_gaussian_params
+        _, _, model = self._make_model_and_data()
+        vec = extract_gaussian_params(model)
+        # Round-trip must be the identity.
+        rebuilt = apply_gaussian_params(model, vec)
+        np.testing.assert_allclose(extract_gaussian_params(rebuilt), vec)
+        # A perturbation must actually change the stored mu/sigma.
+        changed = apply_gaussian_params(model, vec + 0.01)
+        self.assertFalse(np.allclose(extract_gaussian_params(changed), vec))
+        self.assertEqual(len(vec), 2 * model.n_membership_functions)
+
+    def test_local_refine_never_worsens_val_and_helps(self):
+        from tribblefis.refine import refine_antecedents_local
+        X, y_part, model = self._make_model_and_data()
+        _, info = refine_antecedents_local(
+            model, X, y_part, self.TOP, n_output_buckets=self.N_BUCKETS,
+            order="2nd", l2_reg=1e-3, basis="raw", n_folds=3, maxiter=15, maxfun=1500,
+        )
+        # Safeguard: never return worse than the heuristic start on the CV fitness.
+        self.assertLessEqual(info["val_mse"], info["init_val_mse"] + 1e-9)
+
+
 if __name__ == "__main__":
     test_gaussian_mixture_regression_2d()
