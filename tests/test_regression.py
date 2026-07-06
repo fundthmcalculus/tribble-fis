@@ -257,6 +257,18 @@ class TestAntecedentRefinement(unittest.TestCase):
         # Safeguard: never return worse than the heuristic start on the CV fitness.
         self.assertLessEqual(info["val_mse"], info["init_val_mse"] + 1e-9)
 
+    def test_coordinate_refine_never_worsens_val(self):
+        from tribblefis.refine import refine_antecedents_coordinate
+        X, y_part, model = self._make_model_and_data()
+        _, info = refine_antecedents_coordinate(
+            model, X, y_part, self.TOP, n_output_buckets=self.N_BUCKETS,
+            order="2nd", l2_reg=1e-3, basis="raw", n_folds=3, n_sweeps=2,
+        )
+        # Coordinate descent only accepts strict improvements per block, so the
+        # final CV fitness can never exceed the heuristic start's.
+        self.assertLessEqual(info["val_mse"], info["init_val_mse"] + 1e-9)
+        self.assertIn("n_eval", info)
+
 
 if __name__ == "__main__":
     test_gaussian_mixture_regression_2d()

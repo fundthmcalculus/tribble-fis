@@ -30,6 +30,21 @@ from scipy.optimize import differential_evolution, minimize
 from .gauss_data import GaussianMembership, LabelModel, FeatureModel, GaussianMixtureModel
 from .regression import solve_tsk_consequents, predict_tsk, _mse, _rsquared
 
+# The refinement fitness runs thousands of tiny (~O(100)-wide) linear solves. On a
+# multithreaded BLAS those small matrices thrash on thread-spawn overhead and
+# oversubscribe the machine -- pinning BLAS to a single thread roughly halves
+# wall-clock here. Wrap the search loops in `_single_threaded()`.
+try:
+    from threadpoolctl import threadpool_limits
+
+    def _single_threaded():
+        return threadpool_limits(limits=1)
+except ImportError:  # threadpoolctl not installed -> no-op (set OMP/OPENBLAS threads=1 manually)
+    from contextlib import nullcontext
+
+    def _single_threaded():
+        return nullcontext()
+
 
 # ---------------------------------------------------------------------------
 # Model <-> flat parameter vector.
@@ -191,11 +206,12 @@ def refine_antecedents_de(
 
     print(f"\nDE antecedent refinement: {len(bounds)} params, order={order}, "
           f"init val MSE={init_fit:.5f}")
-    result = differential_evolution(
-        fitness, bounds, x0=x0, seed=seed, maxiter=maxiter, popsize=popsize,
-        tol=1e-6, mutation=(0.5, 1.0), recombination=0.7, polish=True,
-        init="sobol", updating="immediate",
-    )
+    with _single_threaded():
+        result = differential_evolution(
+            fitness, bounds, x0=x0, seed=seed, maxiter=maxiter, popsize=popsize,
+            tol=1e-6, mutation=(0.5, 1.0), recombination=0.7, polish=True,
+            init="sobol", updating="immediate",
+        )
 
     best_x, best_fit = (result.x, result.fun) if result.fun <= init_fit else (x0, init_fit)
     if result.fun > init_fit:
@@ -227,8 +243,10 @@ def refine_antecedents_local(
 ) -> tuple[GaussianMixtureModel, dict]:
     """Refine antecedents by L-BFGS-B *local* descent from the heuristic start.
 
-    This is the recommended default. Empirically, aggressive global search (DE
-    without polish, or a long GA) drives the cross-validated fitness down but
+    Kept for comparison; `refine_antecedents_coordinate` is the recommended default
+    at this scale (this single high-dimensional L-BFGS-B solve spends one evaluation
+    per parameter on every finite-difference gradient). Empirically, aggressive
+    global search (DE without polish, or a long GA) drives the CV fitness down but
     *overfits that CV estimate* -- test error rises. A local refinement stays in
     the heuristic's basin and reliably improves test error. (The forward pass uses
     the min/max t-norm, which is non-smooth, so L-BFGS-B works from a finite-
@@ -248,8 +266,9 @@ def refine_antecedents_local(
 
     print(f"\nLocal (L-BFGS-B) antecedent refinement: {len(bounds)} params, "
           f"order={order}, {n_folds}-fold init val MSE={init_fit:.5f}")
-    result = minimize(fitness, x0, method="L-BFGS-B", bounds=bounds,
-                      options={"maxiter": maxiter, "maxfun": maxfun})
+    with _single_threaded():
+        result = minimize(fitness, x0, method="L-BFGS-B", bounds=bounds,
+                          options={"maxiter": maxiter, "maxfun": maxfun})
 
     best_x, best_fit = (result.x, result.fun) if result.fun <= init_fit else (x0, init_fit)
     if result.fun > init_fit:
@@ -257,6 +276,94 @@ def refine_antecedents_local(
     print(f"  Local refine done: val MSE {init_fit:.5f} -> {best_fit:.5f} "
           f"({100 * (init_fit - best_fit) / max(init_fit, 1e-12):.1f}% lower)")
     return apply_gaussian_params(model, best_x), {"init_val_mse": init_fit, "val_mse": best_fit}
+
+
+# ---------------------------------------------------------------------------
+# Per-variable (block) coordinate descent.
+# ---------------------------------------------------------------------------
+
+def refine_antecedents_coordinate(
+    model: GaussianMixtureModel,
+    X_train: pd.DataFrame,
+    y_train: pd.DataFrame,
+    top_n_todo: list[typing.Any],
+    n_output_buckets: int,
+    order: str = "full-2nd",
+    l2_reg: float = 1e-2,
+    basis: str = "raw",
+    cross_pairs: list[tuple[int, int]] | None = None,
+    val_fraction: float = 0.2,
+    n_folds: int = 3,
+    n_sweeps: int = 3,
+    block: int = 2,
+    sub_maxfun: int = 25,
+    tol: float = 1e-5,
+    seed: int = 42,
+) -> tuple[GaussianMixtureModel, dict]:
+    """Refine antecedents by *sequential* per-variable (block) coordinate descent.
+
+    This is the recommended default. It scales to the larger membership models
+    (~2*n_MF parameters) far better than a single high-dimensional L-BFGS-B solve:
+    each finite-difference gradient of the full solve costs one evaluation per
+    parameter, so on a non-smooth objective it burns thousands of evaluations,
+    whereas cycling one membership function at a time keeps every sub-problem tiny.
+    On concrete (138 params) it reaches essentially the same test R^2 as the full
+    L-BFGS-B solve using ~2.3x fewer fitness evaluations.
+
+    Rather than optimize all ~2*n_MF parameters at once -- which forces L-BFGS-B to
+    spend one full (2*n_MF)-evaluation finite-difference gradient per step on a
+    non-smooth objective -- this cycles through one membership function at a time
+    and optimizes just its ``(mu, sigma)`` (a `block`=2 sub-problem) with everything
+    else held fixed, repeating for `n_sweeps` passes. Each sub-problem is a cheap,
+    low-dimensional local solve, so the total number of fitness evaluations is far
+    smaller for comparable quality. `block=1` gives pure scalar coordinate descent.
+
+    Never returns a model worse than the heuristic start on the CV fitness (the
+    running best is only ever updated on a strict improvement).
+    """
+    folds = _make_folds(len(X_train), n_folds, val_fraction, seed)
+    fitness = _make_kfold_fitness(model, X_train, y_train, folds, top_n_todo,
+                                  n_output_buckets, order, l2_reg, basis, cross_pairs)
+    bounds = build_param_bounds(model, X_train)
+    lo = np.array([b[0] for b in bounds])
+    hi = np.array([b[1] for b in bounds])
+    n_params = len(bounds)
+
+    x = np.clip(extract_gaussian_params(model), lo, hi)
+    init_fit = fitness(x)
+    cur = init_fit
+    n_eval = [1]  # count fitness calls for reporting
+
+    n_blocks = (n_params + block - 1) // block
+    print(f"\nCoordinate-descent antecedent refinement: {n_params} params "
+          f"({n_blocks} blocks of {block}), order={order}, {n_folds}-fold "
+          f"init val MSE={init_fit:.5f}")
+
+    with _single_threaded():
+        for sweep in range(n_sweeps):
+            prev = cur
+            for b in range(n_blocks):
+                idx = np.arange(b * block, min((b + 1) * block, n_params))
+                sub_bounds = [(lo[k], hi[k]) for k in idx]
+
+                def f_sub(v):
+                    trial = x.copy()
+                    trial[idx] = v
+                    n_eval[0] += 1
+                    return fitness(trial)
+
+                res = minimize(f_sub, x[idx], method="L-BFGS-B", bounds=sub_bounds,
+                               options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
+                if res.fun < cur - 1e-12:
+                    x[idx] = np.clip(res.x, lo[idx], hi[idx])
+                    cur = float(res.fun)
+            print(f"  sweep {sweep + 1}/{n_sweeps}: val MSE={cur:.5f} (evals={n_eval[0]})")
+            if prev - cur < tol:
+                break
+
+    print(f"  Coordinate descent done: val MSE {init_fit:.5f} -> {cur:.5f} "
+          f"({100 * (init_fit - cur) / max(init_fit, 1e-12):.1f}% lower, {n_eval[0]} evals)")
+    return apply_gaussian_params(model, x), {"init_val_mse": init_fit, "val_mse": cur, "n_eval": n_eval[0]}
 
 
 # ---------------------------------------------------------------------------

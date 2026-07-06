@@ -21,7 +21,7 @@ from tribblefis.regression import (
     select_interaction_terms,
     select_consequent_hyperparams,
 )
-from tribblefis.refine import refine_antecedents_local
+from tribblefis.refine import refine_antecedents_coordinate
 from tribblefis.report import print_membership_details
 
 
@@ -129,8 +129,11 @@ def main():
         basis, l2, pairs = "raw", refine_l2, None
 
         if b_refine_antecedents:
-            # Per-order antecedent refinement (all cross terms, matched config).
-            model_o, _ = refine_antecedents_local(
+            # Per-order antecedent refinement via per-variable (block) coordinate
+            # descent -- each membership function's (mu, sigma) is optimized in
+            # sequence, which scales to these larger models far better than a single
+            # high-dimensional L-BFGS-B solve. All cross terms, matched eval config.
+            model_o, _ = refine_antecedents_coordinate(
                 gaussian_memberships, X_train, y_train, top_n_todo,
                 n_output_buckets=n_output_buckets, order=order,
                 l2_reg=l2, basis=basis, cross_pairs=pairs,
