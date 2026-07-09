@@ -339,3 +339,109 @@ def plot_second_pendulum_position(output_features: list[str], results_single, re
 
     plt.tight_layout()
     return fig
+
+
+def find_nearest_trajectories(test_trajectory: pd.DataFrame, train_trajectories: list[pd.DataFrame],
+                               k: int = 2, features: list[str] | None = None) -> list[tuple[int, float, pd.DataFrame]]:
+    """
+    Find the k nearest training trajectories to the test trajectory based on Euclidean distance.
+
+    Uses mean Euclidean distance across the specified features. Useful for analyzing whether
+    the FIS diverges chaotically or remains stable near the training data manifold.
+
+    Args:
+        test_trajectory: DataFrame with test trajectory
+        train_trajectories: list of DataFrames with training trajectories
+        k: number of nearest neighbors to return
+        features: list of feature columns to use for distance calculation; if None, uses all columns
+
+    Returns:
+        List of tuples (train_idx, distance, train_trajectory) sorted by distance (nearest first)
+    """
+    if features is None:
+        features = test_trajectory.columns.tolist()
+
+    test_data = test_trajectory[features].values
+
+    distances = []
+    for idx, train_traj in enumerate(train_trajectories):
+        train_data = train_traj[features].values
+        # Align lengths by truncating to minimum
+        min_len = min(len(test_data), len(train_data))
+        test_trunc = test_data[:min_len]
+        train_trunc = train_data[:min_len]
+        # Mean Euclidean distance per timestep
+        dist = np.mean(np.linalg.norm(test_trunc - train_trunc, axis=1))
+        distances.append((idx, dist, train_traj))
+
+    # Sort by distance and return top k
+    distances.sort(key=lambda x: x[1])
+    return distances[:k]
+
+
+def plot_test_vs_nearest_training(test_trajectory: pd.DataFrame, train_trajectories: list[pd.DataFrame],
+                                   dt: float = 0.01, features: list[str] | None = None, k: int = 2) -> plt.Figure:
+    """
+    Plot the test trajectory alongside the k nearest training trajectories to visualize stability.
+
+    Helps determine if the FIS prediction diverges chaotically or remains near the training
+    data manifold. Shows individual feature timeseries with test (blue) and nearest training
+    (orange and green) overlaid.
+
+    Args:
+        test_trajectory: DataFrame with test trajectory (actual)
+        train_trajectories: list of DataFrames with training trajectories
+        dt: timestep in seconds
+        features: list of features to plot; if None, uses all columns in test_trajectory
+        k: number of nearest training trajectories to show
+
+    Returns:
+        matplotlib Figure object
+    """
+    if features is None:
+        features = test_trajectory.columns.tolist()
+
+    # Find nearest trajectories
+    nearest = find_nearest_trajectories(test_trajectory, train_trajectories, k=k, features=features)
+
+    # Create subplots
+    ncols = min(len(features), 2)
+    nrows = (len(features) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(14, 4 * nrows), squeeze=False)
+    axes_flat = axes.flatten()
+
+    fig.suptitle(f'Test vs {k} Nearest Training Trajectories', fontsize=14, fontweight='bold')
+
+    t_test = np.arange(len(test_trajectory)) * dt
+
+    colors = ['orange', 'green', 'purple', 'red', 'brown']  # colors for nearest training trajectories
+
+    for feat_idx, feat in enumerate(features):
+        ax = axes_flat[feat_idx]
+
+        # Plot test trajectory
+        test_values = test_trajectory[feat].values
+        ax.plot(t_test, test_values, 'b-', linewidth=2, label='Test (reference)', alpha=0.9, zorder=10)
+
+        # Plot nearest training trajectories
+        for rank, (train_idx, distance, train_traj) in enumerate(nearest):
+            train_values = train_traj[feat].values
+            t_train = np.arange(len(train_traj)) * dt
+
+            color = colors[rank % len(colors)]
+            label = f'Train {train_idx} (d={distance:.4f})'
+            ax.plot(t_train, train_values, color=color, linestyle='--', linewidth=1.5,
+                   label=label, alpha=0.7)
+
+        ax.set_xlabel('Time (s)', fontsize=10)
+        ax.set_ylabel(feat, fontsize=10)
+        ax.set_title(f'{feat} Over Time', fontsize=11)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='best', fontsize=9)
+
+    # Hide unused subplots
+    for idx in range(len(features), len(axes_flat)):
+        axes_flat[idx].set_visible(False)
+
+    plt.tight_layout()
+    return fig

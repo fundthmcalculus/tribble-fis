@@ -6,6 +6,7 @@ with random initial conditions, trains fuzzy regressors to predict state
 transitions, and evaluates prediction accuracy on continuous outputs.
 """
 
+import unittest
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -363,137 +364,146 @@ def plot_trace_comparison(results_single, results_window):
     return fig
 
 
-def test_double_pendulum_fuzzy_prediction():
-    """
-    Main test: simulate double pendulum and train fuzzy regression models.
-    """
-    # Setup
-    test_dir = Path(__file__).parent
-    data_dir = test_dir / "atwood_data"
+class TestAtwoodMachineFuzzyPrediction(unittest.TestCase):
+    """Integration test for double pendulum fuzzy regression."""
 
-    # Step 1-3: Generate simulation data
-    generate_simulation_data(
-        data_dir, num_simulations=15, duration=3.0, dt=0.01
-    )
+    def test_double_pendulum_fuzzy_prediction(self):
+        """
+        Main test: simulate double pendulum and train fuzzy regression models.
+        """
+        # Setup
+        test_dir = Path(__file__).parent
+        data_dir = test_dir / "atwood_data"
 
-    # Step 4: Single-step prediction
-    print("\n" + "#"*60)
-    print("# STEP 4: Single-Step Prediction Model")
-    print("#"*60)
-    X_single_train, y_single_train = load_and_prepare_data(data_dir,input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=1)
-    X_single_test, y_single_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=1)
-    results_single = train_and_evaluate_single_step(N_BINS, OUTPUT_FEATURES, X_single_train, y_single_train, X_single_test, y_single_test)
+        # Step 1-3: Generate simulation data
+        generate_simulation_data(
+            data_dir, num_simulations=15, duration=3.0, dt=0.01
+        )
 
-    # Step 5: Multi-step window prediction
-    print("\n" + "#"*60)
-    print("# STEP 5: Multi-Step Window Prediction Model")
-    print("#"*60)
-    window_size = 3
-    X_window_train, y_window_train = load_and_prepare_data(data_dir, input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=window_size)
-    X_window_test, y_window_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=window_size)
-    results_window = train_and_evaluate_window(N_BINS, OUTPUT_FEATURES,X_window_train, y_window_train, X_window_test, y_window_test, window_size=window_size)
+        # Step 4: Single-step prediction
+        print("\n" + "#"*60)
+        print("# STEP 4: Single-Step Prediction Model")
+        print("#"*60)
+        X_single_train, y_single_train = load_and_prepare_data(data_dir,input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=1)
+        X_single_test, y_single_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=1)
+        results_single = train_and_evaluate_single_step(N_BINS, OUTPUT_FEATURES, X_single_train, y_single_train, X_single_test, y_single_test)
 
-    # Step 6: Roll-out prediction
-    print("\n" + "#"*60)
-    print("# STEP 6: Roll-Out Prediction Model")
-    print("#"*60)
-    X_rollout_train, y_rollout_train = load_and_prepare_data(data_dir, input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=1)
+        # Step 5: Multi-step window prediction
+        print("\n" + "#"*60)
+        print("# STEP 5: Multi-Step Window Prediction Model")
+        print("#"*60)
+        window_size = 3
+        X_window_train, y_window_train = load_and_prepare_data(data_dir, input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=window_size)
+        X_window_test, y_window_test = load_and_prepare_data(data_dir, file_glob='simulation_tst*.csv', input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=window_size)
+        results_window = train_and_evaluate_window(N_BINS, OUTPUT_FEATURES,X_window_train, y_window_train, X_window_test, y_window_test, window_size=window_size)
 
-    # Load actual test trajectories for comparison
-    test_files = sorted((data_dir).glob('simulation_tst*.csv'))
-    actual_test_trajectories = []
-    initial_states_test = []
-    for test_file in test_files:
-        df = pd.read_csv(test_file)
-        actual_test_trajectories.append(df[['r', 'theta', 'r_dot', 'omega']].values)
-        initial_states_test.append(df[['r', 'theta', 'r_dot', 'omega']].iloc[0].values)
+        # Step 6: Roll-out prediction
+        print("\n" + "#"*60)
+        print("# STEP 6: Roll-Out Prediction Model")
+        print("#"*60)
+        X_rollout_train, y_rollout_train = load_and_prepare_data(data_dir, input_features=INPUT_FEATURES, output_features=OUTPUT_FEATURES, window_size=1)
 
-    # Train roll-out model
-    pendulum = AtwoodMachine()
-    results_rollout = train_and_evaluate_rollout(
-        X_rollout_train, y_rollout_train,
-        initial_states_test, pendulum,
-        n_steps=100, dt=0.01
-    )
+        # Load actual test trajectories for comparison
+        test_files = sorted((data_dir).glob('simulation_tst*.csv'))
+        actual_test_trajectories = []
+        initial_states_test = []
+        for test_file in test_files:
+            df = pd.read_csv(test_file)
+            actual_test_trajectories.append(df[['r', 'theta', 'r_dot', 'omega']].values)
+            initial_states_test.append(df[['r', 'theta', 'r_dot', 'omega']].iloc[0].values)
 
-    # Step 7: Summary evaluation
-    print("\n" + "="*60)
-    print("EVALUATION SUMMARY")
-    print("="*60)
-    print("\nSingle-Step Model:")
-    print(f"  R²:   {results_single['r2']:.6f}")
-    print(f"  RMSE: {results_single['rmse']:.6f}")
-    print(f"  MAE:  {results_single['mae']:.6f}")
+        # Train roll-out model
+        pendulum = AtwoodMachine()
+        results_rollout = train_and_evaluate_rollout(
+            X_rollout_train, y_rollout_train,
+            initial_states_test, pendulum,
+            n_steps=100, dt=0.01
+        )
 
-    print("\nMulti-Step Window Model:")
-    print(f"  R²:   {results_window['r2']:.6f}")
-    print(f"  RMSE: {results_window['rmse']:.6f}")
-    print(f"  MAE:  {results_window['mae']:.6f}")
+        # Step 7: Summary evaluation
+        print("\n" + "="*60)
+        print("EVALUATION SUMMARY")
+        print("="*60)
+        print("\nSingle-Step Model:")
+        print(f"  R²:   {results_single['r2']:.6f}")
+        print(f"  RMSE: {results_single['rmse']:.6f}")
+        print(f"  MAE:  {results_single['mae']:.6f}")
 
-    print("\nComparison:")
-    if results_single['r2'] > results_window['r2']:
-        print("  Single-step model shows better R² score")
-    else:
-        print("  Multi-step window model shows better R² score")
+        print("\nMulti-Step Window Model:")
+        print(f"  R²:   {results_window['r2']:.6f}")
+        print(f"  RMSE: {results_window['rmse']:.6f}")
+        print(f"  MAE:  {results_window['mae']:.6f}")
 
-    # Evaluate roll-out trajectories (limit actual to rollout length)
-    print("\nRoll-Out Model (Multi-step Horizon):")
-    rollout_errors_r = []
-    rollout_errors_theta = []
-    for i, (pred_traj, actual_traj) in enumerate(zip(results_rollout['rollout_trajectories'], actual_test_trajectories)):
-        # Truncate actual trajectory to match prediction length
-        n_pred = len(pred_traj)
-        actual_truncated = actual_traj[:n_pred]
+        print("\nComparison:")
+        if results_single['r2'] > results_window['r2']:
+            print("  Single-step model shows better R² score")
+        else:
+            print("  Multi-step window model shows better R² score")
 
-        # Check for NaN in predictions
-        if np.any(np.isnan(pred_traj)):
-            print(f"  Warning: Trajectory {i} contains NaN predictions (diverged)")
-            continue
+        # Evaluate roll-out trajectories (limit actual to rollout length)
+        print("\nRoll-Out Model (Multi-step Horizon):")
+        rollout_errors_r = []
+        rollout_errors_theta = []
+        for i, (pred_traj, actual_traj) in enumerate(zip(results_rollout['rollout_trajectories'], actual_test_trajectories)):
+            # Truncate actual trajectory to match prediction length
+            n_pred = len(pred_traj)
+            actual_truncated = actual_traj[:n_pred]
 
-        error_r = np.abs(actual_truncated[:, 0] - pred_traj[:, 0])
-        error_theta = np.abs(actual_truncated[:, 1] - pred_traj[:, 1])
-        rollout_errors_r.extend(error_r)
-        rollout_errors_theta.extend(error_theta)
+            # Check for NaN in predictions
+            if np.any(np.isnan(pred_traj)):
+                print(f"  Warning: Trajectory {i} contains NaN predictions (diverged)")
+                continue
 
-    if rollout_errors_r:
-        rollout_mae_r = np.mean(rollout_errors_r)
-        rollout_mae_theta = np.mean(rollout_errors_theta)
-        print(f"  MAE (r):     {rollout_mae_r:.6f}")
-        print(f"  MAE (θ):     {rollout_mae_theta:.6f}")
-    else:
-        print(f"  All trajectories diverged (NaN)")
-        rollout_mae_r, rollout_mae_theta = np.nan, np.nan
+            error_r = np.abs(actual_truncated[:, 0] - pred_traj[:, 0])
+            error_theta = np.abs(actual_truncated[:, 1] - pred_traj[:, 1])
+            rollout_errors_r.extend(error_r)
+            rollout_errors_theta.extend(error_theta)
 
-    print(f"  Mean horizon: {results_rollout['n_steps']} steps")
+        if rollout_errors_r:
+            rollout_mae_r = np.mean(rollout_errors_r)
+            rollout_mae_theta = np.mean(rollout_errors_theta)
+            print(f"  MAE (r):     {rollout_mae_r:.6f}")
+            print(f"  MAE (θ):     {rollout_mae_theta:.6f}")
+        else:
+            print(f"  All trajectories diverged (NaN)")
+            rollout_mae_r, rollout_mae_theta = np.nan, np.nan
 
-    # Plot results
-    print("\n" + "="*60)
-    print("GENERATING VISUALIZATION PLOTS")
-    print("="*60)
+        print(f"  Mean horizon: {results_rollout['n_steps']} steps")
 
-    print("\nPlot 1: Scatter and Residual Comparison")
-    fig1 = plot_prediction_comparison(results_single, results_window)
-    plot_file_1 = test_dir / "prediction_comparison.png"
-    fig1.savefig(plot_file_1, dpi=200, bbox_inches='tight')
-    print(f"  Saved to: {plot_file_1}")
-    plt.close(fig1)
+        # Plot results
+        print("\n" + "="*60)
+        print("GENERATING VISUALIZATION PLOTS")
+        print("="*60)
 
-    print("\nPlot 2: Roll-Out Prediction Comparison")
-    fig2 = plot_rollout_comparison(results_rollout, actual_test_trajectories)
-    plot_file_2 = test_dir / "rollout_comparison.png"
-    fig2.savefig(plot_file_2, dpi=200, bbox_inches='tight')
-    print(f"  Saved to: {plot_file_2}")
-    plt.close(fig2)
+        print("\nPlot 1: Scatter and Residual Comparison")
+        fig1 = plot_prediction_comparison(results_single, results_window)
+        plot_file_1 = test_dir / "prediction_comparison.png"
+        fig1.savefig(plot_file_1, dpi=200, bbox_inches='tight')
+        print(f"  Saved to: {plot_file_1}")
+        plt.close(fig1)
 
-    print("\nPlot 3: Second Pendulum Position Over Time")
-    fig3 = plot_second_pendulum_position(results_single, results_window)
-    plot_file_3 = test_dir / "second_pendulum_position.png"
-    fig3.savefig(plot_file_3, dpi=200, bbox_inches='tight')
-    print(f"  Saved to: {plot_file_3}")
-    plt.close(fig3)
+        print("\nPlot 2: Roll-Out Prediction Comparison")
+        fig2 = plot_rollout_comparison(results_rollout, actual_test_trajectories)
+        plot_file_2 = test_dir / "rollout_comparison.png"
+        fig2.savefig(plot_file_2, dpi=200, bbox_inches='tight')
+        print(f"  Saved to: {plot_file_2}")
+        plt.close(fig2)
 
-    print("\nTest completed successfully!")
+        print("\nPlot 3: Second Pendulum Position Over Time")
+        fig3 = plot_second_pendulum_position(results_single, results_window)
+        plot_file_3 = test_dir / "second_pendulum_position.png"
+        fig3.savefig(plot_file_3, dpi=200, bbox_inches='tight')
+        print(f"  Saved to: {plot_file_3}")
+        plt.close(fig3)
+
+        print("\nTest completed successfully!")
+
+        # Basic assertions to verify models trained successfully
+        self.assertIsNotNone(results_single['regressor'])
+        self.assertIsNotNone(results_window['regressor'])
+        self.assertGreater(len(results_single['y_pred']), 0)
+        self.assertGreater(len(results_window['y_pred']), 0)
 
 
-if __name__ == "__main__":
-    test_double_pendulum_fuzzy_prediction()
+if __name__ == '__main__':
+    unittest.main()

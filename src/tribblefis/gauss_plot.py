@@ -82,23 +82,34 @@ def plot_var_gauss_dist(X: pd.DataFrame, y, features_to_plot: list[str] | None =
                 if y_value not in feature_model.label_models:
                     continue
                 label_model = feature_model.label_models[y_value]
-                gauss_fits = label_model.gaussians
+                mfs = label_model.memberships
                 x_range = np.linspace(data.min(), data.max(), 100)
-                for gf_idx, gf in enumerate(gauss_fits):
-                    if gf.sigma == 0:
-                        ax.axvline(
-                            x=gf.mu,
-                            linewidth=2,
-                            label=f"Gaussian {gf_idx + 1} (μ={gf.mu:.2f}, σ={gf.sigma:.2f})",
-                        )
-                    else:
-                        gaussian_density = stats.norm.pdf(x_range, gf.mu, gf.sigma)
+                from .gauss_data import GaussianMembership, TrapezoidMembership
+                for mf_idx, mf in enumerate(mfs):
+                    if isinstance(mf, GaussianMembership):
+                        if mf.sigma == 0:
+                            ax.axvline(
+                                x=mf.mu,
+                                linewidth=2,
+                                label=f"Gaussian {mf_idx + 1} (μ={mf.mu:.2f}, σ={mf.sigma:.2f})",
+                            )
+                        else:
+                            gaussian_density = stats.norm.pdf(x_range, mf.mu, mf.sigma)
+                            ax.plot(
+                                x_range,
+                                gaussian_density,
+                                "-",
+                                linewidth=2,
+                                label=f"Gaussian {mf_idx + 1} (μ={mf.mu:.2f}, σ={mf.sigma:.2f})",
+                            )
+                    elif isinstance(mf, TrapezoidMembership):
+                        trapz_vals = mf.evaluate(x_range)
                         ax.plot(
                             x_range,
-                            gaussian_density,
+                            trapz_vals,
                             "-",
                             linewidth=2,
-                            label=f"Gaussian {gf_idx + 1} (μ={gf.mu:.2f}, σ={gf.sigma:.2f})",
+                            label=f"Trapezoid {mf_idx + 1} (a={mf.a:.2f}, d={mf.d:.2f})",
                         )
 
             ax.set_title(column)
@@ -116,7 +127,9 @@ def plot_var_gauss_dist(X: pd.DataFrame, y, features_to_plot: list[str] | None =
 
 
 def plot_membership_functions(model: GaussianMixtureModel | SimpleGaussianClassifierModel):
-    """Plots all Gaussian membership functions in the model, sorted by mean, in a single plot with vertical subplots."""
+    """Plots all membership functions in the model, sorted by position, in vertical subplots."""
+    from .gauss_data import GaussianMembership, TrapezoidMembership
+
     if isinstance(model, SimpleGaussianClassifierModel):
         n_features = model.n_features
         feature_data = [
@@ -124,10 +137,10 @@ def plot_membership_functions(model: GaussianMixtureModel | SimpleGaussianClassi
                 feature_name,
                 sorted(
                     [
-                        ("", g)
-                        for g in model.get_mfs_for_feature(feature_name)
+                        ("", mf)
+                        for mf in model.get_mfs_for_feature(feature_name)
                     ],
-                    key=lambda x: x[1].mu,
+                    key=lambda x: x[1].a if isinstance(x[1], TrapezoidMembership) else x[1].mu,
                 ),
             )
             for feature_name in model.all_features
@@ -139,11 +152,11 @@ def plot_membership_functions(model: GaussianMixtureModel | SimpleGaussianClassi
                 feature_name,
                 sorted(
                     [
-                        (str(label), g)
+                        (str(label), mf)
                         for label, label_model in feature_model.label_models.items()
-                        for g in label_model.gaussians
+                        for mf in label_model.memberships
                     ],
-                    key=lambda x: x[1].mu,
+                    key=lambda x: x[1].a if isinstance(x[1], TrapezoidMembership) else x[1].mu,
                 ),
             )
             for feature_name, feature_model in model.feature_models.items()
@@ -153,38 +166,44 @@ def plot_membership_functions(model: GaussianMixtureModel | SimpleGaussianClassi
         print("No features in model to plot.")
         return
 
-
     fig, axes = plt.subplots(n_features, 1, figsize=(10, 3 * n_features), squeeze=False)
 
     feature_data = sorted(feature_data, key=lambda x: x[0])
 
-    for i, (feature_name, all_gaussians) in enumerate(feature_data):
+    for i, (feature_name, all_mfs) in enumerate(feature_data):
         ax = axes[i, 0]
 
-        # Determine plot range
-        mus = [g.mu for label, g in all_gaussians]
-        sigmas = [g.sigma for label, g in all_gaussians]
-        if not mus:
-            ax.set_title(f"Feature: {feature_name} (No Gaussians)")
+        if not all_mfs:
+            ax.set_title(f"Feature: {feature_name} (No membership functions)")
             continue
 
-        x_min = min(mus) - 3 * max(sigmas)
-        x_max = max(mus) + 3 * max(sigmas)
+        # Determine plot range based on MF type
+        positions = []
+        for label, mf in all_mfs:
+            if isinstance(mf, GaussianMembership):
+                positions.extend([mf.mu - 3 * mf.sigma, mf.mu + 3 * mf.sigma])
+            elif isinstance(mf, TrapezoidMembership):
+                positions.extend([mf.a, mf.d])
+
+        x_min = min(positions)
+        x_max = max(positions)
         x = np.linspace(x_min, x_max, 1000)
 
-        for label, g in all_gaussians:
-            # Gaussian membership function is exp(-0.5 * ((x - mu) / sigma) ** 2)
-            # We use a small epsilon for sigma as in gauss_math.membership
-            if g.sigma == 0:
-                ax.axvline(
-                    x=g.mu,
-                    linewidth=2,
-                    label=f"Label {label} (μ={g.mu:.2f}, σ={g.sigma:.2f})",
-                )
-            else:
-                sigma = max(g.sigma, 1e-6)
-                y = np.exp(-0.5 * ((x - g.mu) / sigma) ** 2)
-                ax.plot(x, y, label=f"Label {label} (μ={g.mu:.2f}, σ={g.sigma:.2f})")
+        for label, mf in all_mfs:
+            if isinstance(mf, GaussianMembership):
+                if mf.sigma == 0:
+                    ax.axvline(
+                        x=mf.mu,
+                        linewidth=2,
+                        label=f"Label {label}: Gaussian (μ={mf.mu:.2f}, σ={mf.sigma:.2f})",
+                    )
+                else:
+                    sigma = max(mf.sigma, 1e-6)
+                    y = np.exp(-0.5 * ((x - mf.mu) / sigma) ** 2)
+                    ax.plot(x, y, label=f"Label {label}: Gaussian (μ={mf.mu:.2f}, σ={mf.sigma:.2f})")
+            elif isinstance(mf, TrapezoidMembership):
+                y = mf.evaluate(x)
+                ax.plot(x, y, label=f"Label {label}: Trapezoid (a={mf.a:.2f}, d={mf.d:.2f})")
 
         ax.set_title(f"Feature: {feature_name}")
         ax.set_xlabel("Value")

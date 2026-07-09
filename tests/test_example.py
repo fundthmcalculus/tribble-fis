@@ -1,7 +1,11 @@
-import pytest
+import unittest
 
 
-class TestExample:
+class TestExample(unittest.TestCase):
     def test_placeholder(self):
         """Placeholder test — replace with real tests."""
-        assert True
+        self.assertTrue(True)
+
+
+if __name__ == '__main__':
+    unittest.main()
