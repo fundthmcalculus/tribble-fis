@@ -332,10 +332,25 @@ def initialize_model() -> tuple[DataSimulation, DataSimulation]:
     test_params = PendulumParameters(theta1=train_params.theta1, theta2=2.05 * np.pi / 180.0,
                                      omega1=train_params.omega1, omega2=train_params.omega2,
                                      dt=train_params.dt, duration=train_params.duration)
+    test_trajectories = []
+    # Case-1
     test_ic = np.array([test_params.theta1, test_params.omega1, test_params.theta2, test_params.omega2])
     actual_trajectory = pendulum.simulate(test_ic, duration=train_params.duration, dt=train_params.dt)
+    test_trajectories.append(actual_trajectory)
+    # Case-2
+    test_params.theta2 = 3.05 * np.pi / 180.0
+    test_ic = np.array([test_params.theta1, test_params.omega1, test_params.theta2, test_params.omega2])
+    actual_trajectory = pendulum.simulate(test_ic, duration=train_params.duration, dt=train_params.dt)
+    test_trajectories.append(actual_trajectory)
+    # Case-3
+    test_params.theta1 = 1.55 * np.pi / 180.0
+    test_params.theta2 = 2.05 * np.pi / 180.0
+    test_ic = np.array([test_params.theta1, test_params.omega1, test_params.theta2, test_params.omega2])
+    actual_trajectory = pendulum.simulate(test_ic, duration=train_params.duration, dt=train_params.dt)
+    test_trajectories.append(actual_trajectory)
+    # Accumulated results
     test_results = DataSimulation(
-        trajectories=[actual_trajectory],
+        trajectories=test_trajectories,
         params=test_params,
         model=pendulum,
     )

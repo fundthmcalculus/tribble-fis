@@ -49,7 +49,11 @@ def time_this(label="Operation"):
 
 # Comparison set: https://arxiv.org/pdf/2504.13453
 N_BINS = 3
-MIMO_WINDOW_SIZE = 1
+# Fixed memory window for the MIMO rollout. TODO - allow other sizes
+# (varying memory windows, energy-preserving scaling, alternate regressors).
+MIMO_WINDOW_SIZE = 3
+# Total iterative-rollout horizon in seconds. Kept short for fast test runs.
+ROLLOUT_DURATION_S = 5.0
 # INPUT_FEATURES = ['theta_1','theta_2', 'omega_1', 'alpha_1', 'omega_2', 'alpha_2']
 INPUT_FEATURES = ['theta_1','theta_2']
 OUTPUT_FEATURES = INPUT_FEATURES.copy()
@@ -226,7 +230,29 @@ def run_iterative_prediction(
     return running_state
 
 
-def create_pendulum_animation(actual_df, predicted_df, output_path, dt=0.01, max_frames=500, fps=30):
+def format_sim_params(traj_df: pd.DataFrame) -> str:
+    """Short human-readable label of a trajectory's initial conditions."""
+    ic = traj_df.iloc[0]
+    return (f"theta1_0={np.degrees(ic['theta_1']):.1f}deg, "
+            f"theta2_0={np.degrees(ic['theta_2']):.1f}deg")
+
+
+def extract_state_trajectory(rollout_df: pd.DataFrame, window_size: int) -> pd.DataFrame:
+    """Reduce an iterative-rollout result to plain OUTPUT_FEATURES columns.
+
+    For window_size>1 the rollout stores flattened windowed columns
+    ('theta_1_step{n}', ...); the most-recent state lives at step{window_size-1}.
+    """
+    if window_size == 1:
+        return rollout_df[OUTPUT_FEATURES].reset_index(drop=True)
+    return pd.DataFrame({
+        feat: rollout_df[f"{feat}_step{window_size - 1}"].values
+        for feat in OUTPUT_FEATURES
+    })
+
+
+def create_pendulum_animation(actual_df, predicted_df, output_path, dt=0.01, max_frames=500, fps=30,
+                              params_text=None):
     """
     Create a GIF animation comparing actual vs predicted double pendulum motion.
 
@@ -249,6 +275,11 @@ def create_pendulum_animation(actual_df, predicted_df, output_path, dt=0.01, max
     axes[0].set_title('Actual', color='white', fontsize=13, fontweight='bold')
     axes[1].set_title('Predicted (iterative rollout)', color='white', fontsize=13, fontweight='bold')
     fig.suptitle('Double Pendulum: Actual vs Predicted', color='white', fontsize=14, fontweight='bold')
+
+    if params_text:
+        fig.text(0.5, 0.92,
+                 f'{params_text}  |  window={MIMO_WINDOW_SIZE}, bins={N_BINS}',
+                 ha='center', color='#ffd166', fontsize=10)
 
     trail_len = 40
 
@@ -507,39 +538,61 @@ def plot_prediction_comparison(results_single, results_window):
     return fig
 
 
-def plot_mimo_state_trajectories(actual_df, predicted_df, dt=0.01):
-    """Plot OUTPUT_FEATURES: actual vs predicted rollout."""
+def plot_mimo_state_trajectories(rollouts, dt=0.01):
+    """Plot OUTPUT_FEATURES actual vs predicted rollout for one or more test runs.
+
+    Every test simulation is overlaid on the same set of axes (one subplot per
+    output feature) so multiple test traces can be compared at a glance. The
+    per-run simulation parameters are shown in the legend.
+
+    Args:
+        rollouts: list of dicts, each with keys 'label' (parameter string),
+            'actual' (DataFrame with OUTPUT_FEATURES columns) and 'predicted'
+            (DataFrame with OUTPUT_FEATURES columns).
+        dt: timestep between rows.
+    """
     n_out = len(OUTPUT_FEATURES)
     ncols = min(n_out, 2)
     nrows = (n_out + ncols - 1) // ncols
     fig, axes = plt.subplots(nrows, ncols, figsize=(7 * ncols, 4 * nrows), squeeze=False)
     axes_flat = axes.flat
-    fig.suptitle('MIMO Iterative Rollout: Actual vs Predicted', fontsize=14, fontweight='bold')
+    fig.suptitle(
+        f'MIMO Iterative Rollout: Actual vs Predicted '
+        f'(window={MIMO_WINDOW_SIZE}, bins={N_BINS}, rollout={ROLLOUT_DURATION_S:.0f}s)',
+        fontsize=14, fontweight='bold'
+    )
 
-    t_actual = np.arange(len(actual_df)) * dt
-    pred_time = np.arange(len(predicted_df)) * dt
-    n = min(len(actual_df), len(predicted_df))
+    cmap = plt.get_cmap('tab10')
 
     for idx, col in enumerate(OUTPUT_FEATURES):
         ax = axes_flat[idx]
-        act = actual_df[col].values[:n]
-        pred = predicted_df[col].values[:n]
-        valid_pred = ~np.isnan(pred)
+        for r_idx, rollout in enumerate(rollouts):
+            actual_df = rollout['actual']
+            predicted_df = rollout['predicted']
+            color = cmap(r_idx % 10)
 
-        ax.plot(t_actual[:n], act, 'b-', linewidth=1.5, label='Actual', alpha=0.9)
-        ax.plot(pred_time[:n][valid_pred], pred[valid_pred], 'r--', linewidth=1.2,
-                label='Predicted', alpha=0.7)
+            n = min(len(actual_df), len(predicted_df))
+            t = np.arange(n) * dt
+            act = actual_df[col].values[:n]
+            pred = predicted_df[col].values[:n]
+            valid_pred = ~np.isnan(pred)
 
-        if valid_pred.any():
-            mae = np.mean(np.abs(act[valid_pred] - pred[valid_pred]))
-            title_str = f'{col}  (MAE={mae:.4f}, valid={valid_pred.sum()}/{n})'
-        else:
-            title_str = f'{col}  (no valid predictions)'
+            mae = np.mean(np.abs(act[valid_pred] - pred[valid_pred])) if valid_pred.any() else float('nan')
 
-        ax.set_title(title_str, fontsize=10)
+            ax.plot(t, act, '-', color=color, linewidth=1.5, alpha=0.9,
+                    label=f'{rollout["label"]} - actual')
+            ax.plot(t[valid_pred], pred[valid_pred], '--', color=color, linewidth=1.2, alpha=0.7,
+                    label=f'{rollout["label"]} - pred (MAE={mae:.3f})')
+
+        ax.set_title(col, fontsize=11)
         ax.set_xlabel('Time (s)', fontsize=10)
+        ax.set_ylabel(col, fontsize=10)
         ax.grid(True, alpha=0.3)
-        ax.legend(loc='upper right', fontsize=9)
+        ax.legend(loc='upper right', fontsize=7)
+
+    # Hide any unused axes
+    for j in range(n_out, nrows * ncols):
+        axes_flat[j].set_visible(False)
 
     plt.tight_layout()
     return fig
@@ -590,13 +643,14 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
                 X_mimo_train_w3, y_mimo_train_w3, X_mimo_test_w3, y_mimo_test_w3, window_size=3
             )
 
-        # Step 4c: Multi-window stability comparison
+        # Step 4c: Train the fixed-window MIMO model used for rollout.
         print("\n" + "#"*60)
-        print("# STEP 4c: Multi-Window Stability Comparison")
+        print("# STEP 4c: MIMO Model Training for Rollout")
         print("#"*60)
-        print("Training MIMO models with different memory windows to assess stability...")
-        # Seems like 3 is best?
-        window_sizes = [1, 3, 5, 7, 10]
+        # TODO - Allow other methodologies here (varying memory windows such as
+        #        [1, 3, 5, 7, 10], energy-preserving scaling, alternate regressors).
+        #        For now we fix the window to MIMO_WINDOW_SIZE for fast, stable runs.
+        window_sizes = [MIMO_WINDOW_SIZE]
         mimo_results_by_window = {}
 
         for ws in window_sizes:
@@ -608,61 +662,6 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
                     X_train_ws, y_train_ws, X_test_ws, y_test_ws, window_size=ws
                 )
                 mimo_results_by_window[ws] = results_ws
-
-        # Step 5: Iterative rollout from initial conditions with all window sizes
-        print("\n" + "#"*60)
-        print("# STEP 5: Iterative Rollout from Initial Conditions (Multiple Window Sizes)")
-        print("#"*60)
-        # Run iterative predictions for all window sizes
-        tst_df = test_results.trajectories[0]
-
-        predicted_trajectories_by_window = {}
-        stability_summary = []
-
-        for ws in window_sizes:
-            n_steps = len(tst_df) - ws
-            print(f"\nWindow size {ws}: running {n_steps} iterative prediction steps...")
-
-            with time_this(f'iterative-rollout-window{ws}'):
-                predicted_traj = run_iterative_prediction(
-                    mimo_results_by_window[ws]['regressor'], tst_df, n_steps, window_size=ws, verbose=False
-                )
-                predicted_trajectories_by_window[ws] = predicted_traj
-
-            # Find divergence point (where predictions become NaN)
-            # For window_size > 1, extract the most recent state columns
-            if ws == 1:
-                check_col = 'theta_1'
-            else:
-                check_col = f'theta_1_step{ws - 1}'
-
-            if check_col in predicted_traj.columns:
-                valid_mask = ~np.isnan(predicted_traj[check_col].values)
-                if valid_mask.any():
-                    divergence_idx = np.where(~valid_mask)[0]
-                    if len(divergence_idx) > 0:
-                        divergence_idx = divergence_idx[0]
-                    else:
-                        divergence_idx = len(predicted_traj)
-                else:
-                    divergence_idx = 0
-            else:
-                divergence_idx = len(predicted_traj)
-
-            divergence_time = divergence_idx * SimulationParams.dt
-            stability_summary.append({
-                'window_size': ws,
-                'divergence_step': divergence_idx,
-                'divergence_time_s': divergence_time,
-                'trajectory_length': len(predicted_traj)
-            })
-
-            print(f"  Window {ws}: Diverged at step {divergence_idx} ({divergence_time:.2f}s) / {len(tst_df)} total steps")
-
-        # Use default window size for detailed analysis
-        predicted_trajectory = predicted_trajectories_by_window[MIMO_WINDOW_SIZE]
-        actual_trajectory = tst_df[OUTPUT_FEATURES].iloc[MIMO_WINDOW_SIZE - 1:].reset_index(drop=True)
-        n = min(len(actual_trajectory), len(predicted_trajectory))
 
         def rollout_metrics(label, predicted, actual, n):
             print(f"\n{label}:")
@@ -677,20 +676,71 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
                 r2 = r2_score(act[valid], pred[valid])
                 print(f"  {col:10s}: MAE={mae:.4f}  R2={r2:.4f}  (valid={valid.sum()}/{n})")
 
-        rollout_metrics("Iterative Rollout Metrics (window=1)", predicted_trajectory, actual_trajectory, n)
+        # Step 5: Iterative rollout for EACH test simulation (fixed window, short horizon)
+        print("\n" + "#"*60)
+        print(f"# STEP 5: Iterative Rollout for {len(test_results.trajectories)} Test Simulations "
+              f"(window={MIMO_WINDOW_SIZE}, horizon={ROLLOUT_DURATION_S:.0f}s)")
+        print("#"*60)
+        regressor = mimo_results_by_window[MIMO_WINDOW_SIZE]['regressor']
+        max_steps = int(ROLLOUT_DURATION_S / SimulationParams.dt)
+
+        # One entry per test simulation; each is overlaid on the shared trajectory
+        # plot and rendered to its own comparison GIF.
+        rollouts = []
+        stability_summary = []
+
+        for sim_idx, tst_df in enumerate(test_results.trajectories):
+            n_steps = min(max_steps, len(tst_df) - MIMO_WINDOW_SIZE)
+            label = format_sim_params(tst_df)
+            print(f"\nTest sim {sim_idx} ({label}): running {n_steps} iterative prediction steps...")
+
+            with time_this(f'iterative-rollout-sim{sim_idx}'):
+                predicted_traj = run_iterative_prediction(
+                    regressor, tst_df, n_steps, window_size=MIMO_WINDOW_SIZE, verbose=False
+                )
+
+            predicted_state = extract_state_trajectory(predicted_traj, MIMO_WINDOW_SIZE)
+            actual_state = tst_df[OUTPUT_FEATURES].iloc[MIMO_WINDOW_SIZE - 1:].reset_index(drop=True)
+            n = min(len(actual_state), len(predicted_state))
+
+            rollouts.append({
+                'index': sim_idx,
+                'label': label,
+                'actual': actual_state,
+                'predicted': predicted_state,
+            })
+
+            # Find divergence point (where the most-recent-state prediction becomes NaN)
+            valid_mask = ~np.isnan(predicted_state['theta_1'].values)
+            divergence_idx = int(np.argmin(valid_mask)) if not valid_mask.all() else len(predicted_state)
+            divergence_time = divergence_idx * SimulationParams.dt
+            stability_summary.append({
+                'sim_index': sim_idx,
+                'label': label,
+                'divergence_step': divergence_idx,
+                'divergence_time_s': divergence_time,
+                'trajectory_length': len(predicted_state),
+            })
+
+            rollout_metrics(f"Rollout metrics sim {sim_idx}", predicted_state, actual_state, n)
+            print(f"  Sim {sim_idx}: Diverged at step {divergence_idx} ({divergence_time:.2f}s)")
+
+        # Use the first test simulation for detailed single-run analysis (nearest-training plot).
+        predicted_trajectory = rollouts[0]['predicted']
+        actual_trajectory = rollouts[0]['actual']
 
         # Step 5b: Stability comparison summary
         print("\n" + "="*70)
-        print("STABILITY COMPARISON: DIVERGENCE ANALYSIS BY MEMORY WINDOW")
+        print("STABILITY SUMMARY BY TEST SIMULATION")
         print("="*70)
-        print(f"\n{'Window Size':<15} {'Divergence Step':<20} {'Divergence Time (s)':<25} {'Total Duration (s)':<20}")
-        print("-" * 80)
+        print(f"\n{'Sim':<5}{'Params':<40}{'Divergence Step':<18}{'Divergence Time (s)':<20}")
+        print("-" * 83)
         for summary in stability_summary:
-            print(f"{summary['window_size']:<15} {summary['divergence_step']:<20} {summary['divergence_time_s']:<25.2f} {summary['trajectory_length']*SimulationParams.dt:<20.2f}")
+            print(f"{summary['sim_index']:<5}{summary['label']:<40}{summary['divergence_step']:<18}{summary['divergence_time_s']:<20.2f}")
 
-        best_window = max(stability_summary, key=lambda x: x['divergence_time_s'])
+        best_sim = max(stability_summary, key=lambda x: x['divergence_time_s'])
         print("\n" + "="*70)
-        print(f"Best Stability: Window size {best_window['window_size']} stays stable for {best_window['divergence_time_s']:.2f}s")
+        print(f"Best Stability: Sim {best_sim['sim_index']} ({best_sim['label']}) stays stable for {best_sim['divergence_time_s']:.2f}s")
         print("="*70)
 
         # Step 6: Summary
@@ -717,21 +767,24 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
         print("GENERATING VISUALIZATION PLOTS")
         print("="*60)
 
-        print("\nPlot 3: MIMO Iterative Rollout State Trajectories")
-        fig3 = plot_mimo_state_trajectories(actual_trajectory, predicted_trajectory, dt=SimulationParams.dt)
+        print("\nPlot 3: MIMO Iterative Rollout State Trajectories (all test sims overlaid)")
+        fig3 = plot_mimo_state_trajectories(rollouts, dt=SimulationParams.dt)
         fig3.savefig("mimo_iterative_trajectories.png", dpi=200, bbox_inches='tight')
         plt.close(fig3)
 
-        # Step 8: GIF animations
+        # Step 8: GIF animations - one comparison GIF per test simulation
         print("\n" + "="*60)
-        print("GENERATING GIF ANIMATIONS")
+        print("GENERATING GIF ANIMATIONS (one per test simulation)")
         print("="*60)
-        gif_path = "double_pendulum_comparison.gif"
-        create_pendulum_animation(
-            actual_trajectory, predicted_trajectory,
-        gif_path, dt=SimulationParams.dt, max_frames=300, fps=25
-        )
+        for rollout in rollouts:
+            gif_path = f"double_pendulum_comparison_{rollout['index']}.gif"
+            create_pendulum_animation(
+                rollout['actual'], rollout['predicted'],
+                gif_path, dt=SimulationParams.dt, max_frames=300, fps=25,
+                params_text=rollout['label'],
+            )
 
+        # The overlaid training-context animation is generated for the first test sim only.
         gif_path_with_training = "double_pendulum_with_training.gif"
         with time_this("create-animation-with-training"):
             create_pendulum_animation_with_training(
