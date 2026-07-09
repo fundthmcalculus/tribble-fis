@@ -238,22 +238,8 @@ def create_pendulum_animation(actual_df, predicted_df, output_path, dt=0.01, max
         max_frames: cap on frames to keep the GIF manageable
         fps: frames per second in the output GIF
     """
-    n = min(len(actual_df), len(predicted_df), max_frames)
-    step = max(1, len(actual_df) // max_frames)
-
-    actual_frames = actual_df.iloc[::step].head(max_frames)
-    pred_frames = predicted_df.iloc[::step].head(max_frames)
-    n_frames = min(len(actual_frames), len(pred_frames))
-
-    # Fill NaN in predicted frames with last valid value so the animation doesn't break
-    pred_frames = pred_frames.copy().ffill().fillna(0.0)
-
-    x1_act, y1_act, x2_act, y2_act = angles_to_xy(
-        actual_frames['theta_1'].values, actual_frames['theta_2'].values, 1.0, 1.0
-    )
-    x1_pred, y1_pred, x2_pred, y2_pred = angles_to_xy(
-        pred_frames['theta_1'].values, pred_frames['theta_2'].values, 1.0, 1.0
-    )
+    n_frames, step, x1_act, y1_act, x2_act, y2_act, x1_pred, y1_pred, x2_pred, y2_pred\
+        = get_frame_data(actual_df, max_frames, predicted_df)
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     fig.patch.set_facecolor('#1a1a2e')
@@ -329,19 +315,8 @@ def create_pendulum_animation_with_training(actual_df, predicted_df, train_traje
     # Find nearest training trajectories
     nearest_list = find_nearest_trajectories(actual_df, train_trajectories, k=2, features=OUTPUT_FEATURES)
 
-    step = max(1, len(actual_df) // max_frames)
-    actual_frames = actual_df.iloc[::step].head(max_frames)
-    pred_frames = predicted_df.iloc[::step].head(max_frames)
-    n_frames = min(len(actual_frames), len(pred_frames))
-
-    pred_frames = pred_frames.copy().ffill().fillna(0.0)
-
-    x1_act, y1_act, x2_act, y2_act = angles_to_xy(
-        actual_frames['theta_1'].values, actual_frames['theta_2'].values, 1.0, 1.0
-    )
-    x1_pred, y1_pred, x2_pred, y2_pred = angles_to_xy(
-        pred_frames['theta_1'].values, pred_frames['theta_2'].values, 1.0, 1.0
-    )
+    n_frames, step, x1_act, y1_act, x2_act, y2_act, x1_pred, y1_pred, x2_pred, y2_pred \
+        = get_frame_data(actual_df, max_frames, predicted_df)
 
     # Prepare nearest training trajectories
     nearest_data = []
@@ -458,6 +433,23 @@ def create_pendulum_animation_with_training(actual_df, predicted_df, train_traje
     plt.close(fig)
     print(f"  Animation saved to: {output_path}")
     return output_path
+
+
+def get_frame_data(actual_df, max_frames: int, predicted_df):
+    step = max(1, len(actual_df) // max_frames)
+    actual_frames = actual_df.iloc[::step].head(max_frames)
+    pred_frames = predicted_df.iloc[::step].head(max_frames)
+    n_frames = min(len(actual_frames), len(pred_frames))
+
+    pred_frames = pred_frames.copy().ffill().fillna(0.0)
+
+    x1_act, y1_act, x2_act, y2_act = angles_to_xy(
+        actual_frames['theta_1'].values, actual_frames['theta_2'].values, 1.0, 1.0
+    )
+    x1_pred, y1_pred, x2_pred, y2_pred = angles_to_xy(
+        pred_frames['theta_1'].values, pred_frames['theta_2'].values, 1.0, 1.0
+    )
+    return n_frames, step, x1_act, y1_act, x2_act, y2_act, x1_pred, y1_pred, x2_pred, y2_pred
 
 
 def plot_prediction_comparison(results_single, results_window):
@@ -603,7 +595,7 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
         print("# STEP 4c: Multi-Window Stability Comparison")
         print("#"*60)
         print("Training MIMO models with different memory windows to assess stability...")
-
+        # Seems like 3 is best?
         window_sizes = [1, 3, 5, 7, 10]
         mimo_results_by_window = {}
 
@@ -623,7 +615,6 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
         print("#"*60)
         # Run iterative predictions for all window sizes
         tst_df = test_results.trajectories[0]
-        actual_trajectory_base = tst_df[OUTPUT_FEATURES].reset_index(drop=True)
 
         predicted_trajectories_by_window = {}
         stability_summary = []
