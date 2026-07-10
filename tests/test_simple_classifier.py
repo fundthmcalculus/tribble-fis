@@ -7,24 +7,23 @@ from tribblefis.gauss_math import simple_gaussian_predict
 class TestSimpleClassifier(unittest.TestCase):
     def test_simple_gaussian_classifier(self):
         """Test simple Gaussian classifier with anomaly detection."""
-        # 1. Define membership functions for two features
-        input_mfs = {
-            "feature1": [
-                GaussianMembership(mu=0.0, sigma=1.0),  # index 0: Low
-                GaussianMembership(mu=5.0, sigma=1.0),  # index 1: High
-            ],
-            "feature2": [
-                GaussianMembership(mu=0.0, sigma=1.0),  # index 0: Low
-                GaussianMembership(mu=10.0, sigma=1.0), # index 1: High
-            ]
-        }
+        # 1. Define membership functions for two features. A
+        # SimpleGaussianClassifierModel stores a *flat* list of membership
+        # functions and rules reference them by id, so build each MF with
+        # ``.create`` (which assigns an id) and keep a handle to it.
+        f1_low = GaussianMembership.create(mu=0.0, sigma=1.0)
+        f1_high = GaussianMembership.create(mu=5.0, sigma=1.0)
+        f2_low = GaussianMembership.create(mu=0.0, sigma=1.0)
+        f2_high = GaussianMembership.create(mu=10.0, sigma=1.0)
+        input_mfs = [f1_low, f1_high, f2_low, f2_high]
 
-        # 2. Define rules
+        # 2. Define rules. ``antecedents`` maps each feature to the list of
+        # membership-function ids that fire for that rule.
         # Rule 1: IF feature1 is Low AND feature2 is Low THEN Class 0
         # Rule 2: IF feature1 is High AND feature2 is High THEN Class 1
         rules = [
-            Rule(antecedents={"feature1": 0, "feature2": 0}, consequent=0),
-            Rule(antecedents={"feature1": 1, "feature2": 1}, consequent=1),
+            Rule(antecedents={"feature1": [f1_low.id], "feature2": [f2_low.id]}, consequent=0),
+            Rule(antecedents={"feature1": [f1_high.id], "feature2": [f2_high.id]}, consequent=1),
         ]
 
         # 3. Create the model
