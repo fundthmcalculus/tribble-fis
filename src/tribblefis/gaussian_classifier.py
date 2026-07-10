@@ -233,8 +233,10 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
        feature ranking. This is the expert's whole reason to exist: on a subset
        of the classes a region-``P`` sample is still argmax-``P``, so an expert
        that merely re-solved the same problem could only add noise. At most
-       ``max_layers - 1`` experts are added, most-confused region first, and
-       each region ``P`` gets exactly one expert.
+       ``max_layers - 1`` experts are added, most-confused region first, each
+       region ``P`` gets exactly one expert, and the two directions of a single
+       confusion (``P``-vs-``T`` and ``T``-vs-``P``) are collapsed to one expert
+       so a reverse expert can never undo another's flips.
 
     **Predicting** runs the base model, then consults each expert only for the
     samples whose *current* prediction equals that expert's region ``P``. Each
@@ -384,6 +386,12 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         mistaken for (by at least ``min_class_samples`` rows) is selected. Each
         ``P`` yields at most one pair, so region keys never repeat and a binary
         ``P``-vs-``T`` expert can be trained per pair.
+
+        The two directions of one confusion, ``(P, T)`` and ``(T, P)``, describe
+        the *same* binary boundary, so keeping both would let a reverse expert
+        undo the other's flips depending on cascade order. Each unordered pair is
+        therefore collapsed to a single expert — the higher-confusion direction,
+        which is the larger, more reliable off-diagonal cell.
         """
         pred = np.asarray(pred, dtype=object)
         y_true = np.asarray(y_true, dtype=object)
@@ -404,8 +412,16 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
             if best_t is not None:
                 pairs.append((p, best_t, best_errors))
 
+        # Largest confusion first, then drop the reverse of any pair already kept.
         pairs.sort(key=lambda r: r[2], reverse=True)
-        return [(p, t) for p, t, _ in pairs]
+        result, seen = [], set()
+        for p, t, _ in pairs:
+            key = frozenset((p, t))
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append((p, t))
+        return result
 
     def _expert_scores(self, expert, X_sub, y_sub, p, t):
         """Out-of-fold ``(anomaly_level, prefers_t)`` for every row of the
