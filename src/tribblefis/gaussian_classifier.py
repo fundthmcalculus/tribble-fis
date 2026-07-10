@@ -1,3 +1,5 @@
+from typing import Any
+
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin
@@ -20,7 +22,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
     It follows scikit-learn's ClassifierMixin interface.
     """
 
-    def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, log_transform=False, member_function="gaussian", trapz_method="fast", random_state=42):
+    def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, member_function="gaussian", trapz_method="fast", norm_conorm="min/max", random_state=42):
         """
         Initialize the MixtureOfGaussiansFuzzyClassifier.
 
@@ -30,39 +32,27 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
             top_p: Percentage of cumulative differentiation score to cover.
             n_gaussians: Number of Gaussians per feature per label (0 for automatic).
                          Can also be a dictionary mapping feature names or labels to number of Gaussians.
-            log_transform: Whether to automatically suggest and apply log-transformation to features
-                           that have a broad range of scales.
             member_function: Type of membership function ("gaussian" or "trap").
             trapz_method: Method for trapezoid fitting ("fast" for histogram-based default, "em" for EM-based).
+                           that have a broad range of scales.
+            norm_conorm: Fuzzy norm/conorm pair ("min/max", "probability", "luk", "hamacher").
             random_state: Seed for random number generator for reproducibility.
         """
         self.is_fitted_: bool = False
         self.model_ = None
         self.top_features_ = None
         self.top_n_actual_ = None
-        self.feature_differentiators_ = None
+        self.feature_differentiators_: list[tuple[Any, Any]] = []
         self.classes_ = None
         self.feature_names_in_: list[str] = []
-        self.log_transformed_features_: list[str] = []
         self.top_n = top_n
         self.top_p = top_p
         self.n_gaussians = n_gaussians
-        self.log_transform = log_transform
         self.member_function = member_function
         self.trapz_method = trapz_method
         self.random_state = random_state
-
-    def _apply_log_transform(self, X):
-        """Check if features need log-transformation and apply it."""
-        if not self.log_transform:
-            return X
-
-        X_transformed, features = detect_and_apply_log_transform(X)
-
-        if not self.is_fitted_:
-            self.log_transformed_features_ = features
-
-        return X_transformed
+        self.norm_conorm = norm_conorm
+        self.anomaly_params = AnomalyParameters(include_anomaly=False, norm_conorm=self.norm_conorm)
 
     def fit(self, X, y):
         """
@@ -89,9 +79,6 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         # We need X as DataFrame for the internal functions
         X_df = pd.DataFrame(X_array, columns=self.feature_names_in_)
         y_series = pd.Series(y_array)
-
-        # 0. Apply log-transformation if requested
-        X_df = self._apply_log_transform(X_df)
 
         # 1. Calculate feature differentiators
         self.feature_differentiators_ = calculate_gaussian_correlation(X_df, y_series)
@@ -139,9 +126,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         else:
             X_df = pd.DataFrame(X, columns=self.feature_names_in_)
 
-        X_df = self._apply_log_transform(X_df)
-
-        return tsk_predict(X_df, self.model_)
+        return tsk_predict(X_df, self.model_, self.anomaly_params)
 
     def predict_proba(self, X):
         """
@@ -157,9 +142,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         else:
             X_df = pd.DataFrame(X, columns=self.feature_names_in_)
 
-        X_df = self._apply_log_transform(X_df)
-
-        firing_strengths, labels = tsk_firing_strengths(X_df, self.model_)
+        firing_strengths, labels = tsk_firing_strengths(X_df, self.model_, self.anomaly_params)
 
         # Normalize firing strengths to get probabilities
         row_sums = firing_strengths.sum(axis=1, keepdims=True)
@@ -204,8 +187,6 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         else:
             X_df = pd.DataFrame(X, columns=self.feature_names_in_)
 
-        X_df = self._apply_log_transform(X_df)
-
         return tsk_firing_strengths(X_df, self.model_, anomaly_details=anomaly_details)
 
     def augment(self, X, y):
@@ -220,8 +201,6 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
             X_df = pd.DataFrame(X, columns=self.feature_names_in_)
         y_series = pd.Series(y)
 
-        X_df = self._apply_log_transform(X_df)
-        
         new_model = create_gaussian_membership_dict(
             X_df, y_series, top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians
         )
@@ -267,7 +246,6 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         top_n=-1,
         top_p=0.95,
         n_gaussians=0,
-        log_transform=False,
         random_state=42,
         max_layers=4,
         anomaly_threshold=0.99,
@@ -308,7 +286,6 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         self.top_n = top_n
         self.top_p = top_p
         self.n_gaussians = n_gaussians
-        self.log_transform = log_transform
         self.random_state = random_state
         self.max_layers = max_layers
         self.anomaly_threshold = anomaly_threshold
@@ -324,6 +301,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
             top_p=self.top_p,
             n_gaussians=self.n_gaussians,
             log_transform=self.log_transform,
+            norm_conorm=self.norm_conorm,
             random_state=self.random_state,
         )
 

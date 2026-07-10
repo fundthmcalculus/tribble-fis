@@ -149,7 +149,7 @@ def fit_gaussians(X, y, column: str, label_value: int, n_gaussians: int = 0, max
     return gaussians
 
 
-def calculate_gaussian_correlation(X, y):
+def calculate_gaussian_correlation(X, y) -> list[tuple[Any, Any]]:
     """Calculate correlation coefficient between Gaussian distributions for each feature across different labels"""
     unique_labels = y.unique()
 
@@ -292,10 +292,19 @@ def create_gaussian_membership_dict(
     # Use ProcessPoolExecutor for CPU-bound work
     with ThreadPoolExecutor() as executor:
         # Submit all tasks
-        result = executor.map(process_feature, top_n_var_names)
-
-        for r in result:
-            feature_models[r[0]] = r[1]
+        futures = [executor.submit(process_feature, name) for name in top_n_var_names]
+        
+        # Collect results as they complete
+        from concurrent.futures import as_completed
+        for future in as_completed(futures):
+            try:
+                feature_name, feature_model = future.result()
+                feature_models[feature_name] = feature_model
+            except Exception as e:
+                # Log the error but continue processing other features
+                print(f"Error processing feature: {e}")
+                import traceback
+                traceback.print_exc()
 
     return GaussianMixtureModel(feature_models=feature_models)
 
@@ -432,17 +441,18 @@ def tsk_firing_strengths(
     return firing_strengths, unique_labels
 
 
-def tsk_predict(X: pd.DataFrame, model: GaussianMixtureModel) -> np.ndarray:
+def tsk_predict(X: pd.DataFrame, model: GaussianMixtureModel,  anomaly_details: AnomalyParameters | None = None) -> np.ndarray:
     """Zeroth-order TSK fuzzy model for classification.
 
     Args:
         X: Feature dataframe (input variables)
         model: GaussianMixtureModel containing labels and their Gaussian parameters
+        anomaly_details: AnomalyParameters containing anomaly detection details
 
     Returns:
         Array of predicted class labels (0 or 1)
     """
-    firing_strengths, unique_labels = tsk_firing_strengths(X, model)
+    firing_strengths, unique_labels = tsk_firing_strengths(X, model, anomaly_details)
     predictions = np.argmax(firing_strengths, axis=1)
     # Map back to original label values if they weren't 0 and 1
     return np.array([unique_labels[i] for i in predictions])
