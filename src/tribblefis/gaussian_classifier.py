@@ -57,9 +57,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         if not self.log_transform:
             return X
 
-        X_transformed, features = detect_and_apply_log_transform(
-            X, already_fitted=self.is_fitted_, fitted_features=self.log_transformed_features_
-        )
+        X_transformed, features = detect_and_apply_log_transform(X)
 
         if not self.is_fitted_:
             self.log_transformed_features_ = features
