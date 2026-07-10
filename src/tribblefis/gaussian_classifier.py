@@ -165,7 +165,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
 
         return reordered_probs
 
-    def firing_strengths(self, X, anomaly_details: AnomalyParameters | None = None):
+    def firing_strengths(self, X, anomaly_details: AnomalyParameters | None = None) -> tuple[np.ndarray, list]:
         """
         Compute the raw TSK firing strengths for X, optionally including an
         anomaly column.
@@ -242,9 +242,12 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
 
     * **anomaly gate** — the sample's *anomaly level* (``1 - `` its best
       membership among the expert's classes, i.e. how far it sits outside the
-      region the expert knows) is **below** ``anomaly_threshold``. A sample that
-      fails this gate is out of the expert's competence; it is frozen on the base
-      prediction and no later expert may touch it.
+      region the expert knows) is **below** that expert's anomaly threshold.
+      Each threshold is fit independently by bisection during :meth:`fit`
+      (:attr:`anomaly_thresholds_`); experts are independent because each only
+      sees samples routed to its own region ``P``. A sample that fails this gate
+      is out of the expert's competence; it is frozen on the base prediction and
+      no later expert may touch it.
     * **confidence gate** — the expert prefers ``T`` over ``P`` by more than
       ``refine_margin`` in membership strength. Without this, every flip on an
       irreducibly-overlapping (Bayes-noise) region is a coin toss that erodes
@@ -269,7 +272,8 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         max_layers=4,
         anomaly_threshold=0.99,
         anomaly_label="anomaly",
-        refine_margin=0.1,
+        tune_thresholds=True,
+        refine_margin=0.0,
         min_confused=20,
         min_class_samples=5,
         cv=3,
@@ -290,11 +294,18 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
             anomaly_label: Internal label used to gate experts. It must not
                 collide with a real class label; it is never returned by
                 :meth:`predict`.
+            tune_thresholds: When ``True`` (default) each expert's anomaly
+                threshold is fit independently by bisection during
+                :meth:`fit` (see :attr:`anomaly_thresholds_`). Because each
+                expert only ever sees samples routed to its own prediction
+                region ``P``, the experts are effectively independent and their
+                thresholds can be optimized one at a time. When ``False`` every
+                expert uses the shared ``anomaly_threshold``.
             refine_margin: An expert relabels ``P → T`` only when it prefers
                 ``T`` over ``P`` by more than this much membership strength.
-                ``0.0`` means "flip on any preference" (argmax); larger values
-                make experts overrule the base model only when decisive, which
-                protects accuracy on irreducibly-overlapping regions.
+                ``0.0`` means "flip on any preference" (argmax); the tuned
+                anomaly threshold is the primary safety knob, so this defaults
+                to ``0.0``.
             min_confused: Minimum number of rows predicted as a given class
                 required before that region is eligible for an expert.
             min_class_samples: Minimum number of confused rows in the
@@ -307,7 +318,8 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         self.is_fitted_: bool = False
         # layers_[0] is the base model; layers_[1:] mirror experts_.
         self.layers_: list[MixtureOfGaussiansFuzzyClassifier] = []
-        # Each entry is (region_class P, confused true class T, expert_model).
+        # Each entry is (region_class P, confused true class T, expert_model,
+        # tuned anomaly threshold).
         self.experts_: list[tuple] = []
         self.classes_ = None
         self.feature_names_in_: list[str] = []
@@ -320,6 +332,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         self.max_layers = max_layers
         self.anomaly_threshold = anomaly_threshold
         self.anomaly_label = anomaly_label
+        self.tune_thresholds = tune_thresholds
         self.refine_margin = refine_margin
         self.min_confused = min_confused
         self.min_class_samples = min_class_samples
@@ -394,6 +407,93 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         pairs.sort(key=lambda r: r[2], reverse=True)
         return [(p, t) for p, t, _ in pairs]
 
+    def _expert_scores(self, expert, X_sub, y_sub, p, t):
+        """Out-of-fold ``(anomaly_level, prefers_t)`` for every row of the
+        binary ``{p, t}`` training subset.
+
+        Cross-validating the expert here means the threshold is bisected against
+        scores the expert did *not* train on, so it is not tuned to noise it has
+        memorised. Falls back to the in-sample expert when the subset is too
+        small to stratify.
+        """
+        n = len(y_sub)
+        anomaly = np.full(n, np.nan)
+        prefers_t = np.full(n, np.nan)
+
+        counts = y_sub.value_counts()
+        n_splits = min(int(self.cv), int(counts.min())) if len(counts) else 0
+
+        def fill(model, idx, X_slice):
+            strengths, labels = model.firing_strengths(X_slice)
+            col = {label: i for i, label in enumerate(labels)}
+            anomaly[idx] = 1.0 - strengths.max(axis=1)
+            prefers_t[idx] = strengths[:, col[t]] - strengths[:, col[p]]
+
+        if n_splits >= 2:
+            skf = StratifiedKFold(
+                n_splits=n_splits, shuffle=True, random_state=self.random_state
+            )
+            for train_idx, test_idx in skf.split(X_sub, y_sub):
+                fold = self._make_layer()
+                fold.fit(
+                    X_sub.iloc[train_idx].reset_index(drop=True),
+                    y_sub.iloc[train_idx].reset_index(drop=True),
+                )
+                fill(fold, test_idx, X_sub.iloc[test_idx])
+        else:
+            fill(expert, np.arange(n), X_sub)
+
+        return anomaly, prefers_t
+
+    def _bisect_threshold(self, anomaly, prefers_t, y_region, p, t):
+        """Bisection search for the anomaly threshold that maximises this
+        expert's accuracy over its own prediction region.
+
+        Only samples the expert would flip (``prefers_t > refine_margin``)
+        respond to the threshold, and ordering them by anomaly level makes
+        region accuracy unimodal in the threshold: admitting the most confident
+        (lowest-anomaly) flips first helps, until the flips start being wrong.
+        Golden-section bisection narrows the ``[0, 1]`` interval onto that peak.
+        """
+        y_region = np.asarray(y_region, dtype=object)
+        valid = ~np.isnan(anomaly)
+        anomaly = anomaly[valid]
+        prefers_t = prefers_t[valid]
+        y_region = y_region[valid]
+        if len(y_region) == 0:
+            return self.anomaly_threshold
+
+        would_flip = prefers_t > self.refine_margin
+
+        def region_accuracy(threshold):
+            flip = would_flip & (anomaly < threshold)
+            pred = np.where(flip, t, p)
+            return float(np.mean(pred == y_region))
+
+        # Golden-section (bisection-family) search on [0, 1] for the max.
+        inv_phi = (np.sqrt(5.0) - 1.0) / 2.0
+        lo, hi = 0.0, 1.0 + 1e-9
+        c = hi - inv_phi * (hi - lo)
+        d = lo + inv_phi * (hi - lo)
+        fc, fd = region_accuracy(c), region_accuracy(d)
+        for _ in range(60):
+            if hi - lo < 1e-6:
+                break
+            if fc < fd:
+                lo, c, fc = c, d, fd
+                d = lo + inv_phi * (hi - lo)
+                fd = region_accuracy(d)
+            else:
+                hi, d, fd = d, c, fc
+                c = hi - inv_phi * (hi - lo)
+                fc = region_accuracy(c)
+        best = 0.5 * (lo + hi)
+        # A threshold that refines nothing beats one that only makes things
+        # worse, so never let tuning do net harm relative to leaving P alone.
+        if region_accuracy(best) < region_accuracy(0.0):
+            return 0.0
+        return best
+
     def fit(self, X, y):
         """
         Fit the base model, then a binary local expert per confused pair.
@@ -430,7 +530,19 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
 
             expert = self._make_layer()
             expert.fit(X_sub, y_sub)
-            self.experts_.append((p, t, expert))
+
+            threshold = self.anomaly_threshold
+            if self.tune_thresholds:
+                # Tune on the confusion this expert actually owns: the {p, t}
+                # rows the base model routed into region P (base OOF pred == p).
+                region = oof[rows] == p
+                if region.any():
+                    anomaly, prefers_t = self._expert_scores(expert, X_sub, y_sub, p, t)
+                    threshold = self._bisect_threshold(
+                        anomaly[region], prefers_t[region], y_sub.values[region], p, t
+                    )
+
+            self.experts_.append((p, t, expert, threshold))
             self.layers_.append(expert)
 
         self.is_fitted_ = True
@@ -454,7 +566,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         # expert may touch them.
         frozen = np.zeros(len(X_df), dtype=bool)
 
-        for region_class, true_class, expert in self.experts_:
+        for region_class, true_class, expert, threshold in self.experts_:
             # Only route samples whose current prediction *is* this expert's
             # region class.
             target = (preds == region_class) & ~frozen
@@ -466,9 +578,10 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
 
             # Anomaly level = 1 - best class membership under the expert. It is
             # low when the sample sits squarely inside a class the expert knows,
-            # and approaches 1 for samples far outside its trained region.
+            # and approaches 1 for samples far outside its trained region. The
+            # threshold is this expert's own bisection-tuned value.
             anomaly_level = 1.0 - strengths.max(axis=1)
-            in_region = anomaly_level < self.anomaly_threshold
+            in_region = anomaly_level < threshold
 
             # Relabel P -> T only where the expert both (a) trusts the sample as
             # in-region and (b) prefers T over P by more than refine_margin.
@@ -495,12 +608,17 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
     @property
     def confused_classes_(self) -> list:
         """The region (predicted) class each expert is keyed to, in order."""
-        return [p for p, _, _ in self.experts_]
+        return [p for p, _, _, _ in self.experts_]
 
     @property
     def confused_pairs_(self) -> list:
         """The ``(region_class P, true_class T)`` pair each expert arbitrates."""
-        return [(p, t) for p, t, _ in self.experts_]
+        return [(p, t) for p, t, _, _ in self.experts_]
+
+    @property
+    def anomaly_thresholds_(self) -> list:
+        """The bisection-tuned anomaly threshold of each expert, in order."""
+        return [threshold for _, _, _, threshold in self.experts_]
 
     @property
     def n_layers(self) -> int:
