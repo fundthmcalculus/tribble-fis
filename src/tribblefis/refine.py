@@ -863,3 +863,176 @@ def refine_classifier_antecedents(
         "init_val_ce": init_val_ce, "val_ce": val_ce,
         "init_train_obj": init_fit, **info,
     }
+
+
+# ---------------------------------------------------------------------------
+# Ruspini triangular-partition refinement (apex knots).
+# ---------------------------------------------------------------------------
+#
+# A Ruspini model (`tribblefis.ruspini.RuspiniPartitionModel`) is defined entirely
+# by its per-feature triangular *apex knots*; the class->term rule assignment is
+# frozen. Refining the knots therefore searches a low-dimensional, naturally
+# constrained space -- because every candidate is rebuilt from shared knots, the
+# partition-of-unity property holds for free and no per-parameter shape constraint
+# is needed. We reuse the classifier objective (ridge-shrunk cross-entropy +
+# held-out acceptance guard); the only new ingredient is a firing/proba routine
+# for the explicit triangular model.
+
+
+def _ruspini_accuracy(rmodel, X, y) -> float:
+    proba, labels = rmodel.class_proba(X)
+    pred = np.array([labels[i] for i in np.argmax(proba, axis=1)], dtype=object)
+    return float(np.mean(pred == np.asarray(y, dtype=object)))
+
+
+def _ruspini_ce(rmodel, X, y) -> float:
+    proba, labels = rmodel.class_proba(X)
+    col = {lab: i for i, lab in enumerate(labels)}
+    y_idx = np.array([col.get(v, 0) for v in np.asarray(y, dtype=object)])
+    return _cross_entropy(proba, y_idx)
+
+
+def refine_ruspini_partition(
+    rmodel,
+    X_train: pd.DataFrame,
+    y_train: typing.Any,
+    *,
+    method: str = "coordinate",
+    l2_shrink: float = 0.02,
+    val_fraction: float = 0.25,
+    n_sweeps: int = 3,
+    sub_maxfun: int = 25,
+    pad_frac: float = 0.05,
+    population_size: int = 40,
+    num_generations: int = 20,
+    local_scale: float | None = 0.3,
+    optimizer_method: str = "ga",
+    local_grad_optim: str = "perturb",
+    seed: int = 42,
+    verbose: bool = True,
+):
+    """Refine a Ruspini triangular partition's apex knots against cross-entropy.
+
+    Searches the concatenated per-feature apex-knot vector (each candidate is
+    re-sorted into a valid monotone partition by ``RuspiniPartitionModel.with_knots``,
+    so partition-of-unity is preserved automatically). ``method="coordinate"`` moves
+    one knot at a time via a tiny L-BFGS-B; ``method="optimizers"`` uses the
+    `optimizers`-package population+polish search. The objective is a ridge-shrunk
+    training cross-entropy; the refined knots are accepted only if they do not
+    worsen a held-out split's accuracy (CE tiebreak), else the input model is
+    returned unchanged. Returns ``(refined_rmodel, info)``.
+    """
+    y_arr = np.asarray(y_train)
+    knots0 = rmodel.extract_knots()
+    if len(knots0) == 0:
+        return rmodel, {"refined": False, "reason": "no_knots"}
+
+    # Per-knot box bounds from each feature's observed range (padded).
+    slices = rmodel.knot_slices()
+    lo = np.empty(len(knots0))
+    hi = np.empty(len(knots0))
+    for f in rmodel.feature_order:
+        sl = slices[f]
+        if f in X_train.columns:
+            col = X_train[f].to_numpy(dtype=float)
+            flo, fhi = float(np.min(col)), float(np.max(col))
+        else:
+            flo, fhi = float(np.min(knots0[sl])), float(np.max(knots0[sl]))
+        pad = pad_frac * (fhi - flo if fhi > flo else 1.0)
+        lo[sl], hi[sl] = flo - pad, fhi + pad
+    bounds = list(zip(lo.tolist(), hi.tolist()))
+    x0 = np.clip(knots0, lo, hi)
+    width = np.where((hi - lo) > 0, hi - lo, 1.0)
+
+    from sklearn.model_selection import train_test_split
+    idx = np.arange(len(X_train))
+    strat = y_arr if len(np.unique(y_arr)) > 1 else None
+    try:
+        tr_idx, val_idx = train_test_split(idx, test_size=val_fraction, random_state=seed, stratify=strat)
+    except ValueError:
+        tr_idx, val_idx = train_test_split(idx, test_size=val_fraction, random_state=seed)
+    X_tr, y_tr = X_train.iloc[tr_idx].reset_index(drop=True), y_arr[tr_idx]
+    X_val, y_val = X_train.iloc[val_idx].reset_index(drop=True), y_arr[val_idx]
+
+    labels0 = [consequent for consequent, _ in rmodel.rules]
+    label_to_col = {lab: i for i, lab in enumerate(labels0)}
+    y_idx_tr = np.array([label_to_col.get(v, -1) for v in y_tr])
+    keep = y_idx_tr >= 0
+    y_idx_tr = y_idx_tr[keep]
+    X_tr_fit = X_tr.iloc[np.where(keep)[0]].reset_index(drop=True) if not keep.all() else X_tr
+
+    def fitness(vec: np.ndarray) -> float:
+        try:
+            cand = rmodel.with_knots(vec)
+            proba, _ = cand.class_proba(X_tr_fit)
+        except Exception:
+            return 1e6
+        ce = _cross_entropy(proba, y_idx_tr)
+        reg = l2_shrink * float(np.mean(((vec - x0) / width) ** 2)) if l2_shrink else 0.0
+        return ce + reg
+
+    init_fit = fitness(x0)
+    init_val_acc = _ruspini_accuracy(rmodel, X_val, y_val)
+    if verbose:
+        print(f"\nRuspini knot refinement ({method}): {len(knots0)} knots, "
+              f"l2_shrink={l2_shrink}, init train obj={init_fit:.5f}, "
+              f"init val acc={init_val_acc:.4f}")
+
+    if method == "coordinate":
+        # The knot objective is piecewise-linear, so a gradient step (tiny finite
+        # difference) sees a near-zero slope and stalls. A per-knot *line search*
+        # over a coarse-to-fine grid across the knot's box moves reliably on this
+        # landscape. `sub_maxfun` sets the grid resolution.
+        x = x0.copy()
+        cur = init_fit
+        n_eval = 1
+        grid_n = max(5, sub_maxfun)
+        with _single_threaded():
+            for sweep in range(n_sweeps):
+                prev = cur
+                window = 0.5 ** sweep  # shrink the search window each sweep (coarse -> fine)
+                for k in range(len(x)):
+                    half = window * (hi[k] - lo[k]) / 2.0
+                    grid = np.clip(np.linspace(x[k] - half, x[k] + half, grid_n), lo[k], hi[k])
+                    best_v, best_f = x[k], cur
+                    for v in grid:
+                        trial = x.copy()
+                        trial[k] = v
+                        n_eval += 1
+                        fv = fitness(trial)
+                        if fv < best_f - 1e-12:
+                            best_v, best_f = float(v), fv
+                    if best_f < cur - 1e-12:
+                        x[k] = best_v
+                        cur = best_f
+                if verbose:
+                    print(f"  sweep {sweep + 1}/{n_sweeps}: train obj={cur:.5f} (evals={n_eval})")
+                if prev - cur < 1e-6:
+                    break
+        best_x, best_fit = x, cur
+        info = {"train_obj": best_fit, "n_eval": n_eval}
+    elif method == "optimizers":
+        best_x, best_fit, info = _run_optimizer_search(
+            fitness, bounds, x0, method=optimizer_method, local_grad_optim=local_grad_optim,
+            population_size=population_size, num_generations=num_generations,
+            local_scale=local_scale, seed=seed, label="ruspini-knots",
+        )
+    else:
+        raise ValueError(f"method={method!r} must be 'coordinate' or 'optimizers'")
+
+    refined = rmodel.with_knots(best_x)
+    val_acc = _ruspini_accuracy(refined, X_val, y_val)
+    val_ce = _ruspini_ce(refined, X_val, y_val)
+    init_val_ce = _ruspini_ce(rmodel, X_val, y_val)
+    accept = (val_acc > init_val_acc) or (val_acc == init_val_acc and val_ce < init_val_ce)
+    out = refined if accept else rmodel
+    if verbose:
+        verdict = "accepted" if accept else "rejected (kept initial)"
+        print(f"  Ruspini refinement {verdict}: val acc {init_val_acc:.4f} -> {val_acc:.4f}, "
+              f"val CE {init_val_ce:.4f} -> {val_ce:.4f}")
+    return out, {
+        "refined": bool(accept),
+        "init_val_acc": init_val_acc, "val_acc": val_acc,
+        "init_val_ce": init_val_ce, "val_ce": val_ce,
+        "init_train_obj": init_fit, **info,
+    }
