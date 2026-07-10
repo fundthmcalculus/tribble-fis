@@ -3,10 +3,9 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split, cross_val_predict
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-from sklearn.preprocessing import StandardScaler
 
 from tribblefis.gaussian_classifier import (
-    MixtureOfGaussiansFuzzyClassifier,
+    MixtureOfGaussiansFuzzyClassifier, MixtureOfGaussiansFuzzySequenceClassifier,
 )
 
 
@@ -39,8 +38,6 @@ def identify_poorly_recognized_classes(y_true, y_pred):
 
 def main():
     X, y = load_data()
-    
-    
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
@@ -51,16 +48,21 @@ def main():
     print("=" * 80)
     print("PRIMARY CLASSIFIER")
     print("=" * 80)
-    clf = MixtureOfGaussiansFuzzyClassifier(top_p=0.95, n_gaussians=0, norm_conorm='probability')
+    # clf = MixtureOfGaussiansFuzzySequenceClassifier(top_p=0.95, n_gaussians=0, norm_conorm='probability')
+    clf = MixtureOfGaussiansFuzzyClassifier(top_p=0.95, n_gaussians=3, norm_conorm='probability')
     clf.fit(X_train, y_train)
 
-    # Cross-validation on training data to identify poorly recognized classes
-    print("\nCross-Validation on Training Data (5-fold):")
-    y_cv_pred = cross_val_predict(clf, X_train, y_train, cv=3)
-    cv_accuracy = accuracy_score(y_train, y_cv_pred)
-    print(f"CV Accuracy: {cv_accuracy:.4f}\n")
+    # Training data confusion matrix to identify poorly recognized classes
+    print("\nTraining Data Confusion Matrix:")
+    y_train_pred = clf.predict(X_train)
+    train_accuracy = accuracy_score(y_train, y_train_pred)
+    print(f"Train Accuracy: {train_accuracy:.4f}\n")
+    
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_train, y_train_pred))
+    print()
 
-    poor_classes = identify_poorly_recognized_classes(y_train.values, y_cv_pred)
+    poor_classes = identify_poorly_recognized_classes(y_train.values, y_train_pred)
     if poor_classes:
         print(f"Poorly recognized classes (recall < 0.8):")
         for cls, recall in poor_classes:
