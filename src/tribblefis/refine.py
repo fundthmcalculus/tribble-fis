@@ -28,6 +28,7 @@ import pandas as pd
 from scipy.optimize import differential_evolution, minimize
 
 from .gauss_data import GaussianMembership, LabelModel, FeatureModel, GaussianMixtureModel
+from .gauss_math import tsk_firing_strengths
 from .regression import solve_tsk_consequents, predict_tsk, _mse, _rsquared
 
 # The refinement fitness runs thousands of tiny (~O(100)-wide) linear solves. On a
@@ -460,3 +461,405 @@ def refine_antecedents_ga(
     print(f"  GA done: val MSE {init_best:.5f} -> {best_fit:.5f} "
           f"({100 * (init_best - best_fit) / max(init_best, 1e-12):.1f}% lower)")
     return apply_gaussian_params(model, best_x), {"init_val_mse": init_best, "val_mse": best_fit}
+
+
+# ---------------------------------------------------------------------------
+# Population + local-polish search via the `optimizers` package.
+# ---------------------------------------------------------------------------
+#
+# The empirical lesson from the earlier DE/GA experiments (see the project
+# memory) is that a *global* population search overfits the CV/validation
+# estimate, and the only part of DE that actually helped was its L-BFGS
+# ``polish`` -- i.e. the local move. The `optimizers` package
+# (github.com/fundthmcalculus/optimizers) folds that local move directly into
+# every population member: with ``local_grad_optim="single-var-grad"`` each GA
+# child / ACO ant / PSO particle is polished by a per-variable gradient descent
+# before it competes. That gives us "population diversity + local polish" in one
+# optimizer instead of bolting a separate polish onto a global search.
+#
+# We keep the two guard-rails that made the earlier refinements trustworthy:
+#   1. the heuristic solution is *seeded* into (and preserved in) the archive, so
+#      the optimizer starts from -- and can never score worse than -- the
+#      heuristic; and
+#   2. the search box is optionally *localized* around the heuristic
+#      (``local_scale``) so the polish-driven population stays in the heuristic's
+#      basin rather than wandering into overfit territory.
+
+_OPTIMIZER_METHODS = ("ga", "pso", "aco", "multi")
+
+
+def _localized_bounds(
+    bounds: list[tuple[float, float]], x0: np.ndarray, local_scale: float | None,
+) -> list[tuple[float, float]]:
+    """Intersect the global box `bounds` with a box of half-width
+    ``local_scale * width`` centred on `x0`.
+
+    ``local_scale=None`` (or a non-positive value) returns the global bounds
+    unchanged (a genuinely global search). A small value (e.g. 0.25) keeps the
+    population near the heuristic, which is what reliably improves *test* error.
+    """
+    if local_scale is None or local_scale <= 0:
+        return list(bounds)
+    out: list[tuple[float, float]] = []
+    for (lo, hi), c in zip(bounds, x0):
+        half = local_scale * (hi - lo)
+        out.append((max(lo, c - half), min(hi, c + half)))
+    return out
+
+
+def _run_optimizer_search(
+    fitness: typing.Callable[[np.ndarray], float],
+    bounds: list[tuple[float, float]],
+    x0: np.ndarray,
+    *,
+    method: str = "ga",
+    local_grad_optim: str = "single-var-grad",
+    population_size: int = 40,
+    num_generations: int = 25,
+    stop_after_iterations: int = 8,
+    local_scale: float | None = 0.25,
+    seed: int = 42,
+    label: str = "antecedents",
+) -> tuple[np.ndarray, float, dict]:
+    """Minimise `fitness` over box `bounds`, seeded from `x0`, using the
+    `optimizers` package (population search + per-member local gradient polish).
+
+    Returns ``(best_x, best_fit, info)``. Guarantees ``best_fit <= fitness(x0)``
+    by seeding and preserving the heuristic in the solution archive and by an
+    explicit fallback comparison at the end.
+    """
+    if method not in _OPTIMIZER_METHODS:
+        raise ValueError(f"method={method!r} not in {_OPTIMIZER_METHODS}")
+
+    # Imported lazily so the rest of the module works without the optional dep.
+    from optimizers import (
+        GeneticAlgorithmOptimizer, GeneticAlgorithmOptimizerConfig,
+        ParticleSwarmOptimizer, ParticleSwarmOptimizerConfig,
+        AntColonyOptimizer, AntColonyOptimizerConfig,
+        MultiTypeOptimizer, IOptimizerConfig,
+        set_seed,
+    )
+    from optimizers.continuous.variables import InputContinuousVariable
+    from optimizers.solution_deck import SolutionDeck
+
+    set_seed(seed)
+
+    search_bounds = _localized_bounds(bounds, x0, local_scale)
+    lo = np.array([b[0] for b in search_bounds])
+    hi = np.array([b[1] for b in search_bounds])
+    x0c = np.clip(x0, lo, hi)
+    n = len(search_bounds)
+
+    variables = [
+        InputContinuousVariable(f"p{i}", float(lo[i]), float(hi[i]))
+        for i in range(n)
+    ]
+
+    # The optimizers minimise ``fcn(x)``; wrap so out-of-the-loop exceptions in
+    # the fuzzy forward pass never crash a whole generation.
+    def fcn(x):
+        try:
+            return float(fitness(np.asarray(x, dtype=float)))
+        except Exception:
+            return 1e6
+
+    init_fit = fcn(x0c)
+
+    # Seed the heuristic into an archive and preserve it (row 0) so the search
+    # can only improve on the heuristic.
+    archive_size = max(population_size * 2, n * 2, 30)
+    deck = SolutionDeck(archive_size=archive_size, num_vars=n)
+    deck.solution_archive[0] = x0c
+    deck.solution_value[0] = init_fit
+    deck.is_local_optima[0] = False
+    preserve = 1.0 / archive_size
+
+    common = dict(
+        name=f"{method}-{label}",
+        num_generations=num_generations,
+        population_size=population_size,
+        solution_archive_size=archive_size,
+        stop_after_iterations=stop_after_iterations,
+        n_jobs=1,                 # fitness closure is not picklable; stay single-process
+        joblib_prefer="threads",
+        local_grad_optim=local_grad_optim,
+    )
+
+    print(f"\n{method.upper()} ({local_grad_optim}) {label} refinement: {n} params, "
+          f"pop={population_size}, gens={num_generations}, "
+          f"local_scale={local_scale}, init fitness={init_fit:.5f}")
+
+    with _single_threaded():
+        if method == "ga":
+            opt = GeneticAlgorithmOptimizer(
+                GeneticAlgorithmOptimizerConfig(**common), fcn, variables, existing_soln_deck=deck)
+        elif method == "pso":
+            opt = ParticleSwarmOptimizer(
+                ParticleSwarmOptimizerConfig(**common), fcn, variables, existing_soln_deck=deck)
+        elif method == "aco":
+            opt = AntColonyOptimizer(
+                AntColonyOptimizerConfig(**common), fcn, variables, existing_soln_deck=deck)
+        else:  # "multi"
+            opt = MultiTypeOptimizer(
+                IOptimizerConfig(**common), fcn, variables, existing_soln_deck=deck)
+        result = opt.solve(preserve_percent=preserve)
+
+    best_x = np.clip(np.asarray(result.solution_vector, dtype=float), lo, hi)
+    best_fit = float(result.solution_score)
+    if best_fit > init_fit:      # never worse than the heuristic start
+        best_x, best_fit = x0c, init_fit
+        print("  optimizer did not beat the heuristic start; keeping heuristic.")
+    print(f"  {method.upper()} done: fitness {init_fit:.5f} -> {best_fit:.5f} "
+          f"({100 * (init_fit - best_fit) / max(init_fit, 1e-12):.1f}% lower, "
+          f"stop={result.stop_reason})")
+    return best_x, best_fit, {
+        "init_fit": init_fit, "fit": best_fit, "stop_reason": result.stop_reason,
+        "generations": result.generations_completed,
+    }
+
+
+def refine_antecedents_optimizers(
+    model: GaussianMixtureModel,
+    X_train: pd.DataFrame,
+    y_train: pd.DataFrame,
+    top_n_todo: list[typing.Any],
+    n_output_buckets: int,
+    order: str = "full-2nd",
+    l2_reg: float = 1e-2,
+    basis: str = "raw",
+    cross_pairs: list[tuple[int, int]] | None = None,
+    val_fraction: float = 0.2,
+    n_folds: int = 3,
+    method: str = "ga",
+    local_grad_optim: str = "single-var-grad",
+    population_size: int = 40,
+    num_generations: int = 25,
+    local_scale: float | None = 0.25,
+    seed: int = 42,
+) -> tuple[GaussianMixtureModel, dict]:
+    """Refine the *regressor* antecedents with the `optimizers` package.
+
+    Same closed-form-consequent CV fitness as the other regressor refiners, but
+    the search is a population optimizer whose members are each locally polished
+    (``local_grad_optim``). Localised around the heuristic (``local_scale``) and
+    seeded from it, so it keeps the productive local move without the overfit-
+    prone global wandering. Never returns a model worse than the heuristic on CV.
+    """
+    folds = _make_folds(len(X_train), n_folds, val_fraction, seed)
+    fitness = _make_kfold_fitness(model, X_train, y_train, folds, top_n_todo,
+                                  n_output_buckets, order, l2_reg, basis, cross_pairs)
+    bounds = build_param_bounds(model, X_train)
+    x0 = np.clip(extract_gaussian_params(model),
+                 [b[0] for b in bounds], [b[1] for b in bounds])
+    best_x, best_fit, info = _run_optimizer_search(
+        fitness, bounds, x0, method=method, local_grad_optim=local_grad_optim,
+        population_size=population_size, num_generations=num_generations,
+        local_scale=local_scale, seed=seed, label=f"regressor-{order}",
+    )
+    return apply_gaussian_params(model, best_x), {
+        "init_val_mse": info["init_fit"], "val_mse": info["fit"], **info,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Classifier antecedent refinement.
+# ---------------------------------------------------------------------------
+#
+# A zeroth-order TSK *classifier* has no consequents: the predicted class is
+# ``argmax`` of the per-class firing strengths, which are a pure function of the
+# Gaussian ``(mu, sigma)`` antecedents. So refining the antecedents *is* the whole
+# model -- there is nothing else to learn -- and the heuristic (KMeans +
+# ``norm.fit`` per class) only ever fits each feature/label marginal, never the
+# discriminative objective. Tuning ``(mu, sigma)`` against a classification loss
+# is therefore directly worthwhile.
+#
+# Overfitting control: because there are no per-fold consequents to refit, a
+# k-fold "held-out" score of a single shared parameter vector reduces to the
+# full-training score and provides no real held-out signal. Instead we (a) add an
+# L2 shrinkage penalty pulling the parameters toward the heuristic start x0
+# (ridge / early-stopping-like), (b) do local descent from x0, and (c) select the
+# final model on a held-out validation split, keeping the heuristic if the refined
+# model does not improve validation loss.
+
+
+def _classifier_proba(X: pd.DataFrame, model: GaussianMixtureModel):
+    """Row-normalised firing strengths -> class probabilities, plus the label
+    order. Mirrors ``MixtureOfGaussiansFuzzyClassifier.predict_proba`` (zero-firing
+    rows fall back to uniform) so the fitness matches the deployed forward pass."""
+    fs, labels = tsk_firing_strengths(X, model)
+    row = fs.sum(axis=1, keepdims=True)
+    proba = np.full_like(fs, 1.0 / max(len(labels), 1))
+    nz = row.flatten() > 0
+    proba[nz] = fs[nz] / row[nz]
+    return proba, labels
+
+
+def _cross_entropy(proba: np.ndarray, y_idx: np.ndarray) -> float:
+    """Mean negative log-likelihood of the true class, with probability clipping."""
+    p = np.clip(proba[np.arange(len(y_idx)), y_idx], 1e-12, 1.0)
+    return float(-np.mean(np.log(p)))
+
+
+def _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi):
+    """Ridge-regularised training cross-entropy for a candidate antecedent vector.
+
+    ``fitness(vec) = CE(train) + l2_shrink * mean(((vec - x0) / width) ** 2)``.
+
+    The shrinkage term (scaled by each parameter's box width so it is
+    dimensionless) is the real overfitting control: it keeps the tuned antecedents
+    close to the data-driven heuristic unless the classification loss strongly
+    favours moving them.
+    """
+    labels = list(next(iter(model.feature_models.values())).ordered_keys)
+    label_to_col = {lab: i for i, lab in enumerate(labels)}
+    y_idx_tr = np.array([label_to_col.get(v, -1) for v in np.asarray(y_tr)])
+    valid_tr = y_idx_tr >= 0
+    y_idx_tr = y_idx_tr[valid_tr]
+    X_tr = X_tr.iloc[np.where(valid_tr)[0]] if not valid_tr.all() else X_tr
+    width = np.where((hi - lo) > 0, hi - lo, 1.0)
+
+    def fitness(vec: np.ndarray) -> float:
+        candidate = apply_gaussian_params(model, vec)
+        try:
+            proba, cand_labels = _classifier_proba(X_tr, candidate)
+        except Exception:
+            return 1e6
+        # cand_labels order matches `labels` (same model structure), so columns align.
+        ce = _cross_entropy(proba, y_idx_tr)
+        reg = l2_shrink * float(np.mean(((vec - x0) / width) ** 2)) if l2_shrink else 0.0
+        return ce + reg
+
+    return fitness
+
+
+def _classifier_accuracy(X, y, model) -> float:
+    proba, labels = _classifier_proba(X, model)
+    pred = np.array([labels[i] for i in np.argmax(proba, axis=1)], dtype=object)
+    return float(np.mean(pred == np.asarray(y, dtype=object)))
+
+
+def _classifier_val_ce(X, y, model) -> float:
+    """Held-out cross-entropy, mapping each true label to its firing-strength column."""
+    proba, labels = _classifier_proba(X, model)
+    col = {lab: i for i, lab in enumerate(labels)}
+    y_idx = np.array([col.get(v, 0) for v in np.asarray(y, dtype=object)])
+    return _cross_entropy(proba, y_idx)
+
+
+def refine_classifier_antecedents(
+    model: GaussianMixtureModel,
+    X_train: pd.DataFrame,
+    y_train: typing.Any,
+    *,
+    method: str = "coordinate",
+    l2_shrink: float = 0.05,
+    val_fraction: float = 0.25,
+    n_sweeps: int = 3,
+    block: int = 2,
+    sub_maxfun: int = 25,
+    population_size: int = 40,
+    num_generations: int = 20,
+    local_scale: float | None = 0.25,
+    optimizer_method: str = "ga",
+    local_grad_optim: str = "single-var-grad",
+    sigma_min_frac: float = 0.02,
+    sigma_max_frac: float = 1.0,
+    seed: int = 42,
+    verbose: bool = True,
+) -> tuple[GaussianMixtureModel, dict]:
+    """Refine a fuzzy *classifier*'s Gaussian antecedents against cross-entropy.
+
+    ``method="coordinate"`` (default) runs the proven per-membership block
+    coordinate descent; ``method="optimizers"`` runs the `optimizers`-package
+    population+polish search. Either way the objective is a ridge-shrunk training
+    cross-entropy and the result is accepted only if it does not worsen a held-out
+    validation split's accuracy *and* cross-entropy (otherwise the heuristic model
+    is returned unchanged). Returns ``(refined_model, info)``.
+    """
+    y_arr = np.asarray(y_train)
+    bounds = build_param_bounds(model, X_train, sigma_min_frac, sigma_max_frac)
+    if not bounds:                          # no Gaussian memberships -> nothing to do
+        return model, {"refined": False, "reason": "no_gaussian_memberships"}
+    lo = np.array([b[0] for b in bounds])
+    hi = np.array([b[1] for b in bounds])
+    x0 = np.clip(extract_gaussian_params(model), lo, hi)
+
+    # Held-out split used only to *accept/reject* the refinement (never optimised).
+    from sklearn.model_selection import train_test_split
+    idx = np.arange(len(X_train))
+    strat = y_arr if len(np.unique(y_arr)) > 1 else None
+    try:
+        tr_idx, val_idx = train_test_split(
+            idx, test_size=val_fraction, random_state=seed, stratify=strat)
+    except ValueError:                      # too few samples in a class to stratify
+        tr_idx, val_idx = train_test_split(idx, test_size=val_fraction, random_state=seed)
+    X_tr, y_tr = X_train.iloc[tr_idx], y_arr[tr_idx]
+    X_val, y_val = X_train.iloc[val_idx], y_arr[val_idx]
+
+    fitness = _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi)
+    init_fit = fitness(x0)
+    init_val_acc = _classifier_accuracy(X_val, y_val, model)
+
+    if verbose:
+        print(f"\nClassifier antecedent refinement ({method}): {len(bounds)} params, "
+              f"l2_shrink={l2_shrink}, init train obj={init_fit:.5f}, "
+              f"init val acc={init_val_acc:.4f}")
+
+    if method == "coordinate":
+        x = x0.copy()
+        cur = init_fit
+        n_eval = 1
+        n_params = len(bounds)
+        n_blocks = (n_params + block - 1) // block
+        with _single_threaded():
+            for sweep in range(n_sweeps):
+                prev = cur
+                for b in range(n_blocks):
+                    bidx = np.arange(b * block, min((b + 1) * block, n_params))
+                    sub_bounds = [(lo[k], hi[k]) for k in bidx]
+
+                    def f_sub(v):
+                        nonlocal n_eval
+                        trial = x.copy()
+                        trial[bidx] = v
+                        n_eval += 1
+                        return fitness(trial)
+
+                    res = minimize(f_sub, x[bidx], method="L-BFGS-B", bounds=sub_bounds,
+                                   options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
+                    if res.fun < cur - 1e-12:
+                        x[bidx] = np.clip(res.x, lo[bidx], hi[bidx])
+                        cur = float(res.fun)
+                if verbose:
+                    print(f"  sweep {sweep + 1}/{n_sweeps}: train obj={cur:.5f} (evals={n_eval})")
+                if prev - cur < 1e-6:
+                    break
+        best_x, best_fit = x, cur
+        info = {"train_obj": best_fit, "n_eval": n_eval}
+    elif method == "optimizers":
+        best_x, best_fit, info = _run_optimizer_search(
+            fitness, bounds, x0, method=optimizer_method, local_grad_optim=local_grad_optim,
+            population_size=population_size, num_generations=num_generations,
+            local_scale=local_scale, seed=seed, label="classifier",
+        )
+    else:
+        raise ValueError(f"method={method!r} must be 'coordinate' or 'optimizers'")
+
+    refined = apply_gaussian_params(model, best_x)
+
+    # Accept only on a genuine held-out improvement (accuracy first, CE tiebreak).
+    val_acc = _classifier_accuracy(X_val, y_val, refined)
+    val_ce = _classifier_val_ce(X_val, y_val, refined)
+    init_val_ce = _classifier_val_ce(X_val, y_val, model)
+    accept = (val_acc > init_val_acc) or (val_acc == init_val_acc and val_ce < init_val_ce)
+    out_model = refined if accept else model
+    if verbose:
+        verdict = "accepted" if accept else "rejected (kept heuristic)"
+        print(f"  refinement {verdict}: val acc {init_val_acc:.4f} -> {val_acc:.4f}, "
+              f"val CE {init_val_ce:.4f} -> {val_ce:.4f}")
+    return out_model, {
+        "refined": bool(accept),
+        "init_val_acc": init_val_acc, "val_acc": val_acc,
+        "init_val_ce": init_val_ce, "val_ce": val_ce,
+        "init_train_obj": init_fit, **info,
+    }

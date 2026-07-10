@@ -16,7 +16,11 @@ dependencies = [
     "scipy",
     "seaborn",
     "ucimlrepo>=0.0.7",
+    "optimizers",
 ]
+
+[tool.uv.sources]
+optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git" }
 
 [project.optional-dependencies]
 dev = [
