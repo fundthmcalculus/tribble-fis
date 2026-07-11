@@ -51,6 +51,9 @@ def time_this(label="Operation"):
 N_BINS = 3
 # Fixed memory window for the MIMO rollout. TODO - allow other sizes
 # (varying memory windows, energy-preserving scaling, alternate regressors).
+# TODO - Allow other methodologies here (varying memory windows such as
+#        [1, 3, 5, 7, 10], energy-preserving scaling, alternate regressors).
+#        For now we fix the window to MIMO_WINDOW_SIZE for fast, stable runs.
 MIMO_WINDOW_SIZE = 3
 # Total iterative-rollout horizon in seconds. Kept short for fast test runs.
 ROLLOUT_DURATION_S = 5.0
@@ -647,9 +650,6 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
         print("\n" + "#"*60)
         print("# STEP 4c: MIMO Model Training for Rollout")
         print("#"*60)
-        # TODO - Allow other methodologies here (varying memory windows such as
-        #        [1, 3, 5, 7, 10], energy-preserving scaling, alternate regressors).
-        #        For now we fix the window to MIMO_WINDOW_SIZE for fast, stable runs.
         window_sizes = [MIMO_WINDOW_SIZE]
         mimo_results_by_window = {}
 
