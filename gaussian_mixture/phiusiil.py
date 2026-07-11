@@ -6,8 +6,9 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
-from tribblefis.gauss_math import log_transform
-from tribblefis.gauss_plot import report_figures_of_merit
+from tribblefis.gauss_math import log_transform, simple_gaussian_predict
+from tribblefis.gauss_plot import report_figures_of_merit, plot_confusion_matrix, plot_classification_report, \
+    plot_membership_functions
 
 
 def load_data():
@@ -109,7 +110,7 @@ def main():
     # print(f"Possible rules={gaussian_memberships.possible_rules}")
 
     # Create simple gaussian model from GaussianMixtureModel
-    simple_model = gaussian_memberships.to_simple_model(anomaly_details)
+    simple_model = gaussian_memberships.to_simple_model(None)
 
     print("\nSimple Gaussian Classifier Model Stats:")
     print("=" * 80)

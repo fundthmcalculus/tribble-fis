@@ -380,20 +380,22 @@ def find_nearest_trajectories(test_trajectory: pd.DataFrame, train_trajectories:
 
 
 def plot_test_vs_nearest_training(test_trajectory: pd.DataFrame, train_trajectories: list[pd.DataFrame],
-                                   dt: float = 0.01, features: list[str] | None = None, k: int = 2) -> plt.Figure:
+                                   dt: float = 0.01, features: list[str] | None = None, k: int = 2,
+                                   predicted_trajectory: pd.DataFrame | None = None) -> plt.Figure:
     """
     Plot the test trajectory alongside the k nearest training trajectories to visualize stability.
 
     Helps determine if the FIS prediction diverges chaotically or remains near the training
-    data manifold. Shows individual feature timeseries with test (blue) and nearest training
-    (orange and green) overlaid.
+    data manifold. Shows individual feature timeseries with test reference (solid cyan),
+    test predicted (solid red), and nearest training (dashed) overlaid.
 
     Args:
-        test_trajectory: DataFrame with test trajectory (actual)
+        test_trajectory: DataFrame with test trajectory (actual/reference)
         train_trajectories: list of DataFrames with training trajectories
         dt: timestep in seconds
         features: list of features to plot; if None, uses all columns in test_trajectory
         k: number of nearest training trajectories to show
+        predicted_trajectory: optional DataFrame with predicted test trajectory
 
     Returns:
         matplotlib Figure object
@@ -410,20 +412,32 @@ def plot_test_vs_nearest_training(test_trajectory: pd.DataFrame, train_trajector
     fig, axes = plt.subplots(nrows, ncols, figsize=(14, 4 * nrows), squeeze=False)
     axes_flat = axes.flatten()
 
-    fig.suptitle(f'Test vs {k} Nearest Training Trajectories', fontsize=14, fontweight='bold')
+    if predicted_trajectory is not None:
+        fig.suptitle(f'Test Reference & Predicted vs {k} Nearest Training Trajectories', fontsize=14, fontweight='bold')
+    else:
+        fig.suptitle(f'Test vs {k} Nearest Training Trajectories', fontsize=14, fontweight='bold')
 
     t_test = np.arange(len(test_trajectory)) * dt
 
-    colors = ['orange', 'green', 'purple', 'red', 'brown']  # colors for nearest training trajectories
+    colors = ['#00DD00', '#00AA00', '#00FF00', '#009900', '#00CC00']  # colors for nearest training trajectories (green shades)
 
     for feat_idx, feat in enumerate(features):
         ax = axes_flat[feat_idx]
 
-        # Plot test trajectory
+        # Plot test reference trajectory
         test_values = test_trajectory[feat].values
-        ax.plot(t_test, test_values, 'b-', linewidth=2, label='Test (reference)', alpha=0.9, zorder=10)
+        ax.plot(t_test, test_values, '-', color='#00d4ff', linewidth=2.5, label='Test (reference)', alpha=0.9, zorder=10)
 
-        # Plot nearest training trajectories
+        # Plot predicted trajectory if provided
+        if predicted_trajectory is not None:
+            pred_values = predicted_trajectory[feat].values
+            t_pred = np.arange(len(predicted_trajectory)) * dt
+            valid_mask = ~np.isnan(pred_values)
+            if valid_mask.any():
+                ax.plot(t_pred[valid_mask], pred_values[valid_mask], '-', color='#ff1744', linewidth=2.5,
+                       label='Test (predicted)', alpha=0.9, zorder=9)
+
+        # Plot nearest training trajectories (dashed)
         for rank, (train_idx, distance, train_traj) in enumerate(nearest):
             train_values = train_traj[feat].values
             t_train = np.arange(len(train_traj)) * dt

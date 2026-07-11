@@ -20,7 +20,8 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
     It follows scikit-learn's ClassifierMixin interface.
     """
 
-    def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, log_transform=False, member_function="gaussian", trapz_method="fast", random_state=42):
+    def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, log_transform=False, member_function="gaussian", trapz_method="fast", random_state=42,
+                 refine=False, refine_method="coordinate", refine_l2_shrink=0.05):
         """
         Initialize the MixtureOfGaussiansFuzzyClassifier.
 
@@ -35,6 +36,16 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
             member_function: Type of membership function ("gaussian" or "trap").
             trapz_method: Method for trapezoid fitting ("fast" for histogram-based default, "em" for EM-based).
             random_state: Seed for random number generator for reproducibility.
+            refine: If True (Gaussian memberships only), post-fit the Gaussian
+                    antecedent ``(mu, sigma)`` against a cross-entropy objective so
+                    the memberships become discriminative rather than merely
+                    marginal-fit. The refinement is accepted only if it does not
+                    worsen a held-out validation split, so it can never hurt.
+            refine_method: ``"coordinate"`` (fast per-membership block coordinate
+                    descent, the default) or ``"optimizers"`` (population + local
+                    polish search from the `optimizers` package).
+            refine_l2_shrink: Ridge shrinkage pulling the tuned antecedents toward
+                    the heuristic start; the main overfitting control for refinement.
         """
         self.is_fitted_: bool = False
         self.model_ = None
@@ -51,6 +62,10 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.member_function = member_function
         self.trapz_method = trapz_method
         self.random_state = random_state
+        self.refine = refine
+        self.refine_method = refine_method
+        self.refine_l2_shrink = refine_l2_shrink
+        self.refine_info_: dict | None = None
 
     def _apply_log_transform(self, X):
         """Check if features need log-transformation and apply it."""
@@ -123,6 +138,22 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
                 raise ValueError(f"Unknown trapz_method: {self.trapz_method}")
         else:
             raise ValueError(f"Unknown member_function: {self.member_function}")
+
+        # 4. Optionally refine the Gaussian antecedents against the classification
+        #    objective. A zeroth-order TSK classifier has no consequents, so the
+        #    (mu, sigma) *are* the whole model; the heuristic only fits each
+        #    feature/label marginal, never the discriminative loss.
+        if self.refine and self.member_function == "gaussian":
+            from .refine import refine_classifier_antecedents
+            self.model_, self.refine_info_ = refine_classifier_antecedents(
+                self.model_,
+                X_df.reset_index(drop=True),
+                y_array,
+                method=self.refine_method,
+                l2_shrink=self.refine_l2_shrink,
+                seed=self.random_state,
+                verbose=False,
+            )
 
         self.is_fitted_ = True
         return self
@@ -278,6 +309,9 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         member_function="gaussian",
         min_confused=20,
         min_class_samples=5,
+        refine=False,
+        refine_method="coordinate",
+        refine_l2_shrink=0.05,
     ):
         """
         Args:
@@ -319,6 +353,9 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         self.member_function = member_function
         self.min_confused = min_confused
         self.min_class_samples = min_class_samples
+        self.refine = refine
+        self.refine_method = refine_method
+        self.refine_l2_shrink = refine_l2_shrink
 
     def _make_layer(self) -> MixtureOfGaussiansFuzzyClassifier:
         return MixtureOfGaussiansFuzzyClassifier(
@@ -327,6 +364,9 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
             n_gaussians=self.n_gaussians,
             log_transform=self.log_transform,
             random_state=self.random_state,
+            refine=self.refine,
+            refine_method=self.refine_method,
+            refine_l2_shrink=self.refine_l2_shrink,
         )
 
     def _anomaly_params(self) -> AnomalyParameters:

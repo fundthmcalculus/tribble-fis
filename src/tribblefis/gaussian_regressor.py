@@ -7,16 +7,12 @@ from .gauss_math import (
     calculate_gaussian_correlation,
     take_top_features,
     create_gaussian_membership_dict,
-    tsk_firing_strengths,
     detect_and_apply_log_transform,
 )
 from .regression import (
     partition_output,
-    compute_first_order_corrections,
-    compute_second_order_corrections,
-    compute_third_order_corrections,
-    compute_full_second_order_corrections,
-    optimize_tsk_coefficients,
+    solve_tsk_consequents,
+    predict_tsk,
 )
 
 
@@ -35,6 +31,8 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         n_output_buckets=2,
         tsk_order="1st",
         optimize_coefficients=True,
+        consequent_basis="raw",
+        l2_reg=0.0,
         random_state=42,
     ):
         """
@@ -48,7 +46,15 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
             log_transform: Whether to automatically apply log-transformation to features.
             n_output_buckets: Number of output buckets for partitioning y during training.
             tsk_order: TSK polynomial order ('0th', '1st', '2nd', '3rd', 'full-2nd').
-            optimize_coefficients: Whether to optimize TSK coefficients via least squares.
+            optimize_coefficients: Retained for API compatibility. Consequents are
+                always solved in closed form (the exact firing-weighted ridge
+                least-squares optimum), which supersedes the former per-bucket LS
+                initialization plus L-BFGS refinement.
+            consequent_basis: 'raw' monomials or 'orthogonal' (Legendre) basis for
+                the consequent polynomial. Orthogonal is better conditioned at
+                higher orders.
+            l2_reg: Ridge penalty on the correction coefficients (constants are not
+                penalized). 0 disables regularization.
             random_state: Seed for reproducibility.
         """
         self.is_fitted_ = False
@@ -69,6 +75,8 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         self.n_output_buckets = n_output_buckets
         self.tsk_order = tsk_order
         self.optimize_coefficients = optimize_coefficients
+        self.consequent_basis = consequent_basis
+        self.l2_reg = l2_reg
         self.random_state = random_state
 
     def _apply_log_transform(self, X):
@@ -134,41 +142,16 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
 
         self.n_rules_ = self.model_.n_rules
 
-        # Compute TSK correction terms based on order
-        if self.tsk_order == "0th":
-            self.corr_terms_ = np.zeros((self.n_rules_, 0))
-        elif self.tsk_order == "1st":
-            self.corr_terms_ = compute_first_order_corrections(
-                X_df, self.model_, self.top_n_actual_, self.top_features_,
-                self.y_bucket_mean_, y_partitioned
-            )
-        elif self.tsk_order == "2nd":
-            self.corr_terms_ = compute_second_order_corrections(
-                X_df, self.model_, self.top_n_actual_, self.top_features_,
-                self.y_bucket_mean_, y_partitioned
-            )
-        elif self.tsk_order == "3rd":
-            self.corr_terms_ = compute_third_order_corrections(
-                X_df, self.model_, self.top_n_actual_, self.top_features_,
-                self.y_bucket_mean_, y_partitioned
-            )
-        elif self.tsk_order == "full-2nd":
-            self.corr_terms_ = compute_full_second_order_corrections(
-                X_df, self.model_, self.top_n_actual_, self.top_features_,
-                self.y_bucket_mean_, y_partitioned
-            )
-        else:
-            raise ValueError(f"Unknown TSK order: {self.tsk_order}")
-
-        # Optionally optimize coefficients
-        if self.optimize_coefficients:
-            self.corr_terms_, self.y_bucket_mean_ = optimize_tsk_coefficients(
-                X_df, self.model_, self.top_features_,
-                self.y_bucket_mean_, y_partitioned,
-                n_output_buckets=self.n_output_buckets,
-                initial_corr_terms=self.corr_terms_ if self.tsk_order != "0th" else None,
-                order=self.tsk_order,
-            )
+        # Solve TSK consequents in closed form: for fixed firing strengths the
+        # output is linear in the coefficients, so a single ridge least-squares
+        # solve yields the exact firing-weighted optimum.
+        self.corr_terms_, self.y_bucket_mean_ = solve_tsk_consequents(
+            X_df, self.model_, self.top_features_,
+            self.y_bucket_mean_, y_partitioned,
+            n_output_buckets=self.n_output_buckets,
+            order=self.tsk_order, l2_reg=self.l2_reg, basis=self.consequent_basis,
+            verbose=False,
+        )
 
         self.is_fitted_ = True
         return self
@@ -192,46 +175,13 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
 
         X_df = self._apply_log_transform(X_df)
 
-        # Get firing strengths for each rule
-        firing_strengths, labels = tsk_firing_strengths(X_df[self.top_features_], self.model_)
-        strengths_sum = firing_strengths.sum(axis=1, keepdims=True)
-        # Only normalize the rows which are well-posed.
-        # TODO - Parameterize the sum limit.
-        strengths_sum[strengths_sum < 1e-6] = 1
-        norm_firing_strength = firing_strengths / strengths_sum
-
-        # Initialize predictions
-        y_pred = np.zeros(len(X_df))
-
-        # If 0th order, just return weighted bucket means
-        if self.tsk_order == "0th":
-            y_pred = np.dot(norm_firing_strength, self.y_bucket_mean_)
-            return y_pred
-
-        # For higher orders, apply correction terms
-        X_rule = X_df[self.top_features_].to_numpy()
-
-        for ij, rule_id in enumerate(labels):
-            if self.tsk_order == "1st":
-                X_augmented = X_rule
-            elif self.tsk_order == "2nd":
-                X_augmented = np.hstack([X_rule, X_rule**2])
-            elif self.tsk_order == "3rd":
-                X_augmented = np.hstack([X_rule, X_rule**2, X_rule**3])
-            elif self.tsk_order == "full-2nd":
-                X_squared = X_rule**2
-                cross_terms = []
-                for i in range(X_rule.shape[1]):
-                    for j in range(i + 1, X_rule.shape[1]):
-                        cross_terms.append(X_rule[:, i] * X_rule[:, j])
-                X_cross = np.column_stack(cross_terms) if cross_terms else np.empty((X_rule.shape[0], 0))
-                X_augmented = np.hstack([X_rule, X_squared, X_cross])
-
-            y_pred += (
-                self.y_bucket_mean_[rule_id] + X_augmented @ self.corr_terms_[rule_id, :]
-            ) * norm_firing_strength[:, ij]
-
-        return y_pred
+        # Shared prediction path: identical firing-strength normalization and
+        # feature basis as the solver, so fit and predict cannot diverge.
+        return predict_tsk(
+            X_df, self.model_, self.top_features_,
+            self.y_bucket_mean_, self.corr_terms_,
+            order=self.tsk_order, basis=self.consequent_basis,
+        )
 
 
 class MimoGaussianPredictor(BaseEstimator, RegressorMixin):

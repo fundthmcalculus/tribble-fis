@@ -353,3 +353,310 @@ def optimize_tsk_coefficients(
     data_mse = best_obj - _correction_penalty(best_flat)
     print(f"Optimization completed. Final training MSE: {data_mse:.4f}")
     return corr_terms_opt, y_bucket_mean_opt
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: closed-form consequent solver, pluggable basis, shared prediction.
+#
+# For fixed firing strengths the TSK output is *linear* in the consequent
+# coefficients, so the optimal (ridge-regularized) consequents have a closed
+# form. `solve_tsk_consequents` replaces the per-bucket least-squares init plus
+# L-BFGS refinement with a single exact linear solve. `build_consequent_features`
+# centralizes the polynomial feature expansion (previously duplicated across the
+# `compute_*_order_corrections`, `optimize_tsk_coefficients`, and every caller's
+# predict loop) and adds an orthogonal (Legendre) basis for better conditioning.
+# `predict_tsk` is the single shared prediction path.
+# ---------------------------------------------------------------------------
+
+# Per-order polynomial degrees applied to each feature. "full-2nd" additionally
+# includes pairwise cross-product (interaction) terms.
+_ORDER_DEGREES: dict[str, list[int]] = {
+    "1st": [1],
+    "2nd": [1, 2],
+    "3rd": [1, 2, 3],
+    "full-2nd": [1, 2],
+}
+
+
+def _poly_features(X_rule: ndarray, degree: int, basis: str) -> ndarray:
+    """Apply a degree-`degree` univariate polynomial to every column of X_rule.
+
+    - basis="raw":        x ** degree (plain monomials, matches legacy behavior).
+    - basis="orthogonal": the Legendre polynomial L_degree(x), evaluated
+      elementwise. L_1(x) = x, L_2(x) = (3x^2 - 1)/2, ... These are far better
+      conditioned than raw monomials, so the least-squares design matrix is not
+      ill-posed at 2nd/3rd order (the raw basis produces ~1e4 coefficients that
+      overfit). The mapping is stateless, so it is identical at fit and predict.
+    """
+    if basis == "raw":
+        return X_rule ** degree
+    if basis == "orthogonal":
+        coeffs = np.zeros(degree + 1)
+        coeffs[degree] = 1.0
+        return np.polynomial.legendre.legval(X_rule, coeffs)
+    raise ValueError(f"Unknown basis: {basis!r} (expected 'raw' or 'orthogonal')")
+
+
+def build_consequent_features(
+    X_rule: ndarray,
+    order: str,
+    basis: str = "raw",
+    cross_pairs: list[tuple[int, int]] | None = None,
+) -> ndarray:
+    """Build the consequent design columns (without the intercept) for one order.
+
+    Column layout is grouped by degree then interactions, i.e. for a raw
+    full-2nd basis: ``[x_1..x_n, x_1^2..x_n^2, cross_pairs...]``. This matches the
+    legacy ``np.hstack`` ordering exactly, so raw-basis coefficients are a
+    drop-in replacement for the old code.
+
+    Args:
+        X_rule: (n_samples, n_features) feature matrix.
+        order: One of '0th', '1st', '2nd', '3rd', 'full-2nd'.
+        basis: 'raw' or 'orthogonal' (see `_poly_features`).
+        cross_pairs: For 'full-2nd', the explicit list of (i, j) feature-index
+            pairs to include as interaction terms. None means all pairs. Used by
+            the sparse interaction selector to prune uninformative cross terms;
+            the same list must be passed to `predict_tsk`.
+    """
+    n_samples, n_features = X_rule.shape
+    if order == "0th":
+        return np.empty((n_samples, 0))
+    if order not in _ORDER_DEGREES:
+        raise ValueError(f"Unknown order: {order!r}")
+
+    cols = [_poly_features(X_rule, d, basis) for d in _ORDER_DEGREES[order]]
+
+    if order == "full-2nd":
+        if cross_pairs is None:
+            cross_pairs = list(combinations(range(n_features), 2))
+        cross = [X_rule[:, i] * X_rule[:, j] for i, j in cross_pairs]
+        if cross:
+            cols.append(np.column_stack(cross))
+
+    return np.hstack(cols) if cols else np.empty((n_samples, 0))
+
+
+def _normalize_firing_strengths(firing_strengths: ndarray) -> ndarray:
+    """Row-normalize firing strengths using the canonical zero-firing convention.
+
+    Rows whose total firing is <= 1e-6 are left as all-zero (no rule fires). This
+    exact convention must be shared by the solver and prediction, or training and
+    evaluation silently disagree. It is self-consistent for the closed-form solver:
+    an all-zero design row contributes nothing to the ridge normal equations (so
+    such training rows are effectively ignored by the fit), and at predict time the
+    row yields 0 -- the graceful fallback for a point no rule covers. (Contrast the
+    old L-BFGS path, which forced a uniform 1/n_labels blend only to stop the
+    optimizer wandering the resulting null space; the regularized closed-form solve
+    has no such null-space issue, and a uniform blend would multiply
+    unbounded out-of-range consequents under extrapolation.)
+    """
+    row_sums = firing_strengths.sum(axis=1)
+    valid = row_sums > 1e-6
+    norm = np.zeros_like(firing_strengths)
+    norm[valid] = firing_strengths[valid] / row_sums[valid, np.newaxis]
+    return norm
+
+
+def solve_tsk_consequents(
+    X_train: pd.DataFrame,
+    gaussian_memberships: GaussianMixtureModel,
+    top_n_todo: list[typing.Any],
+    y_bucket_mean: pd.Series | ndarray,
+    y_train: pd.DataFrame,
+    n_output_buckets: int,
+    order: typing.Literal["0th", "1st", "2nd", "3rd", "full-2nd"] = "2nd",
+    l2_reg: float = 0.0,
+    basis: str = "raw",
+    cross_pairs: list[tuple[int, int]] | None = None,
+    verbose: bool = True,
+) -> tuple[ndarray, ndarray]:
+    """Solve for the globally optimal TSK consequent coefficients in closed form.
+
+    For fixed firing strengths, the prediction
+    ``y_hat = sum_r w_r * (mean_r + basis(X) @ corr_r)`` is linear in the
+    coefficients ``(mean_r, corr_r)``. Stacking a per-rule design block
+    ``w_r[:, None] * [1 | basis(X)]`` across all rules and solving the ridge
+    normal equations ``(Phi^T Phi + l2_reg * D) beta = Phi^T y`` (with D = 0 on
+    the intercept/bucket-mean columns) yields the exact minimizer of the
+    firing-weighted MSE + ridge penalty -- no iterative optimizer needed.
+
+    Returns (corr_terms_opt, y_bucket_mean_opt), matching
+    `optimize_tsk_coefficients`.
+    """
+    if verbose:
+        print(f"\nSolving {order} consequents in closed form (basis={basis}, l2={l2_reg:g})...")
+
+    firing_strengths_train, labels_train = tsk_firing_strengths(X_train[top_n_todo], gaussian_memberships)
+    norm_fs = _normalize_firing_strengths(firing_strengths_train)
+    n_rules = norm_fs.shape[1]
+
+    X_rule = X_train[top_n_todo].to_numpy()
+    feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs)
+    n_terms = feats.shape[1]
+    n_coeffs_per_rule = 1 + n_terms
+
+    # Per-rule augmented features [1 | basis(X)] are identical across rules; only
+    # the firing weights differ. Build the stacked design by broadcasting.
+    phi = np.hstack([np.ones((X_rule.shape[0], 1)), feats])  # (n_samples, 1 + n_terms)
+    design = (norm_fs[:, :, np.newaxis] * phi[:, np.newaxis, :]).reshape(
+        X_rule.shape[0], n_rules * n_coeffs_per_rule
+    )
+
+    y = np.asarray(y_train["y_value"].values, dtype=float)
+
+    # Ridge diagonal: never penalize the intercept (column 0 of each rule block).
+    penalty = np.ones(n_rules * n_coeffs_per_rule)
+    penalty[::n_coeffs_per_rule] = 0.0
+    gram = design.T @ design + l2_reg * np.diag(penalty)
+    rhs = design.T @ y
+
+    # Regularized system is generally well-posed; fall back to lstsq if singular.
+    try:
+        beta = np.linalg.solve(gram, rhs)
+    except LinAlgError:
+        beta = np.linalg.lstsq(design, y, rcond=None)[0]
+
+    coeffs = beta.reshape(n_rules, n_coeffs_per_rule)
+    y_bucket_mean_opt = coeffs[:, 0].copy()
+    corr_terms_opt = coeffs[:, 1:].copy() if n_terms > 0 else np.zeros((n_rules, 0))
+
+    if verbose:
+        y_pred = design @ beta
+        print(f"  Training MSE: {_mse(y, y_pred):.4f}")
+    return corr_terms_opt, y_bucket_mean_opt
+
+
+def predict_tsk(
+    X: pd.DataFrame,
+    model: GaussianMixtureModel,
+    top_n_todo: list[typing.Any],
+    y_bucket_mean: ndarray,
+    corr_terms: ndarray,
+    order: str = "2nd",
+    basis: str = "raw",
+    cross_pairs: list[tuple[int, int]] | None = None,
+) -> ndarray:
+    """Shared TSK prediction path used by the solver's callers and CV.
+
+    Uses the same firing-strength normalization and feature basis as
+    `solve_tsk_consequents`, so fit and predict cannot silently diverge.
+    """
+    firing_strengths, labels = tsk_firing_strengths(X[top_n_todo], model)
+    norm_fs = _normalize_firing_strengths(firing_strengths)
+
+    if order == "0th":
+        return norm_fs @ np.asarray(y_bucket_mean)
+
+    X_rule = X[top_n_todo].to_numpy()
+    feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs)
+    y_pred = np.zeros(len(X))
+    for ij, rule_id in enumerate(labels):
+        y_pred += (y_bucket_mean[rule_id] + feats @ corr_terms[rule_id, :]) * norm_fs[:, ij]
+    return y_pred
+
+
+def select_interaction_terms(
+    X_train: pd.DataFrame,
+    top_n_todo: list[typing.Any],
+    y_train: pd.DataFrame,
+    y_bucket_mean: pd.Series | ndarray,
+    max_pairs: int | None = None,
+    random_state: int = 42,
+) -> list[tuple[int, int]]:
+    """Screen full-2nd cross-product terms with a LassoCV, returning the pairs worth keeping.
+
+    Cross terms grow as O(n_features^2); most are noise. We fit a cross-validated
+    Lasso to the centered target using the standardized linear + squared + all
+    cross features, then keep only the interaction pairs whose coefficient is
+    non-zero (optionally capped at the `max_pairs` largest by magnitude). Pass the
+    returned list as `cross_pairs` to `solve_tsk_consequents`/`predict_tsk`.
+    """
+    from sklearn.linear_model import LassoCV
+    from sklearn.preprocessing import StandardScaler
+
+    X_rule = X_train[top_n_todo].to_numpy()
+    n_features = X_rule.shape[1]
+    all_pairs = list(combinations(range(n_features), 2))
+    if not all_pairs:
+        return []
+
+    cross = np.column_stack([X_rule[:, i] * X_rule[:, j] for i, j in all_pairs])
+    design = np.hstack([X_rule, X_rule ** 2, cross])
+    y = np.asarray(y_train["y_value"].values, dtype=float)
+    y = y - y.mean()
+
+    design = StandardScaler().fit_transform(design)
+    lasso = LassoCV(cv=5, random_state=random_state, max_iter=10_000).fit(design, y)
+
+    # The cross-term coefficients live in the trailing block of the design.
+    cross_coeffs = lasso.coef_[2 * n_features:]
+    order_by_mag = np.argsort(np.abs(cross_coeffs))[::-1]
+    kept = [all_pairs[k] for k in order_by_mag if cross_coeffs[k] != 0.0]
+    if max_pairs is not None:
+        kept = kept[:max_pairs]
+    # Preserve canonical (ascending) pair ordering for a deterministic layout.
+    kept.sort()
+    print(f"  Sparse interactions: kept {len(kept)}/{len(all_pairs)} cross terms")
+    return kept
+
+
+def select_consequent_hyperparams(
+    X_train: pd.DataFrame,
+    gaussian_memberships: GaussianMixtureModel,
+    top_n_todo: list[typing.Any],
+    y_bucket_mean: pd.Series | ndarray,
+    y_train: pd.DataFrame,
+    n_output_buckets: int,
+    candidate_orders: typing.Sequence[str] = ("1st", "2nd", "full-2nd", "3rd"),
+    candidate_bases: typing.Sequence[str] = ("raw", "orthogonal"),
+    candidate_l2: typing.Sequence[float] = (0.0, 1e-4, 1e-3, 1e-2, 1e-1),
+    n_folds: int = 5,
+    random_state: int = 42,
+) -> dict[str, typing.Any]:
+    """Pick (order, basis, l2_reg) by k-fold cross-validated R² on X_train.
+
+    The membership model (antecedents) is held fixed; only the consequents are
+    re-solved per candidate per fold, so this is cheap (each fit is one linear
+    solve). k-fold averaging (rather than a single validation split) is important
+    here: a single fold is high-variance for ridge-strength selection and can pick
+    an unregularized fit that overfits the test set. Selecting on held-out folds
+    prevents the higher-order models from chasing the test set.
+
+    Returns a dict with keys: order, basis, l2_reg, val_r2 (mean across folds),
+    val_mse (mean across folds).
+    """
+    from sklearn.model_selection import KFold
+
+    idx = np.arange(len(X_train))
+    kf = KFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+    folds = list(kf.split(idx))
+
+    best = {"val_r2": -np.inf}
+    for order in candidate_orders:
+        for basis in candidate_bases:
+            for l2 in candidate_l2:
+                fold_r2, fold_mse = [], []
+                for tr_idx, val_idx in folds:
+                    X_tr, X_val = X_train.iloc[tr_idx], X_train.iloc[val_idx]
+                    y_tr, y_val = y_train.iloc[tr_idx], y_train.iloc[val_idx]
+                    y_val_true = y_val["y_value"].values
+                    corr, means = solve_tsk_consequents(
+                        X_tr, gaussian_memberships, top_n_todo, y_bucket_mean, y_tr,
+                        n_output_buckets=n_output_buckets, order=order, l2_reg=l2, basis=basis,
+                        verbose=False,
+                    )
+                    y_hat = predict_tsk(X_val, gaussian_memberships, top_n_todo, means, corr,
+                                        order=order, basis=basis)
+                    keep = ~np.isnan(y_hat)
+                    fold_r2.append(_rsquared(y_val_true[keep], y_hat[keep]))
+                    fold_mse.append(_mse(y_val_true[keep], y_hat[keep]))
+                mean_r2 = float(np.mean(fold_r2))
+                if mean_r2 > best["val_r2"]:
+                    best = {"order": order, "basis": basis, "l2_reg": l2,
+                            "val_r2": mean_r2, "val_mse": float(np.mean(fold_mse))}
+
+    print(f"\nCV-selected consequent: order={best['order']}, basis={best['basis']}, "
+          f"l2={best['l2_reg']:g} ({n_folds}-fold val R²={best['val_r2']:.4f}, "
+          f"val MSE={best['val_mse']:.4f})")
+    return best
