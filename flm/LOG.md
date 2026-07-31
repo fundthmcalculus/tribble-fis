@@ -1574,3 +1574,170 @@ E19.4's mixture gain quoted without its budget dependence (E22.4).
 **Open:** generation is still not grammatical; hits@1 caps near 0.14; GPT-2 untested
 (blocked, and a data-gap comparison anyway); no neural-embedding comparison; Experiment B's
 real encoder and SST paths unrun.
+
+---
+
+## E23 — Corpus scale and parallel training — **the profile overturned the premise**
+
+Two requests: push corpus size (the constraint E16 and E22.4 both identified as binding, and
+the only one never actually pushed), and evaluate multi-threaded training, motivated by
+wanting a model trainable on local compute without servers.
+
+### E23.1 Profiling first — and E22.3's attribution was wrong
+
+E22.3 observed fit time flat in `max_rules` (65s at 100 rules, 62s at 2500) and attributed it
+to "featurisation plus the candidate-growth GEMM". That was inference from a timing pattern,
+not a measurement. Measured:
+
+| stage | time | share |
+|---|---|---|
+| `build()` | 58.1s | **88%** |
+| rule search | 7.8s | 12% |
+
+Then `cProfile` on `build()` reported **0.2s**, because it was the *second* call and
+`_token_vector`'s cache was warm. 2.5x fewer positions cannot explain 58s -> 0.2s, so the cost
+is not per position at all: it is **per token type**, 19.6 ms each over 3,000 types. That also
+resolves E22.3's puzzle -- fit time is flat in `max_rules` because the dominant cost is a
+one-time per-type featurisation that has nothing to do with rules.
+
+**Lesson worth keeping: "parallelise the training" would have optimised a cost that was 12% of
+the total.** Profiling before parallelising changed the entire answer.
+
+### E23.2 The actual hot spot: 8.7 million `project` calls for 400 token types
+
+Inside cold featurisation, `hierarchy.rollup` and `hierarchy.project` accounted for 13s of
+16.3s. `rollup` walked every key at the source level and called `project` per key, per call --
+a pure-Python loop over up to 9,864 nodes, repeated for every level of every token. 21,700
+`project` calls **per token type**.
+
+The parent of each coordinate is structural, fixed by the hierarchy, so the mapping is
+computable once. Sorting source indices by destination makes each destination's sources
+contiguous, and the aggregation becomes a single `ufunc.reduceat`:
+
+**cold featurisation of 3,000 types: 58.84s -> 1.36s, a 43x speedup.**
+
+`build()` got the same treatment -- featurise each type once into a context table and a
+candidate table, then assemble rows by fancy indexing, with the Python loop reduced to
+collecting integer ids in the same RNG draw order. 1.31x warm, and bit-identical.
+
+Both optimisations touch load-bearing claims, so neither is trusted on inspection. The
+original implementations are retained as oracles: `_rollup_reference` compared across every
+level pair, every op, and random vectors (exact multi-resolution readout is *the* claim
+separating this from Matryoshka truncation), and `_build_reference` asserted **bit-identical**
+(a changed negative sample would silently alter the training set and every number downstream,
+in a way no perplexity comparison would reveal as a bug).
+
+### E23.3 Parallelism, measured — threads lose, processes win, vectorising wins by 10x
+
+| approach | featurisation speedup |
+|---|---|
+| 2 threads over token types | 0.88x |
+| 4 threads over token types | **0.47x** (actively worse) |
+| 2 processes (fork, COW-inherited embedder) | 1.47x |
+| 4 processes (fork) | 1.68x post-fix / **3.85x pre-fix**, bit-exact |
+| **vectorising the rollup** | **43x** |
+
+* **Threads fail because the work is pure-Python WordNet traversal.** The GIL serialises it and
+  contention makes 4 threads worse than 1. This is not a tuning problem; it is the wrong tool.
+* **Processes work.** `fork` lets children inherit the built embedder through copy-on-write, so
+  there is no pickling cost inbound, and the result is bit-exact against serial. 3.85x on 4
+  cores measured *before* the rollup fix, i.e. near-linear.
+* **The GEMMs were already threaded** and it is worth nothing at these sizes: rule search takes
+  5.15s on 1 BLAS thread and 5.05s on 4. E14's "BLAS-bound, not a Cython candidate" conclusion
+  stands, but the corollary -- that BLAS threading is doing useful work -- does not.
+* **The algorithmic fix beat the best parallelism by 11x**, and afterwards featurisation is 4%
+  of fit, so parallelising it is no longer worth doing at all. 4 cores cap any parallel
+  speedup at 4x; a bad inner loop has no such ceiling.
+
+New breakdown after both fixes (total 65.9s -> 31.9s): featurise 1.26s (4%), `build()` 22.5s
+(70%, and see E23.5 -- almost all of it OOV lexical access), rule search 8.2s (26%).
+
+### E23.4 Corpus scale — **it works, for the bigram, not for the fuzzy model**
+
+New `NARRATIVE` corpus: all narrative prose in the nltk Gutenberg sample, **1,014,404 tokens**
+against the old 86,559 (11.7x), 27,044 types. Verse, the KJV, and the Shakespeare plays are
+excluded deliberately -- they would grow the token count fastest and confound the measurement
+worst, since a perplexity change could then be "different language" rather than "more data".
+
+Design: nested subsets of the training side, all evaluated on the **same held-out test set
+with the same 3,000-word candidate vocabulary**. Comparing "small corpus vs big corpus"
+directly would be invalid -- different test sets, so a difference could be "easier text".
+Counts come from each subset, since the frequency prior q(w) is part of the model and handing
+a small-data condition the full corpus's unigram statistics would leak.
+
+| train tokens | fuzzy ppl | 2-gram | best mix | lambda |
+|---|---|---|---|---|
+| 64,575 | 413.1 | 389.3 | 374.4 | **0.4** |
+| 180,120 | 383.4 | 315.4 | 314.1 | 0.2 |
+| 404,909 | 368.5 | 288.5 | 288.5 | **0.0** |
+| 811,254 | 322.1 | 253.3 | 253.3 | **0.0** |
+
+(20,000 training positions; the 5,000-position rows show the same pattern.)
+
+**The fuzzy model does improve with data** -- 413.1 -> 322.1, a 22% reduction. **But the bigram
+improves faster** (389.3 -> 253.3, 35%), and **the complementarity result dies**: the optimal
+mixture weight on the fuzzy model falls 0.4 -> 0.2 -> 0 -> 0.
+
+This is a direct negative against my own recommendation. E16 concluded corpus size was the
+binding constraint and the biggest available lever, and E22.4 reinforced it; on that basis I
+recommended pushing corpus size as the promising direction. Pushed properly, it makes the
+fuzzy model's *relative* contribution worse, not better. **The mixture win -- the strongest
+result in the project (E19.4) -- is a small-data phenomenon.** Its lambda was already visibly
+budget-dependent in E22.4 (4.7% at a large budget, 0.94% at a small one); extending the data
+axis shows it going to zero.
+
+Also worth noting: more training *pairs* barely helps at high data (332.1 -> 322.1 for 5,000
+-> 20,000 positions at frac 1.0), so the fuzzy model is not merely starved of samples. Both
+knobs are pushed and it still loses ground.
+
+### E23.5 A mechanism, and it is not flattering to the featuriser
+
+Out-of-vocabulary types cost **12.17 ms/type against 0.53 in-vocab** -- 23x -- and the profile
+is unambiguous: 355,171 `_dl_simple` (Damerau-Levenshtein) calls for 400 types, i.e. the
+BK-tree spelling search, ~890 edit-distance computations per word.
+
+The bigger problem is what it *returns*. OOV tokens do not get a sense; they get a **blend of
+several fuzzy-matched neighbours**:
+
+```
+'wooden'    noun.substance=0.57, noun.group=0.56, noun.person=0.51, adj.all=0.49,
+            verb.cognition=0.46          <- four unrelated supersenses, all ~0.5
+'arriving'  adj.all=0.55, noun.act=0.11, verb.communication=0.11, ...
+'doorway'   (empty)
+```
+
+On the 1M-token corpus, **24,044 of 27,044 types are outside the 3,000-word sense vocabulary**,
+so the larger the corpus, the larger the fraction of context that is diffuse noise rather than
+named memberships. That is a coherent mechanism for E23.4: the bigram sees more *distinct
+words* as data grows, while the fuzzy featuriser sees more *blur*.
+
+It is also a correctness observation, not just a performance one. Running spelling correction
+over the rare tail of a clean corpus is semantically wrong: `wooden` is not a misspelling of
+anything, and answering as though it were injects noise the model then has to fit.
+
+**And it is now the dominant training cost, which the E23.4 table understates.** That table
+reports fit times of 60-70s on the 1M-token corpus, but `scale.py` builds one embedder and
+reuses it across all eight cells, so every cell after the first runs with the embedder's caches
+already warm. Building cold, the same configuration takes **324.9s**, of which 24,044 OOV types
+at 12.17 ms each accounts for ~293s. So the honest cold-start cost on a 1M-token corpus is ~5.4
+minutes, and ~90% of it is spelling-correcting words that are not misspelled. Fixing the OOV
+path would cut training by roughly an order of magnitude *and* remove the feature noise --
+the same change serves both the local-compute goal and the quality goal, which makes it the
+clear next thing to do.
+
+### E23.6 What this changes
+
+**Confirmed:** the vectorisations (43x, and both proven equivalent), and that corpus size does
+improve the fuzzy model in absolute terms.
+
+**Refuted:** that corpus size is the lever that closes the gap (E16's framing, and my own
+recommendation last turn). It closes the gap the wrong way.
+
+**Refuted:** that training needs parallelising. It needed profiling. Threads are the wrong
+tool (GIL), processes work but now address 4% of fit, and BLAS threading buys nothing here.
+
+**Open, and now the leading candidate:** whether the ceiling is featuriser capacity (E23.5's
+OOV blending) rather than the method. Testable by pinning the candidate set and raising only
+the sense vocabulary and context lexicalisation -- `experiments/capacity.py`.
+
+64 tests pass (2 new equivalence oracles for the vectorised paths).
