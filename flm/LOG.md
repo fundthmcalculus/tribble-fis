@@ -498,3 +498,76 @@ generated text remains a category-appropriate word salad.
 3. **Order-3 rules.** Capped at 2 for readability; English NP/VP patterns plainly need
    three-term conjunctions ("determiner, adjective, then noun").
 4. **Do not** reach for the Gaussian-antecedent estimators on this data again (E9).
+
+---
+
+## E12 — Testing my own three predictions — **2 of 3 FAILED**
+
+E11 ended with a ranked list of what to try next. Testing them mattered, because the
+reasoning sounded convincing and two of the three were simply wrong.
+
+| prediction | reasoning given | measured |
+|---|---|---|
+| widen context 2 → 3 | "a 2-token window cannot represent a clause" | **no effect**: bal-acc 0.527±0.010 → 0.533±0.005 (3 seeds) |
+| allow order-3 rules | "English NP patterns need three-term conjunctions" | **no effect**: sep +0.094 → +0.096, bal-acc 0.527 → 0.530 |
+| predict full joint target | truncating to 12 outputs flattens the decode signal | **untested** — too slow at 45+ outputs to finish here |
+
+Order-3 required implementing general level-wise growth first (the previous code silently
+treated `max_order=3` as 2), so the null result is a real measurement, not a no-op.
+
+**Why record a null result this prominently.** Both predictions were mine, both were
+plausible, and acting on either without measuring would have wasted effort and left a
+false claim in the README. Whatever the sequence model is missing, it is not context
+width or rule order.
+
+### E12.1 The 0.569 headline was inflated by a bug — **CORRECTED**
+
+Seed variance turned out small (sd ≈ 0.005-0.010 over 3 seeds), which made a discrepancy
+impossible to dismiss: the same nominal configuration measured **0.569** before the E11.1
+tagger fix and **0.527 ± 0.010** after. Four standard deviations apart, so not noise.
+
+**Why.** The leaked pure-`OPEN_NOUN=1.0` signature on closed-class words was accidentally
+acting as a *distinctive marker* for function words, and the rule learner was using it.
+Fixing the leak was still right — it was required for the decoder to retrieve nouns at
+all — but it removed a real (if illegitimate) feature.
+
+**Corrected claim.** The rule learner's advantage over the Gaussian-antecedent FIS is
+genuine but smaller than first reported: separation ~6x better (+0.015 → +0.094), while
+balanced accuracy is **barely above chance**. The README and the previous commit message
+overstated it; both are now corrected.
+
+**Lesson.** A fix in one module silently re-benchmarked another. Measuring seed variance
+is what surfaced it — without an error bar, 0.569 versus 0.527 looks like ordinary run-to-run
+drift and the inflated number stands.
+
+### E12.2 Level-wise growth was too slow to sweep — **FIXED**
+
+The first order-3 implementation recomputed each candidate's firing vector from scratch,
+`O(beam x top_singles x k)` full-length products per output per level. It could not finish
+a single 3-seed sweep. Extending a rule is now one vectorised multiply against the parent's
+cached firing vector; `beam` also dropped 40 → 24.
+
+Separately, `_windows` rebuilt every token's embedding on each fit — the full compose
+pipeline per token, several times per corpus pass — which dominated fit time. Token vectors
+are now cached on the instance. Fit time is ~20s per configuration, which is what made the
+3-seed variance measurement above affordable at all.
+
+---
+
+## Standing summary
+
+**Working, measured, and tested:** coverage gate (96.7%), exact multi-resolution rollup
+(in CI), L2 semantic similarity (gap +0.278, complete separation), explainable typo
+robustness, linguistically-correct named rules at logistic-regression parity per target
+(AUC 0.64-0.78), category-correct decoding across six probed categories. 25 tests green.
+
+**Not working:** aggregate next-token skill is marginal (bal-acc 0.527 ± 0.010) and
+generation is not grammatical.
+
+**Ruled out as the cause:** context width (E12), rule order (E12), the antecedent
+representation (E9/E10 — fixed), the decode metric (E11 — fixed), feature hygiene
+(E11.1 — fixed).
+
+**Still open, in the order I would test:** corpus size (~90K tokens is ~50x under a
+TinyStories subset); the independent-per-dimension target space (nothing enforces that
+the prediction corresponds to *one* word); and the absence of any clause-level state.

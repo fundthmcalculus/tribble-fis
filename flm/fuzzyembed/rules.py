@@ -72,14 +72,16 @@ class Rule:
 class MembershipRuleRegressor:
     """Zero-order TSK over membership-valued inputs. Targets in [0, 1].
 
-    ``fit`` mines single-term rules, then pairs built from the strongest singles.
-    Depth is capped at 2 deliberately: with named terms a 2-conjunct rule is still
-    readable aloud, and the candidate space grows quadratically per level.
+    ``fit`` mines single-term rules, then grows higher orders level-wise from the
+    strongest singles, keeping a beam of ``beam`` survivors per level. ``max_order``
+    trades readability for expressiveness: a 2-conjunct rule is readable aloud, and
+    3 conjuncts is about the limit before a rule stops being an explanation.
     """
 
     def __init__(self, max_rules: int = 24, max_order: int = 2,
                  min_support: float = 8.0, t_norm: str = "product",
-                 top_singles: int = 24, min_interaction: float = 0.02):
+                 top_singles: int = 24, min_interaction: float = 0.02,
+                 beam: int = 24):
         if t_norm not in T_NORMS:
             raise ValueError(f"t_norm must be one of {T_NORMS}")
         self.max_rules = max_rules
@@ -88,6 +90,7 @@ class MembershipRuleRegressor:
         self.t_norm = t_norm
         self.top_singles = top_singles
         self.min_interaction = min_interaction
+        self.beam = beam
         self.rules_: list[Rule] = []
         self.default_: float = 0.0
         self.feature_names_: list[str] = []
@@ -99,6 +102,10 @@ class MembershipRuleRegressor:
             return X[:, features[0]]
         cols = X[:, list(features)]
         return cols.prod(axis=1) if self.t_norm == "product" else cols.min(axis=1)
+
+    @property
+    def max_order_used(self) -> int:
+        return max((len(r.features) for r in self.rules_), default=0)
 
     @staticmethod
     def _consequent(fire: np.ndarray, y: np.ndarray) -> tuple[float, float]:
@@ -133,34 +140,59 @@ class MembershipRuleRegressor:
         singles.sort(key=lambda r: -abs(r.lift))
         candidates = list(singles)
 
-        # Order 2, built only from the strongest singles.
-        if self.max_order >= 2:
-            seeds = singles[: self.top_singles]
-            for a_i in range(len(seeds)):
-                for b_i in range(a_i + 1, len(seeds)):
-                    ra, rb = seeds[a_i], seeds[b_i]
-                    ja, jb = ra.features[0], rb.features[0]
-                    feats = (ja, jb)
-                    fire = self._fire(X, feats)
+        # Higher orders by level-wise growth (Apriori-style): extend each surviving
+        # order-(k-1) rule by one strong single. A beam bounds the cost, which would
+        # otherwise be combinatorial in the number of features.
+        seeds = singles[: self.top_singles]
+        # Carry each frontier rule's firing vector alongside it. Extending a rule is
+        # then a single vectorised multiply against one column, instead of
+        # re-multiplying all k columns from scratch -- the naive version recomputed
+        # O(beam x top_singles x k) full-length products per output per level and was
+        # too slow to finish an order-3 sweep at all.
+        frontier: list[tuple[Rule, np.ndarray]] = [(r, X[:, r.features[0]])
+                                                   for r in seeds]
+        use_min = self.t_norm == "min"
+        for _order in range(2, self.max_order + 1):
+            if not frontier:
+                break
+            grown: list[tuple[Rule, np.ndarray]] = []
+            seen: set[frozenset[int]] = set()
+            for base, base_fire in frontier:
+                base_gain = abs(base.consequent - self.default_)
+                for single in seeds:
+                    j = single.features[0]
+                    if j in base.features:
+                        continue
+                    feats = tuple(sorted(base.features + (j,)))
+                    key = frozenset(feats)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    col = X[:, j]
+                    fire = np.minimum(base_fire, col) if use_min else base_fire * col
                     cons, sup = self._consequent(fire, y)
                     if sup < self.min_support:
                         continue
-                    # Keep a pair only if the conjunction says something *neither*
-                    # conjunct says alone -- i.e. it lands further from the default
-                    # than both parents. Without this the rule base fills with
-                    # redundant conjunctions of correlated aliases (the observed case
-                    # was `prev1:adj.all AND prev1:OPEN_ADJ`, two names for
-                    # "the previous token is an adjective", which adds no information
-                    # and costs a reader's attention).
+                    # Keep an extension only if the conjunction says something
+                    # *neither part* says alone -- it must land further from the
+                    # default than both its parents. Without this the rule base fills
+                    # with redundant conjunctions of correlated aliases (the observed
+                    # case was `prev1:adj.all AND prev1:OPEN_ADJ`, two names for "the
+                    # previous token is an adjective": no information, and it costs
+                    # the reader's attention, which is the whole budget an
+                    # interpretable model spends).
                     gain = abs(cons - self.default_)
-                    parent = max(abs(ra.consequent - self.default_),
-                                 abs(rb.consequent - self.default_))
+                    parent = max(base_gain,
+                                 abs(single.consequent - self.default_))
                     if gain <= parent + self.min_interaction:
                         continue
                     lift = (cons - self.default_) * np.sqrt(sup)
-                    candidates.append(Rule(
-                        feats, (self.feature_names_[ja], self.feature_names_[jb]),
-                        cons, sup, lift))
+                    grown.append((Rule(
+                        feats, tuple(self.feature_names_[f] for f in feats),
+                        cons, sup, lift), fire))
+            grown.sort(key=lambda rf: -abs(rf[0].lift))
+            frontier = grown[: self.beam]
+            candidates.extend(r for r, _ in frontier)
 
         candidates.sort(key=lambda r: -abs(r.lift))
         self.rules_ = candidates[: self.max_rules]

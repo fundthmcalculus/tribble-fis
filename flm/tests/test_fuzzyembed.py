@@ -350,3 +350,28 @@ def test_rules_predictions_stay_in_unit_interval():
     y = rng.random(400)
     p = MembershipRuleRegressor().fit(X, y).predict(X)
     assert p.min() >= 0.0 and p.max() <= 1.0
+
+
+def test_rules_grow_to_order_three():
+    """A three-way interaction must be findable when max_order allows it."""
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    rng = np.random.default_rng(7)
+    n = 1500
+    a = (rng.random(n) < 0.5).astype(float)
+    b = (rng.random(n) < 0.5).astype(float)
+    c = (rng.random(n) < 0.5).astype(float)
+    X = np.column_stack([a, b, c, rng.random((n, 3))])
+    y = a * b * c                                # pure 3-way AND
+    names = ["A", "B", "C", "n0", "n1", "n2"]
+
+    order2 = MembershipRuleRegressor(max_order=2, max_rules=12).fit(X, y, names)
+    order3 = MembershipRuleRegressor(max_order=3, max_rules=12).fit(X, y, names)
+
+    assert order2.max_order_used == 2
+    assert order3.max_order_used == 3
+    triple = [r for r in order3.rules_ if set(r.names) == {"A", "B", "C"}]
+    assert triple, order3.render()
+    assert triple[0].consequent > 0.9
+    # The 3-conjunct rule must predict the interaction better than order 2 can.
+    probe = np.array([[1, 1, 1, 0, 0, 0]], dtype=float)
+    assert order3.predict(probe)[0] > order2.predict(probe)[0]

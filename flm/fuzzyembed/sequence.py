@@ -77,6 +77,7 @@ class FuzzySequenceModel:
         self.tagger = SyntaxTagger(
             getattr(embedder.senses, "lemma_synsets", None)) if use_syntax else None
         self.random_state = random_state
+        self._vec_cache: dict[str, np.ndarray] = {}
         self.models_: dict = {}
         self.output_index_: list[int] = []
         self.prior_: np.ndarray | None = None
@@ -90,11 +91,22 @@ class FuzzySequenceModel:
     # -- featurisation -----------------------------------------------------
 
     def _token_vector(self, token: str) -> np.ndarray:
-        """Context features for one token: semantic memberships (+) syntax."""
+        """Context features for one token: semantic memberships (+) syntax.
+
+        Cached on the instance. ``embed`` runs the whole compose pipeline (lexical
+        access, sense assignment, aggregation, upward closure) per call, and a window
+        build touches every token of the corpus several times over -- without this,
+        window construction dominated fit time and made repeated-seed sweeps
+        impractical.
+        """
+        cached = self._vec_cache.get(token)
+        if cached is not None:
+            return cached
         sem = self.emb.embed(token, self.level)
-        if self.tagger is None:
-            return sem
-        return np.concatenate([sem, self.tagger.tag(token)])
+        vec = (sem if self.tagger is None
+               else np.concatenate([sem, self.tagger.tag(token)]))
+        self._vec_cache[token] = vec
+        return vec
 
     def _target_vector(self, token: str) -> np.ndarray:
         """What we predict about the *next* token: same joint space as the context.
@@ -115,14 +127,7 @@ class FuzzySequenceModel:
     def _windows(self, corpus: Corpus, max_windows: int, seed: int
                  ) -> tuple[np.ndarray, np.ndarray]:
         """Build (context-window features, next-token targets)."""
-        h = self.emb.h
-        width = h.width(self.level)
-        cache: dict[str, np.ndarray] = {}
-
-        def vec(tok: str) -> np.ndarray:
-            if tok not in cache:
-                cache[tok] = self._token_vector(tok)
-            return cache[tok]
+        vec = self._token_vector
 
         rng = np.random.default_rng(seed)
         sents = [s for s in corpus.sentences if len(s) > self.window]

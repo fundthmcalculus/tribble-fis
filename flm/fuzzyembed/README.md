@@ -72,7 +72,7 @@ the sharpest measured cost of the substitution.
 
 The claim that separates this from Matryoshka truncation: every coarse level is an
 *exact* t-conorm rollup of every finer level. Asserted in CI
-([`../tests/test_fuzzyembed.py`](../tests/test_fuzzyembed.py), 18 tests) on both a
+([`../tests/test_fuzzyembed.py`](../tests/test_fuzzyembed.py), 24 tests) on both a
 hand-built tree and the real WordNet hierarchy, and re-checked by `run_flm`.
 
 The invariant it rests on is **prefix consistency**: every prefix of a terminal's path
