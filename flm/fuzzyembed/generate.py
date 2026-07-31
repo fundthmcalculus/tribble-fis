@@ -91,9 +91,14 @@ class FuzzyGenerator:
             raise RuntimeError("fit the ranker first")
         offset = self.r.cand_offset_
 
+        # Must use the ranker's candidate featuriser, not the raw one -- lexeme
+        # identity may be masked on the candidate side (see JointNextTokenRanker
+        # .lexeme_side), and a mismatch here would score candidates in a feature space
+        # the rules were never fitted in.
+        cand_vec = getattr(self.r, "cand_vector", self.f._token_vector)
         words, rows = [], []
         for w in vocab:
-            v = self.f._token_vector(w)
+            v = cand_vec(w)
             if v.sum() > 0:
                 words.append(w)
                 rows.append(v)

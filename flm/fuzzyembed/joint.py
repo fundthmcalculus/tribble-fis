@@ -75,7 +75,8 @@ class JointNextTokenRanker:
 
     def __init__(self, featuriser, window: int = 2, n_negatives: int = 8,
                  max_rules: int = 2500, max_order: int = 2, seed: int = 42,
-                 order_quota: dict[int, float] | None = None, beam: int = 800):
+                 order_quota: dict[int, float] | None = None, beam: int = 800,
+                 lexeme_side: str = "ctx"):
         self.f = featuriser
         self.window = window
         self.n_negatives = n_negatives
@@ -94,6 +95,19 @@ class JointNextTokenRanker:
         # binds. Affordable only after the GEMM growth in rules.py -- see its
         # docstring.
         self.beam = beam
+        # Which half of the feature vector gets lexeme-identity dimensions.
+        #
+        # "ctx" (default) is the measured-correct choice. Candidate-side identity
+        # *hurts*: the NCE inversion in generate.py already multiplies by the noise
+        # prior q(w), so a rule like `cand:=the -> high` re-learns frequency that q
+        # already supplies, and the two compound into an over-weighted head. Measured
+        # perplexity with identity on both sides: 385.7 (k=0) -> 394.6 (k=50) ->
+        # 399.0 (k=200), monotonically worse.
+        #
+        # Context-side identity is different in kind -- it is the bigram conditioning
+        # the categories cannot express ("after *the*, expect a noun") and q(w) says
+        # nothing about it.
+        self.lexeme_side = lexeme_side
         self.seed = seed
         self.model_: MembershipRuleRegressor | None = None
         self.feature_names_: list[str] = []
@@ -107,6 +121,15 @@ class JointNextTokenRanker:
                for lag in range(self.window, 0, -1) for n in base]
         self.cand_offset_ = len(ctx)
         return ctx + [f"cand:{n}" for n in base]
+
+    def cand_vector(self, token: str) -> np.ndarray:
+        """Candidate-side features, with lexeme identity masked unless requested."""
+        v = self.f._token_vector(token)
+        n_lex = len(getattr(self.f, "lexemes", ()))
+        if n_lex and self.lexeme_side in ("ctx", "none"):
+            v = v.copy()
+            v[-n_lex:] = 0.0
+        return v
 
     def _context_vector(self, tokens: list[str], i: int) -> np.ndarray:
         """Window ending just before position ``i``, padded with the boundary token."""
@@ -149,7 +172,7 @@ class JointNextTokenRanker:
                 if true_tok not in vocab_set:
                     continue
                 cvec = self._context_vector(sent, i)
-                tvec = self.f._token_vector(true_tok)
+                tvec = self.cand_vector(true_tok)
                 if tvec.sum() <= 0:
                     continue     # undecodable target; nothing to rank toward
                 X.append(np.concatenate([cvec, tvec]))
@@ -159,7 +182,7 @@ class JointNextTokenRanker:
                 for neg in negs:
                     if neg == true_tok:
                         continue
-                    X.append(np.concatenate([cvec, self.f._token_vector(neg)]))
+                    X.append(np.concatenate([cvec, self.cand_vector(neg)]))
                     y.append(0.0)
             if len(X) >= max_positions * (1 + self.n_negatives):
                 break
@@ -233,14 +256,14 @@ class JointNextTokenRanker:
                 true_tok = sent[i]
                 if true_tok not in vocab_set:
                     continue
-                tvec = self.f._token_vector(true_tok)
+                tvec = self.cand_vector(true_tok)
                 if tvec.sum() <= 0:
                     continue
                 distract = [w for w in vocab_arr[rng.choice(
                     len(vocab_arr), size=candidate_set * 2, p=p)]
                     if w != true_tok][: candidate_set - 1]
                 cands = [true_tok] + list(distract)
-                cvecs = np.vstack([self.f._token_vector(w) for w in cands])
+                cvecs = np.vstack([self.cand_vector(w) for w in cands])
 
                 scores = self.score(self._context_vector(sent, i), cvecs)
                 # Rank of the true token (index 0). Ties broken pessimistically --

@@ -60,7 +60,9 @@ class FuzzySequenceModel:
     def __init__(self, embedder: FuzzyEmbedder, level: int = 2, window: int = 2,
                  n_outputs: int = 12, top_n: int = 8,
                  membership_threshold: float = 0.25, use_syntax: bool = True,
-                 max_rules: int = 24, max_order: int = 2, random_state: int = 42):
+                 max_rules: int = 24, max_order: int = 2,
+                 lexeme_top_k: int = 0, vocabulary: list[str] | None = None,
+                 random_state: int = 42):
         self.emb = embedder
         self.level = level
         self.window = window
@@ -70,6 +72,18 @@ class FuzzySequenceModel:
         self.use_syntax = use_syntax
         self.max_rules = max_rules
         self.max_order = max_order
+        # Identity dimensions for the `lexeme_top_k` most frequent words. Categories
+        # generalise but cannot separate `bread` from `cake`, so the model was in effect
+        # a *category* bigram -- p(cat(w) | cat(prev)) -- where a real bigram has
+        # p(w | prev). English is Zipfian, so the head of the distribution is a few
+        # hundred words that behave idiosyncratically and belong to no useful category
+        # ("the", "of", "said"). Lexicalising just those, and leaving the long tail to
+        # the categories, is the cheap way to buy word-level discrimination without
+        # giving up generalisation or readability -- a rule can now say
+        # `IF ctx:prev1:=the AND cand:noun.animal THEN ...`.
+        self.lexeme_top_k = lexeme_top_k
+        self.lexemes = list(vocabulary or [])[:lexeme_top_k] if lexeme_top_k else []
+        self.lexeme_index = {w: i for i, w in enumerate(self.lexemes)}
         # The semantic embedding cannot see function words, which is why the
         # semantics-only model scored 0.528 balanced accuracy (chance 0.500). Named
         # syntactic categories supply the missing signal without giving up
@@ -103,8 +117,14 @@ class FuzzySequenceModel:
         if cached is not None:
             return cached
         sem = self.emb.embed(token, self.level)
-        vec = (sem if self.tagger is None
-               else np.concatenate([sem, self.tagger.tag(token)]))
+        parts = [sem] if self.tagger is None else [sem, self.tagger.tag(token)]
+        if self.lexemes:
+            ident = np.zeros(len(self.lexemes), dtype=np.float32)
+            i = self.lexeme_index.get(token)
+            if i is not None:
+                ident[i] = 1.0
+            parts.append(ident)
+        vec = np.concatenate(parts) if len(parts) > 1 else parts[0]
         self._vec_cache[token] = vec
         return vec
 
@@ -122,6 +142,7 @@ class FuzzySequenceModel:
         names = [h.name(k) for k in h.level_keys(self.level)]
         if self.tagger is not None:
             names += self.tagger.names()
+        names += [f"={w}" for w in self.lexemes]
         return names
 
     def _windows(self, corpus: Corpus, max_windows: int, seed: int

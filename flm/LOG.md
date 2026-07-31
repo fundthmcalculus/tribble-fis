@@ -1028,3 +1028,82 @@ similarity, representation coarseness, Cython, raw score normalisation (E18.2).
 rules cannot separate `bread` from `cake`, which caps both hits@1 and perplexity.
 
 **Corrected:** all pre-E17 ranking numbers were measured with train/test sentence overlap.
+
+---
+
+## E19 — Closing the bigram gap: lexicalise the context, not the candidate
+
+**The gap.** Fuzzy 385.8 vs bigram 279.2. Diagnosis: the fuzzy model is effectively a
+**category bigram** -- it has `p(cat(w) | cat(prev))` where a real bigram has
+`p(w | prev)`. Supersense rules cannot separate `bread` from `cake`.
+
+**The idea.** English is Zipfian, so the head of the distribution is a few hundred words
+that behave idiosyncratically and belong to no useful category (`the`, `of`, `said`).
+**Lexicalise the head, generalise over the tail**: add identity dimensions for the top-K
+most frequent words, keeping categories for everything else. Rules stay readable -- they
+just gain terms like `ctx:prev1:=the`.
+
+### E19.1 Identity on both sides — **FAILED, monotonically**
+
+| config | perplexity |
+|---|---|
+| no lexeme features | **385.7** |
+| top-50 identity, both sides | 394.6 |
+| top-200 identity, both sides | 399.0 |
+
+Worse, and consistently worse as K grows. Adding information hurt, which meant the
+*interaction* with something else was wrong rather than the features themselves.
+
+### E19.2 The mechanism, and the fix — **WORKED**
+
+The NCE inversion (E18.3) computes `p ∝ q(w) · s/(1−s)`, where `q` is the frequency
+prior. So a **candidate-side** rule like `cand:=the → high P(next)` re-learns frequency
+that `q(w)` already supplies, and the two compound into an over-weighted head. The
+candidate-side identity features were not adding information; they were **double-counting
+the prior**.
+
+**Context-side** identity is different in kind. `q(w)` says nothing about what follows
+*the*, so `ctx:prev1:=the` is genuinely new -- it is exactly the bigram conditioning the
+categories cannot express.
+
+Prediction: masking identity on the candidate side while keeping it on the context side
+should reverse the sign of the effect. It did.
+
+| config | perplexity | vs no-lexeme |
+|---|---|---|
+| no lexeme features | 385.7 | — |
+| top-50 identity, **candidate** side | 394.6 | **+8.9 worse** |
+| top-50 identity, **context** side | **369.0** | **−16.7 better** |
+
+Same features, same K, same rule budget -- only which half of the vector carries them.
+The default is now `lexeme_side="ctx"`, and `must_include` still forces every rule to
+touch a candidate feature, so a context-lexeme rule necessarily pairs with a candidate
+*category*: `IF ctx:prev1:=the AND cand:noun.animal THEN ...`. Lexicalised where it pays,
+categorical where it generalises.
+
+**Progress against the gap.** 385.8 -> 369.0 closes ~15% of the distance to the bigram
+(279.2), and now beats the trigram (370.2) as well as the unigram (472.9).
+
+**Why this is the more interesting kind of result.** The failure was not "the feature is
+useless" but "the feature is redundant with a transform applied downstream". That is only
+findable by reasoning about *why* the first attempt failed rather than sweeping K harder --
+sweeping would have shown a monotone worsening and suggested abandoning lexicalisation
+entirely, which was the opposite of the right conclusion.
+
+### E19.3 Not finished in this environment
+
+Set up and runnable, but did not complete here -- the container had accumulated too many
+concurrent jobs and each configuration takes ~2.5 minutes (cold token-vector cache per
+featuriser instance, plus a Python-loop n-gram scorer over ~2900 candidates):
+
+- **K = 200 and 500 on the context side.** K=50 gave −16.7; whether the curve keeps
+  improving or turns over is unmeasured. Run
+  `scratchpad/run3.py`-style: `lexeme_top_k in (200, 500), lexeme_side="ctx"`.
+- **Complementarity with the bigram** (`baselines.interpolated_perplexity`, implemented
+  and unit-testable). This is the more informative of the two: if the best mixture beats
+  the bigram at `lambda > 0`, the fuzzy features carry information the bigram lacks, and
+  that holds *even though* the fuzzy model loses head-to-head. A negative result there
+  would be the strongest argument yet that category features add nothing over word
+  identity at this scale.
+
+Neither is blocked on anything but compute.

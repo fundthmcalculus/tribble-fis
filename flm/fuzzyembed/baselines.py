@@ -183,3 +183,49 @@ def gpt2_perplexity(test: Corpus, allowed: list[str], window: int,
     nll = -float(np.mean(logs))
     return {"perplexity": float(np.exp(nll)), "nll": nll, "n": n,
             "vocab": len(allowed), "model": model_name}
+
+
+def interpolated_perplexity(generator, lm: NgramLM, test: Corpus, allowed: list[str],
+                            window: int, lambdas=(0.0, 0.25, 0.5, 0.75, 1.0),
+                            max_positions: int = 1500, seed: int = 7) -> list[dict]:
+    """Sweep ``p = lam * p_fuzzy + (1 - lam) * p_ngram`` on shared positions.
+
+    The point is **complementarity**, which is a different question from which model
+    wins alone. If the best mixture beats the n-gram at ``lam > 0``, the fuzzy features
+    carry information the n-gram does not have, and that holds even where the fuzzy
+    model loses head-to-head. ``lam=0`` and ``lam=1`` recover the two endpoints on
+    exactly the same positions, so the sweep is self-calibrating.
+    """
+    allowed_set = set(allowed)
+    index = {w: i for i, w in enumerate(allowed)}
+    rng = np.random.default_rng(seed)
+    sents = [s for s in test.sentences if len(s) > window]
+    order = rng.permutation(len(sents))
+
+    pf, pn, gold_idx = [], [], []
+    n = 0
+    for si in order:
+        sent = sents[si]
+        for i in range(window, len(sent)):
+            gold = sent[i]
+            if gold not in allowed_set or gold not in generator.index:
+                continue
+            pf.append(generator.distribution(sent[:i]))
+            pn.append(lm.distribution(sent[:i], allowed))
+            gold_idx.append(index[gold])
+            n += 1
+            if n >= max_positions:
+                break
+        if n >= max_positions:
+            break
+
+    PF, PN = np.vstack(pf), np.vstack(pn)
+    g = np.asarray(gold_idx)
+    rows = []
+    for lam in lambdas:
+        mix = lam * PF + (1.0 - lam) * PN
+        pick = mix[np.arange(len(g)), g]
+        nll = -float(np.mean(np.log(np.maximum(pick, 1e-12))))
+        rows.append({"lambda": lam, "perplexity": float(np.exp(nll)), "nll": nll,
+                     "n": n})
+    return rows
