@@ -271,67 +271,221 @@ coordinate is mostly zero, so `pd.qcut` raises on duplicate bin edges. Binarisin
 reading `predict_proba` is also the better semantic fit: "does the next token belong to
 supersense S, and to what degree?" *is* a graded membership question.
 
-### It does not work yet — a negative result
+### The marginal sequence model does not work — and why that mattered
 
 ```
-windows=2500  features=90  outputs=8/45
 binarised task : separation=+0.015  balanced-acc=0.528   (chance=0.500)
-continuous MAE : test=0.4295        mean-baseline=0.1493  -> LOSES TO baseline
 ```
 
-**Barely above chance.** Stated plainly because it is the most informative result in
-this directory. Both metrics are reported because they disagree and each alone would
-mislead: a probability calibrated near 0.5 cannot beat a mean baseline on MAE when
-targets are sparse, so MAE understates the model — but separation of +0.015 confirms
-there is genuinely almost no skill to understate.
+Essentially no skill. Two independent changes fixed part of it — named **syntactic**
+features (`syntax.py`), since what predicts the next word is mostly syntax and function
+words that the semantic embedding discards; and the right **antecedent representation**
+(`rules.py`), since a control showed logistic regression reaching AUC 0.66–0.78 on
+identical features where the Gaussian FIS sat at chance. Neither worked alone
+(0.528 → 0.534 with syntax only), which is why testing them in isolation would have given
+the wrong conclusion.
 
-The likely cause is not a hyperparameter. **The representation that works for
-similarity is structurally insufficient for sequence prediction**, because what
-predicts the next word is mostly syntax and function words — exactly what this
-embedding discards. A two-token window of supersense memberships says "an animal was
-just mentioned"; it cannot say "a determiner was just used, so a noun is due".
+But the deeper flaw was the *target*: predicting each dimension independently never
+enforces that the prediction describes **one actual word**. That is what `joint.py` fixes.
 
-That makes this the sharpest available evidence for the scope claim in
-[`../FUZZY_EMBEDDING_PLAN.md`](../FUZZY_EMBEDDING_PLAN.md) §8: a fuzzy language model
-needs a fuzzy model of **syntax** beside its fuzzy model of **semantics**. The decoder
-below is fully working machinery; it is currently being fed a near-uninformative
-signal. Before tuning this, the productive next step is adding syntactic features
-(POS-tag memberships, position, function-word identity) as additional named inputs —
-they are cheap, and they are what is missing.
+## Joint next-token ranking (`joint.py`)
 
-**Decoder** (`decode.py`): Zadeh's **linguistic approximation** — the retranslation
-step that closes the computing-with-words loop. Score every vocabulary lexeme by fuzzy
-Jaccard against the predicted vector and sample. Two consequences worth the
-architecture:
+Scores `(context, candidate)` pairs — "is *w* the next word here?" — so a rule can express
+the context×candidate interaction the marginal form cannot. Evaluated by ranking the true
+next token against frequency-sampled distractors.
 
-- **Temperature is a Zadeh hedge.** Sharpening is concentration (`μ^e`, e>1),
-  flattening is dilation (e<1). No separate temperature parameter — `e = 2` is
-  literally "*very* like the prediction".
-- **Every decode step is auditable**: which named dimensions drove it, which lexemes
-  competed, at what degree. No vocabulary-sized opaque distribution.
+| model | MRR | hits@1 | hits@10 |
+|---|---|---|---|
+| unigram frequency | 0.189 | 0.068 | 0.486 |
+| joint, 3000 train positions | 0.279 | 0.126 | 0.660 |
+| **joint, 12000 positions** | **0.319** | **0.142** | **0.784** |
+| oracle ceiling | 0.822 | 0.698 | — |
 
-### What this is not
+> ⚠ **These ranking numbers are optimistic.** Measured before `Corpus.split` existed:
+> `build` and `evaluate` both iterated the full sentence list under different shuffles, so
+> held-out *positions* came from training sentences. "Different seed" is not a split. Fixed
+> with a test. The perplexity numbers below use a proper sentence-level split.
 
-**This is a semantic-class sequence model, not a language model.** It predicts what
-*kind* of thing comes next. Function words carry no hierarchy membership, so they can
-never be emitted and the output is not grammatical text. That is a property of the
-representation, not a tuning problem: a real FLM needs a fuzzy model of *syntax*
-alongside this fuzzy model of *semantics*, and that does not exist yet. See
-[`../FUZZY_EMBEDDING_PLAN.md`](../FUZZY_EMBEDDING_PLAN.md) §8.
+Two non-obvious fixes were required — the first run scored MRR 0.191, *below* unigram, with
+every rule candidate-only:
+
+1. **`must_include`** — every rule must touch a candidate feature. A context-only rule fires
+   identically for all candidates, shifting every score by a constant, so it cannot change a
+   ranking.
+2. **`seed_features`** — context features have **exactly zero marginal lift** here (a
+   position's positive and all its negatives share one context vector), so lift-based greedy
+   seeding could never generate a ctx×cand rule. The XOR problem for feature selection:
+   informative jointly, invisible marginally.
+
+The **oracle ceiling was measured first** (2133 distinct signatures among 2897 words), which
+disproved the standing hypothesis that L2 was too coarse to rank words and saved an expensive
+detour into re-decoding at finer levels.
+
+### Order-3 rules and beam
+
+| config | MRR | hits@1 | rules |
+|---|---|---|---|
+| order 2, beam 200 | 0.265 | 0.116 | 259 |
+| **order 2, beam 800** | **0.279** | **0.126** | 859 |
+| order 3, beam 800 | 0.275 | 0.118 | 1659 |
+
+**More interactions help; order-3 does not** — double the rules for no MRR gain. Beam
+saturates at 800 because the *candidate supply* runs out (~835 admissible order-2 rules).
+Order-3 does buy better *explanations* at no ranking cost, so use it when the rule base is
+the deliverable: `"and he ___" → AUXILIARY (0.473)`, `"began ___" → INFINITIVE_TO (0.456)`.
+
+### Corpus size is the binding constraint
+
+| training positions | MRR | hits@1 | hits@10 |
+|---|---|---|---|
+| 750 | 0.260 | 0.112 | 0.614 |
+| 6000 | 0.293 | 0.140 | 0.704 |
+| 12000 | **0.319** | **0.142** | **0.784** |
+
+Monotonic and still rising when the ~90K-token corpus runs out. Rule count saturates at ~860
+throughout, so the gain is better-estimated **consequents**, not more rules. Replicated on
+Brown (191K tokens), which goes twice as far: 0.253 → 0.273 → 0.285 at 25000 positions.
+
+### Efficiency: GEMMs, not Cython
+
+Under the product t-norm a whole growth level factors into matrix products over the frontier
+firing matrix `F` and seed columns `S`:
+
+```
+support = F.T @ S ;   weighted = F.T @ (S * y)   →   consequent = weighted / support
+```
+
+The old code made one numpy call per candidate — ~30k per level at beam 200, where *call
+overhead* dominated. Cython would at best match one BLAS thread. Order-3 at beam 800 went
+from "cannot finish a sweep" to **0.95s**. `min` is not bilinear so it keeps the loop;
+`test_batched_growth_matches_bruteforce` asserts exact agreement.
+
+## As a language model (`generate.py`, `baselines.py`)
+
+Normalising the joint scores over the vocabulary gives `p(w | context)`, which makes
+**perplexity** available and therefore makes this comparable to any conventional LM on
+identical held-out text.
+
+| model | perplexity |
+|---|---|
+| uniform (floor) | 2897.0 |
+| 1-gram (same data) | 472.9 |
+| fuzzy, raw score normalised | 2477.8 |
+| fuzzy, NCE-corrected | 385.8 |
+| 3-gram (same data) | 370.2 |
+| **fuzzy + context lexicalisation (K=500)** | **363.4** |
+| 2-gram (same data) | 279.2 |
+
+Same sentence split, same vocabulary, same restriction to positions whose gold token the
+fuzzy model can represent (94.5% coverage; the rest skipped, not floored).
+
+### Raw score normalisation was badly wrong — and it reframes the ranking results
+
+Normalising raw scores gave **2477.8** against a 2897 floor: almost no information. Scores are
+bounded in [0,1] and span under one order of magnitude, while an LM needs ratios of ~10³. The
+fix is the noise-contrastive inversion — the ranker was trained contrastively, so its output
+is `s = p/(p + k·q)`, giving `p ∝ q·s/(1−s)`. The odds ratio is unbounded, and multiplying by
+`q` restores the frequency information the contrastive objective factored out. **6.4×.**
+
+The gain over unigram is *provably* the rules' contribution: a constant score makes the
+inversion reduce **identically** to the frequency prior, so 473 → 386 is exactly what context
+adds. There is a test for that identity.
+
+This also reframes the ranking table: **MRR flattered the model.** Ranking against 19
+distractors mostly rewards getting the *category* right; perplexity over 2897 candidates
+demands the *word*.
+
+### Closing the bigram gap: lexicalise the context, not the candidate
+
+The model was effectively a *category* bigram — `p(cat(w) | cat(prev))` where a real bigram
+has `p(w | prev)`. English is Zipfian, so the head of the distribution is a few hundred words
+belonging to no useful category (`the`, `of`, `said`): **lexicalise the head, generalise over
+the tail** (`lexeme_top_k`).
+
+Adding identity to *both* halves made it monotonically **worse** (385.7 → 394.6 → 399.0). Not
+because the features are useless but because they are **redundant with a transform applied
+downstream**: the NCE inversion already multiplies by `q(w)`, so `cand:=the → high` re-learns
+frequency and the two compound. Context-side identity has no such overlap.
+
+| config | ppl (1500/12000) | ppl (600/8000) |
+|---|---|---|
+| no lexeme features | 385.7 | — |
+| top-200, **candidate** side | 399.0 | 365.1 |
+| top-200, **context** side | 364.5 | 339.1 |
+| **top-500, context side** | **363.4** | **338.5** |
+
+Same features, same budget — only which half carries them. Saturates after ~200 dimensions.
+**425 of 860** rules end up lexicalised, chosen on lift.
+
+### The fuzzy model is complementary to a bigram, not strictly worse
+
+The most important result here. Interpolating `p = λ·p_fuzzy + (1−λ)·p_bigram`:
+
+| λ | ppl (1500/12000) | ppl (600/8000) |
+|---|---|---|
+| 0.0 (pure 2-gram) | 276.1 | 236.9 |
+| **0.30–0.35 (best)** | **263.1** | **228.1** |
+| 0.50 | 266.8 | 233.6 |
+| 1.0 (pure fuzzy) | 364.0 | 338.5 |
+
+**The mixture beats the bigram alone in both settings (−4.7%, −3.7%) even though the fuzzy
+model loses head-to-head by ~30%.** An interior optimum near λ=0.3 in two independent
+settings is not a fluke, and losing individually while improving the ensemble is the
+signature of complementary information rather than a strictly-dominated model.
+
+**This is the honest framing of the whole line of work:** fuzzy rules do not replace an
+n-gram LM at this scale — they capture something n-grams miss, in a form a human can read,
+worth about a third of a mixture's weight.
+
+Probably why, from the learned rules:
+
+```
+IF ctx:prev1:=the    AND cand:OPEN_NOUN     THEN P(next) ~ 0.313   (support=1731)
+IF ctx:prev1:=did    AND cand:NEGATOR       THEN P(next) ~ 1.000
+IF ctx:prev1:=came   AND cand:INFINITIVE_TO THEN P(next) ~ 1.000
+IF ctx:prev1:=said   AND cand:DETERMINER    THEN P(next) ~ 0.554
+IF ctx:prev1:=of     AND cand:DETERMINER    THEN P(next) ~ 0.325
+```
+
+A bigram encodes "did → not" as a table entry. Here it is a word paired with a *category*, so
+it generalises to negators never seen after "did" — information a bigram structurally cannot
+hold.
+
+### On GPT-2
+
+Not runnable here: weights are on Hugging Face, outside the egress allowlist.
+`baselines.gpt2_perplexity` implements it under the same restriction. Note the comparison is
+weak on its own — GPT-2 saw ~40GB against this model's ~90K tokens, so it wins by a margin
+measuring the *data gap*. The controlled baseline at this scale is an n-gram LM on the same
+corpus, which is what the tables report, and n-grams on 90K tokens are strong rather than a
+straw man.
+
+### Generation is still not grammatical
+
+Function words now appear at realistic rates (`the` 0.165, `and` 0.118, `to` 0.094) instead
+of the earlier category salad, but output is not fluent. **Temperature is a Zadeh hedge** —
+sharpening is concentration (`μ^e`), so `e=2` is literally "*very* like the prediction", and
+every step reports the named rules that drove it.
+
+## What this is not
+
+An embedding model plus a classifier head is **not a language model.** A fuzzy LM needs a
+fuzzy representation (built), a fuzzy sequence model (built, weak), and a fuzzy decoder
+(built). Note `MixtureOfGaussiansFuzzySequenceClassifier` in this repo is a confusion-driven
+cascade, not a temporal sequence model, and is not a seed for the sequence stage.
 
 ## Honest limitations
 
 - **Proper names are invisible** — no named entities in WordNet. The dominant residual
   coverage gap; needs the Wikipedia-category graft.
 - **The ladder has no usable middle** (45 → 4527). Structural to WordNet; Roget's fixes it.
+- **Loses to a bigram by ~30%** head-to-head, and only complements it.
+- **hits@1 caps near 0.14** — supersense rules cannot separate `bread` from `cake`.
+- **Corpus is ~50× smaller** than a TinyStories subset, and data is the binding constraint.
 - **Word-sense disambiguation is shallow** — SemCor priors plus one relaxation round.
-  Misspelled tokens inject competing senses (`rabit` pulls in `habit`, `wait`), and
-  though the correct sense stays top-ranked, the noise is real.
-- **The corpus is ~50× smaller** than a TinyStories subset and early-20th-century.
-- **Typo evaluation partly circular** — the aggregator trains on `exp_b/perturb.py`
-  noise and is evaluated on it. The held-out *error class* split mitigates this and
-  quantifies the gap; published numbers should use AdvGLUE-style generators instead.
-- **No comparison to a neural baseline yet.** The plan's distillation and MTEB
-  evaluation (§4.1, §6) are not built. Until then there is no evidence about where
-  this sits against EmbeddingGemma — and the expectation on record is that it *loses*
-  on clean STS and wins on typo robustness, interpretability, and cost.
+- **Typo evaluation partly circular** — trained and evaluated on `exp_b/perturb.py` noise;
+  the held-out *error class* split quantifies the gap but published numbers should use
+  AdvGLUE-style generators.
+- **No neural-embedding comparison** — the plan's distillation/MTEB work is not built.
+
+Full experiment record with what worked, what didn't, and why: [`../LOG.md`](../LOG.md).

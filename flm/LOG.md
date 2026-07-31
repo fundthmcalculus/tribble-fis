@@ -1015,7 +1015,7 @@ one scalar-vector scaling plus two reductions.
 `test_generator_factorised_scoring_matches_direct` asserts it equals evaluating the rule
 base directly.
 
-## Standing summary — CURRENT
+## Standing summary (SUPERSEDED — see the final one)
 
 **Beats a real baseline:** ranking MRR over unigram; perplexity 386 vs 473 unigram.
 **Loses to:** a smoothed bigram (279). **Untested:** GPT-2 (blocked; and a data-gap
@@ -1090,20 +1090,117 @@ findable by reasoning about *why* the first attempt failed rather than sweeping 
 sweeping would have shown a monotone worsening and suggested abandoning lexicalisation
 entirely, which was the opposite of the right conclusion.
 
-### E19.3 Not finished in this environment
+### E19.3 Context-side K keeps helping, and saturates
 
-Set up and runnable, but did not complete here -- the container had accumulated too many
-concurrent jobs and each configuration takes ~2.5 minutes (cold token-vector cache per
-featuriser instance, plus a Python-loop n-gram scorer over ~2900 candidates):
+Run at the headline setting (1500 evaluation positions, 12000 training positions), and
+replicated at a lighter one (600/8000) with baselines re-measured to match. **Compare
+within a column** -- the two settings are not comparable to each other.
 
-- **K = 200 and 500 on the context side.** K=50 gave −16.7; whether the curve keeps
-  improving or turns over is unmeasured. Run
-  `scratchpad/run3.py`-style: `lexeme_top_k in (200, 500), lexeme_side="ctx"`.
-- **Complementarity with the bigram** (`baselines.interpolated_perplexity`, implemented
-  and unit-testable). This is the more informative of the two: if the best mixture beats
-  the bigram at `lambda > 0`, the fuzzy features carry information the bigram lacks, and
-  that holds *even though* the fuzzy model loses head-to-head. A negative result there
-  would be the strongest argument yet that category features add nothing over word
-  identity at this scale.
+| config | ppl (1500/12000) | ppl (600/8000) |
+|---|---|---|
+| 1-gram | 472.9 | 433.3 |
+| no lexeme features | 385.7 | — |
+| 3-gram | 370.2 | — |
+| top-50, context side | 369.0 | — |
+| top-200, context side | 364.5 | 339.1 |
+| **top-500, context side** | **363.4** | **338.5** |
+| top-200, **both** sides | 399.0 | 365.1 |
+| 2-gram | 279.2 | 236.9 |
 
-Neither is blocked on anything but compute.
+Monotone improvement on the context side, flattening after ~200 identity dimensions
+(364.5 -> 363.4 for 2.5x the K), consistent with the Zipfian premise: the top couple
+hundred words are where idiosyncratic behaviour lives, and beyond that the categories do
+the work. Both-sides is worse at every K in *both* settings, so E19.2's double-counting
+mechanism holds throughout rather than being an artifact of one configuration.
+
+Net **385.7 -> 363.4**: beats the unigram (472.9) and the trigram (370.2), still loses to
+the bigram (279.2) by ~30%. The learner spends budget on lexicalised rules willingly --
+**425 of 860** -- chosen on lift, not by quota.
+
+### E19.4 Complementarity with the bigram — **CONFIRMED, replicated. The best result so far.**
+
+The more informative test, positive in both settings. Interpolating
+`p = lam * p_fuzzy + (1 - lam) * p_bigram` on identical positions:
+
+| lambda | ppl (1500/12000) | ppl (600/8000) |
+|---|---|---|
+| 0.0 (pure 2-gram) | 276.1 | 236.9 |
+| 0.20 | 264.6 | — |
+| **0.30-0.35 (best)** | **263.1** | **228.1** |
+| 0.50 | 266.8 | 233.6 |
+| 0.70 | 281.3 | 249.4 |
+| 1.0 (pure fuzzy) | 364.0 | 338.5 |
+
+**The mixture beats the bigram alone in both settings -- 263.1 vs 276.1 (-4.7%) and 228.1
+vs 236.9 (-3.7%) -- even though the fuzzy model loses head-to-head by ~30%.** An interior
+optimum near lambda = 0.3 in two independent settings is not a fluke.
+
+(The lambda=0 cell reads 276.1 where the standalone bigram measured 279.2: same model, ~1%
+jitter from independent position sampling inside `interpolated_perplexity`. That is exactly
+why lambda=0 is *measured* rather than assumed -- the within-column comparison is the valid
+one.)
+
+**Why this is the result that matters most.** Every previous number said the fuzzy model was
+*worse than* a conventional baseline, which leaves open the reading that the categorical
+representation is just a weaker way of doing what n-grams already do. This says otherwise:
+the fuzzy features carry information a bigram **does not have**, and the two are additive.
+Losing head-to-head while improving the ensemble is the signature of complementary
+information rather than a strictly-dominated model.
+
+It also changes the honest framing of the whole line of work. The claim is not "fuzzy rules
+can replace an n-gram LM at this scale" -- they cannot, by ~30%. It is "fuzzy rules capture
+something n-grams miss, in a form a human can read", and the interior optimum quantifies how
+much: about a third of a mixture's weight is worth giving to the fuzzy model.
+
+### E19.5 The lexicalised rules
+
+Exactly the intended hybrid -- one specific frequent word, one general category:
+
+```
+IF ctx:prev1:=the    AND cand:OPEN_NOUN     THEN P(next) ~ 0.313   (support=1730.9)
+IF ctx:prev1:=did    AND cand:NEGATOR       THEN P(next) ~ 1.000   (support=28.0)
+IF ctx:prev1:=the    AND cand:noun.animal   THEN P(next) ~ 0.415   (support=224.0)
+IF ctx:prev1:=said   AND cand:DETERMINER    THEN P(next) ~ 0.554   (support=101.0)
+IF ctx:prev1:=his    AND cand:OPEN_NOUN     THEN P(next) ~ 0.341   (support=295.1)
+IF ctx:prev1:=little AND cand:OPEN_NOUN     THEN P(next) ~ 0.340   (support=266.7)
+IF ctx:prev1:=of     AND cand:DETERMINER    THEN P(next) ~ 0.325   (support=271.0)
+IF ctx:prev1:=came   AND cand:INFINITIVE_TO THEN P(next) ~ 1.000   (support=11.0)
+IF ctx:prev1:=buster AND cand:verb.body     THEN P(next) ~ 0.927   (support=11.2)
+```
+
+"the <noun>", "did not", "said the", "his <noun>", "little <noun>", "of the", "came to" --
+English collocations recovered from data, at consequents up to 1.000. The last is
+corpus-specific (Buster Bear is a character in one of the source stories), a useful reminder
+that part of what the rule base learns is about *this corpus* rather than English.
+
+**This is probably where the complementarity in E19.4 comes from.** A bigram encodes
+"did -> not" too, but only as a table entry. Here it is a word paired with a *category*, so
+it generalises to negators the bigram never saw after "did" -- information a bigram
+structurally cannot hold.
+
+---
+
+## Standing summary — CURRENT (as of E19)
+
+**Best results.** As a language model: perplexity **363.4**, beating unigram (472.9) and
+trigram (370.2), losing to bigram (279.2). **Mixed with a bigram it beats the bigram alone**
+(263.1 vs 276.1), replicated at a second setting. Ranking (leaky pre-E17 numbers aside):
+beats a unigram baseline on MRR. Representation: coverage 96.7%, exact multi-resolution
+rollup asserted in CI, L2 similarity gap +0.278, explainable typo robustness.
+
+**Honest framing.** Fuzzy rules do not replace an n-gram LM at this scale. They capture
+something n-grams miss, in a readable form, worth ~a third of a mixture's weight.
+
+**Ruled out:** context width (E12), rule order for ranking (E12, E15), Gaussian antecedents
+(E9/E10), symmetric decode similarity (E11), representation coarseness (E13.1), Cython
+(E14 -- BLAS-bound), raw score normalisation (E18.2), candidate-side lexicalisation
+(E19.1/E19.2 -- double-counts the NCE prior).
+
+**Confirmed binding:** corpus size (E16, replicated on Brown); within-category
+discrimination, partly relieved by context lexicalisation (E19).
+
+**Corrected along the way:** the 0.569 balanced accuracy (E12.1, bug-inflated); all pre-E17
+ranking numbers (train/test sentence overlap).
+
+**Open:** generation is still not grammatical; hits@1 caps near 0.14; GPT-2 untested
+(blocked, and a data-gap comparison anyway).
