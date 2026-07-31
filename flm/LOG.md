@@ -46,6 +46,7 @@ Convention: **WORKED** / **FAILED** / **PARTIAL**, each with a why.
 | E27 | Significance gating and relational slots | both FAILED; long-range rules are real but redundant |
 | E28 | Word-level consequents (first-order TSK) | **WORKED** — first mixture to beat the bigram (-10.5%) |
 | E29 | Consolidating first-order: data, selection, backoff, metrics | **beats bigram AND trigram head-to-head** (219.9 vs 284.4) |
+| E30 | Training speed: plan + reformulated pair counting | **4.0x measured**; Cython and GPU both argued against |
 
 ---
 
@@ -2779,3 +2780,124 @@ antecedent cannot carry discourse state. Class count is capped at 3,000 by `max_
 quality was still improving there. Order-3 context classes untested. GPT-2 untested (blocked, and
 a data-gap comparison anyway). No neural-embedding comparison. Experiment B's real encoder and SST
 paths unrun.
+
+---
+
+## E30 — Plan: training speed. **Not Cython, not GPU** — and item 1 is already done (4.0x)
+
+E29's full-data run took ~940s (16 min). The question is what to do about it. Profiled first,
+because this project's record on cost attribution is bad (E22.3 blamed the wrong stage, E23.1
+found it) and because the two previous speed fixes were **algorithmic, not parallel** — 43x from
+vectorising a rollup against 3.85x from four processes.
+
+### E30.1 Where the time actually went — and the fix, measured
+
+Profile of `ContextClassMiner.fit` at 60,000 positions (total 25.7s):
+
+| stage | time | share |
+|---|---|---|
+| per-pair column products `Fa[:,a] * Fa[:,b]` | 10.29s | 40% |
+| `column_stack` of those columns | 8.81s | 34% |
+| `np.add.at` scatter | 5.20s | 20% |
+| collecting `F` (the Python loop) | **0.22s** | **1%** |
+
+**94% in one operation**, and 1% in the Python loop I would have blamed. The counting problem is a
+three-way contraction:
+
+```
+C[(a,b), w] = sum_i  F[i,a] . F[i,b] . 1[w_i = w]
+```
+
+Forming one column per pair is the wrong *shape*. Hold one seed `a` fixed and the whole row of
+pairs `(a, b)` for every later `b` becomes one scaled block times a sparse one-hot matrix:
+
+```
+G = F[:, later_seeds] * F[:, a]      one block multiply
+C = (Y.T @ G).T                      one sparse GEMM
+```
+
+Identical arithmetic, ~140 block operations instead of ~9,730 slice multiplies plus 17 giant
+`column_stack` allocations, and the scatter-add disappears because the counts fall out of the GEMM.
+This is the E14 reformulation applied to the other half of the pipeline.
+
+**Measured, with the model asserted identical:**
+
+| positions | before | after | speedup |
+|---|---|---|---|
+| 60,000 | 26.9s | **6.7s** | 4.0x |
+| 300,000 | 179.7s | **40.8s** | 4.4x |
+| 624,325 (projected) | ~940s | **~200s** | ~4.5x |
+
+`_pair_blocks_reference` is kept and a test asserts the two produce the same classes and the same
+distributions — this step produces every class's counts, so an error would silently change every
+rule in the model.
+
+### E30.2 The remaining plan, in priority order
+
+Re-profiled after the fix (60,000 positions, total 6.7s): `ravel`/copy 35%, the block multiply 31%,
+the sparse GEMM itself 18%, order-1 `add.at` 4%, collecting `F` 5%.
+
+**2. Row-restrict each pair block to the rows where the fixed seed fires.** `F` is **1.5% dense**,
+so `G = F[:, later] * F[:, a]` is a dense array that is almost entirely zero, and the GEMM
+multiplies those zeros. For a fixed `a`, only rows where `F[i,a] > 0` can contribute:
+
+```
+idx = nonzero(F[:, a]);  G = F[ix_(idx, later)] * F[idx, a][:, None];  C = (Y.T[:, idx] @ G).T
+```
+
+Exact, not approximate. Expected the largest remaining win — proportional to how sparse the fixed
+seed's column is, which for most context features is a few percent. This also subsumes "store `F`
+sparse", and it is the memory fix: `F` at 624K positions is 2.6 GB in float64 and is the reason
+the run needs care at all.
+
+**3. float32 for `F` and the count matrices.** Halves bandwidth and memory, and the profile is now
+dominated by copies rather than arithmetic. Precedent: E26 added `dtype` to the rule learner for
+exactly this reason, with float64 kept as the default so the exactness test still holds.
+
+**4. Process-parallel over row shards** — *only after 2 and 3*. Counting is a sum over rows, so
+sharding rows and adding the partial count matrices is **exact**, not an approximation. Measured
+ceiling on this box: **3.85x on 4 cores, bit-exact** (E23.3, on featurisation). Worth doing last
+because it multiplies whatever the serial cost is, and items 2–3 shrink that first.
+
+### E30.3 Why not Cython
+
+**The profile shows essentially no time in scalar Python loops.** Collecting `F` — the only real
+Python loop left — is 5% of 6.7s, and most of that is numpy call overhead, not interpretation.
+Cython would compile a loop that should be *deleted* instead. This is the same conclusion as E14
+("the work is already dense linear algebra dispatched to an optimised BLAS; hand-writing the loop
+in C would at best match one thread of it"), now re-derived for the first-order pipeline rather
+than assumed from the old one.
+
+### E30.4 Why not a GPU
+
+Four reasons, in order of weight:
+
+1. **It contradicts the project's goal.** The stated aim is a model that trains on local compute
+   without expensive servers. A GPU requirement is a worse outcome than a slower model.
+2. **The work is memory-bound, not compute-bound.** BLAS threading on these matrices was measured
+   worth *nothing* (5.15s at 1 thread vs 5.05s at 4, E23.3), and the post-fix profile is 35%
+   copies. GPUs win on compute-bound dense math; they do not fix a bandwidth problem, they move it
+   across a PCIe bus.
+3. **There would be nothing left to accelerate.** Item 1 already takes full-data training to ~200s.
+   Items 2–4 plausibly reach ~30–60s. A GPU cannot improve a one-minute job that a user runs a
+   handful of times.
+4. **It cannot be tested here**, so any claim about it would be unverified — and this log has
+   enough of those already.
+
+**When a GPU would become the right answer:** if the vocabulary grew such that the
+`(classes x vocab)` count matrix dominated — that *is* a large dense GEMM and would map well — or
+if the corpus grew ~100x, past where a single machine's memory holds `F` in any layout. Neither is
+true at 1M tokens and a 3,000-word candidate set.
+
+### E30.5 Expected end state
+
+| | now | after items 2–4 (estimated) |
+|---|---|---|
+| 60,000 positions | 6.7s | ~1–2s |
+| 624,325 positions (full corpus) | ~200s | ~30–60s |
+| peak memory at full data | ~2.6 GB | ~0.3 GB |
+
+Estimates, flagged as such. Item 1 is the only measured number in this section.
+
+81 tests pass (1 new: the fast pair blocks are compared against the per-pair reference on both the
+counts and the held-out columns).

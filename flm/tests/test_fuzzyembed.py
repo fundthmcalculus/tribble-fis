@@ -996,3 +996,43 @@ def test_smoothing_alpha_monotonically_flattens_the_classes():
         P = m.P.astype(np.float64)
         ent.append(float((-(P * np.log(np.maximum(P, 1e-12))).sum(axis=1)).mean()))
     assert ent[1] > ent[0], "more smoothing must not sharpen the distributions"
+
+
+def test_fast_pair_blocks_match_the_per_pair_reference():
+    """The scaled-GEMM pair counting must equal the per-pair version exactly (E30).
+
+    94% of first-order training time was the per-pair column products, their column_stack, and
+    the scatter-add. Holding one seed fixed turns a whole row of pairs into one block multiply
+    plus one sparse GEMM -- identical arithmetic, far fewer calls. Since it replaces the step
+    that produces every class's counts, an error here would silently change every rule in the
+    model, so the old implementation is retained and compared.
+    """
+    pytest.importorskip("scipy")
+    from flm.fuzzyembed.firstorder import ContextClassMiner
+    j, corpus, vocab, counts = _toy_ranker_for_classes()
+    m = ContextClassMiner(j, vocab, counts=counts, alpha=1.0, min_mass=1.0, max_order=2)
+    rng = np.random.default_rng(5)
+    n, d = 400, j.cand_offset_
+    Fa = (rng.random((n, d)) < 0.3).astype(np.float64) * rng.random((n, d))
+    wa = rng.integers(0, len(m.words), size=n)
+    seeds = np.arange(min(9, d), dtype=np.intp)
+
+    fast = list(m._pair_blocks(Fa, wa, None, seeds))
+    ref = list(m._pair_blocks_reference(Fa, wa, None, seeds))
+    fp = [p for blk in fast for p in blk[0]]
+    rp = [p for blk in ref for p in blk[0]]
+    assert sorted(fp) == sorted(rp), "different pair sets"
+    fc = {p: blk[1][i] for blk in fast for i, p in enumerate(blk[0])}
+    rc = {p: blk[1][i] for blk in ref for i, p in enumerate(blk[0])}
+    for p in rp:
+        assert np.allclose(fc[p], rc[p], atol=1e-9), p
+
+    # And the holdout columns, which feed the selection criterion.
+    Fb = (rng.random((120, d)) < 0.3).astype(np.float64)
+    wb = rng.integers(0, len(m.words), size=120)
+    fast2 = list(m._pair_blocks(Fa, wa, Fb, seeds))
+    ref2 = list(m._pair_blocks_reference(Fa, wa, Fb, seeds))
+    f2 = {p: fast2[bi][2][:, i] for bi, blk in enumerate(fast2) for i, p in enumerate(blk[0])}
+    r2 = {p: ref2[bi][2][:, i] for bi, blk in enumerate(ref2) for i, p in enumerate(blk[0])}
+    for p in r2:
+        assert np.allclose(f2[p], r2[p], atol=1e-9), p

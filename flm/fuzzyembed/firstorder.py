@@ -400,6 +400,64 @@ class ContextClassMiner:
         # cannot be selected on the strength of its training fit.
         return P, mass_b, gain, h0
 
+    def _pair_blocks(self, Fa, wa, Fb_all, seeds):
+        """Yield ``(pairs, counts, holdout_columns)`` for every order-2 candidate.
+
+        The counting problem is a three-way contraction::
+
+            C[(a,b), w] = sum_i  F[i,a] . F[i,b] . 1[w_i = w]
+
+        The obvious implementation forms one column per pair and scatter-adds it, and
+        profiling says that is where essentially all of training time goes: at 60,000
+        positions, 40% in the per-pair column products, 34% in ``column_stack``, 20% in
+        ``np.add.at`` -- 94% total, against 1% for collecting ``F`` (E30).
+
+        Fixing the *shape* rather than the speed: hold one seed ``a`` fixed and the whole row
+        of pairs ``(a, b)`` for every later ``b`` becomes a single scaled matrix times a
+        sparse one-hot matrix::
+
+            G = F[:, later_seeds] * F[:, a]          (one block multiply)
+            C = (Y.T @ G).T                          (one sparse GEMM)
+
+        Identical arithmetic, ~140 block operations instead of ~9,730 slice multiplies plus
+        17 giant ``column_stack`` allocations, and the scatter-add disappears because the
+        counts fall out of the GEMM. This is the same reformulation that made rule growth
+        affordable in E14, applied to the other half of the pipeline.
+        """
+        try:
+            import scipy.sparse as sp
+        except ImportError:                     # keep working without scipy
+            yield from self._pair_blocks_reference(Fa, wa, Fb_all, seeds)
+            return
+
+        n_vocab = len(self.words)
+        Yt = sp.csr_matrix((np.ones(len(wa)), (wa, np.arange(len(wa)))),
+                           shape=(n_vocab, len(wa)))
+        Ytb = None
+        if Fb_all is not None:
+            Ytb = None      # held-out columns are still needed densely by _held_out_gain
+        S = np.asarray(seeds, dtype=np.intp)
+        Fs = Fa[:, S]
+        Fsb = None if Fb_all is None else Fb_all[:, S]
+        for k in range(len(S) - 1):
+            later = S[k + 1:]
+            pairs = [(int(S[k]), int(b)) for b in later]
+            G = Fs[:, k + 1:] * Fs[:, k:k + 1]
+            C = np.asarray((Yt @ G).T)
+            F2b = None if Fsb is None else Fsb[:, k + 1:] * Fsb[:, k:k + 1]
+            yield pairs, C, F2b
+
+    def _pair_blocks_reference(self, Fa, wa, Fb_all, seeds):
+        """The original per-pair implementation. Kept as a correctness oracle."""
+        all_pairs = [(int(a), int(b)) for i, a in enumerate(seeds)
+                     for b in seeds[i + 1:]]
+        for lo in range(0, len(all_pairs), self.pair_chunk):
+            pairs = all_pairs[lo: lo + self.pair_chunk]
+            C = self._counts(np.column_stack([Fa[:, a] * Fa[:, b] for a, b in pairs]), wa)
+            F2b = (None if Fb_all is None else
+                   np.column_stack([Fb_all[:, a] * Fb_all[:, b] for a, b in pairs]))
+            yield pairs, C, F2b
+
     def fit(self, corpus: Corpus, max_positions: int = 20000, seed: int = 11,
             verbose: bool = False):
         names = self.r.feature_names_ or self.r._names()
@@ -461,10 +519,7 @@ class ContextClassMiner:
             # limits this: 150,000 positions x 9,730 pairs x 8 bytes is 11.7 GB, and the
             # first attempt was SIGKILLed by the OOM killer with no traceback (E29.3).
             # Chunking bounds peak memory at chunk_size x n_positions instead.
-            for lo in range(0, len(all_pairs), self.pair_chunk):
-                pairs = all_pairs[lo: lo + self.pair_chunk]
-                Ca = self._counts(
-                    np.column_stack([Fa[:, a] * Fa[:, b] for a, b in pairs]), wa)
+            for pairs, Ca, F2b_pre in self._pair_blocks(Fa, wa, Fb_all, seeds):
                 # E29.2: back off to the parents, not the unigram. A conjunction's parents
                 # are the two singles it grew from, and they are far more informative about
                 # the next word than corpus frequency. Mass-weighted so the better-estimated
@@ -482,9 +537,7 @@ class ContextClassMiner:
                     prior2 = self.unigram
                 else:
                     raise ValueError(f"unknown backoff {self.backoff!r}")
-                F2b = (None if Fb_all is None else
-                       np.column_stack([Fb_all[:, a] * Fb_all[:, b] for a, b in pairs]))
-                P2, sel_mass2, gain2, _ = self._score(Ca, prior2, F2b, wb)
+                P2, sel_mass2, gain2, _ = self._score(Ca, prior2, F2b_pre, wb)
                 est_mass2 = Ca.sum(axis=1)
                 keep2 = np.nonzero((sel_mass2 >= self.min_mass)
                                    & (est_mass2 >= self.min_mass))[0]
