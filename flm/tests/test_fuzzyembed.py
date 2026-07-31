@@ -87,6 +87,44 @@ def test_rollup_is_exact_max():
     assert np.allclose(h.rollup(leaf, 3, 0), h.rollup(l1, 1, 0))
 
 
+def test_vectorised_rollup_equals_the_reference_implementation():
+    """The fast rollup must be *identical* to the obvious one, for every op.
+
+    ``rollup`` is vectorised via a cached grouping (E23) because the elementwise version
+    dominated the entire pipeline. Exact multi-resolution readout is the central claim of
+    this representation, so the optimisation is only admissible while it is provably
+    equivalent -- hence the original implementation is retained as an oracle and compared
+    on random vectors rather than on a hand-picked case that might miss a grouping bug.
+    """
+    h = toy_hierarchy()
+    rng = np.random.default_rng(0)
+    for from_level in range(h.n_levels):
+        for to_level in range(from_level + 1):
+            for op in ("max", "sum", "probor"):
+                for _ in range(5):
+                    vec = rng.random(h.width(from_level)).astype(np.float32)
+                    fast = h.rollup(vec, from_level, to_level, op=op)
+                    ref = h._rollup_reference(vec, from_level, to_level, op=op)
+                    assert np.allclose(fast, ref, atol=1e-6), (from_level, to_level, op)
+    # Sparse vectors take different reduceat paths (empty groups stay zero).
+    for op in ("max", "sum", "probor"):
+        vec = np.zeros(h.width(3), dtype=np.float32)
+        vec[h.index("dog", 3)] = 0.7
+        assert np.allclose(h.rollup(vec, 3, 1, op=op),
+                           h._rollup_reference(vec, 3, 1, op=op), atol=1e-6)
+
+
+def test_rollup_plan_is_cached_not_rebuilt():
+    """The whole speedup rests on the grouping being computed once per level pair."""
+    h = toy_hierarchy()
+    vec = np.zeros(h.width(3), dtype=np.float32)
+    h.rollup(vec, 3, 1)
+    assert (3, 1) in h._plans
+    plan = h._plans[(3, 1)]
+    h.rollup(vec, 3, 1)
+    assert h._plans[(3, 1)] is plan, "plan was rebuilt; the optimisation is defeated"
+
+
 def test_rollup_ops_agree_on_single_child():
     h = toy_hierarchy()
     leaf = h.zeros(3)
@@ -429,6 +467,55 @@ def test_joint_ranker_excludes_context_only_rules():
     model = MembershipRuleRegressor(max_rules=20, must_include=cand_idx).fit(X, y)
     for rule in model.rules_:
         assert any(f in cand_idx for f in rule.features), rule.render()
+
+
+def test_vectorised_build_is_bit_identical_to_the_reference():
+    """The table-indexed ``build`` must reproduce the row-at-a-time version exactly.
+
+    ``build`` was rewritten (E23) to featurise each token *type* once into a table and then
+    assemble rows by fancy indexing. That is only safe if the RNG draw sequence is unchanged
+    -- a different negative sample would silently alter the training set and every number
+    downstream, in a way no perplexity comparison would reveal as a bug. So assert exact
+    equality, not approximate.
+    """
+    from flm.fuzzyembed.joint import JointNextTokenRanker
+
+    class TinyFeaturiser:
+        """Two named dims plus a lexeme identity block, to exercise the candidate mask."""
+
+        lexemes = ["the", "dog"]
+
+        def _output_names(self):
+            return ["A", "B", "=the", "=dog"]
+
+        def _token_vector(self, token):
+            v = np.zeros(4, dtype=np.float32)
+            if not token:
+                return v
+            v[0] = 1.0 if token[0] in "aeiou" else 0.3
+            v[1] = min(len(token) / 6.0, 1.0)
+            if token in self.lexemes:
+                v[2 + self.lexemes.index(token)] = 1.0
+            return v
+
+    sents = [["the", "dog", "ran", "away"], ["a", "cat", "sat", "on", "the", "mat"],
+             ["the", "dog", "saw", "a", "cat"], ["birds", "fly", "over", "the", "hill"]]
+    counts = {}
+    for s in sents:
+        for t in s:
+            counts[t] = counts.get(t, 0) + 1
+    vocab = sorted(counts, key=lambda w: (-counts[w], w))
+    corpus = Corpus("tiny", sents, vocab, counts)
+
+    for lexeme_side in ("ctx", "both"):
+        j = JointNextTokenRanker(TinyFeaturiser(), window=2, n_negatives=3, seed=5,
+                                 lexeme_side=lexeme_side)
+        j.feature_names_ = j._names()
+        Xa, ya = j.build(corpus, vocab, max_positions=50)
+        Xb, yb = j._build_reference(corpus, vocab, max_positions=50)
+        assert Xa.shape == Xb.shape, lexeme_side
+        assert np.array_equal(Xa, Xb), lexeme_side
+        assert np.array_equal(ya, yb), lexeme_side
 
 
 def test_batched_growth_matches_bruteforce():

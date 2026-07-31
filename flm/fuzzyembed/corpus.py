@@ -27,8 +27,26 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# Children's narrative -- the TinyStories stand-in.
+# Children's narrative -- the TinyStories stand-in. ~90K tokens.
 TINY_LIKE = ("bryant-stories.txt", "burgess-busterbrown.txt", "carroll-alice.txt")
+
+# All the narrative prose in the nltk Gutenberg sample, ~14x TINY_LIKE. E16 established
+# that corpus size is the binding constraint on this stack, so this exists to test the one
+# lever that was never pushed.
+#
+# Deliberately *narrative prose only*. Excluded: bible-kjv (1.0M tokens of archaic register
+# and verse numbering, which would dominate the vocabulary), milton-paradise and
+# whitman-leaves and blake-poems (verse -- line breaks defeat the regex sentence splitter,
+# so "sentences" would be arbitrary spans), and the three Shakespeare plays (dialogue with
+# speaker headings, a different token distribution entirely). Adding them would grow the
+# token count fastest and confound the measurement worst: a perplexity change could then be
+# either "more data" or "different language", and the point of this corpus is to isolate the
+# former.
+NARRATIVE = TINY_LIKE + (
+    "austen-emma.txt", "austen-persuasion.txt", "austen-sense.txt",
+    "chesterton-ball.txt", "chesterton-brown.txt", "chesterton-thursday.txt",
+    "edgeworth-parents.txt", "melville-moby_dick.txt",
+)
 
 _WORD = re.compile(r"[a-z]+")
 _SENT_SPLIT = re.compile(r"[.!?]+[\s\"']*")
@@ -135,8 +153,10 @@ def load_tiny_like(fileids: tuple[str, ...] = TINY_LIKE) -> Corpus:
     sentences: list[list[str]] = []
     for fid in fileids:
         sentences.extend(tokenize(gutenberg.raw(fid)))
-    return _build("tiny-like(" + ",".join(f.split("-")[0] for f in fileids) + ")",
-                  sentences)
+    # Dedupe author prefixes: three Austen novels should read "austen", not
+    # "austen,austen,austen", or the corpus name in every results table is unreadable.
+    authors = list(dict.fromkeys(f.split("-")[0] for f in fileids))
+    return _build(f"gutenberg({','.join(authors)})", sentences)
 
 
 def load_brown(categories: tuple[str, ...] | None = ("news", "fiction", "romance")
@@ -171,11 +191,15 @@ def load_local(path: Path, max_docs: int | None = None) -> Corpus:
 
 
 def load_corpus(spec: str, max_types: int | None = None) -> Corpus:
-    """``"tiny"`` | ``"brown"`` | any filesystem path."""
+    """``"tiny"`` | ``"narrative"`` | ``"brown"`` | ``"brown-all"`` | any filesystem path."""
     if spec == "tiny":
         corpus = load_tiny_like()
+    elif spec == "narrative":
+        corpus = load_tiny_like(NARRATIVE)
     elif spec == "brown":
         corpus = load_brown()
+    elif spec == "brown-all":
+        corpus = load_brown(None)
     else:
         corpus = load_local(Path(spec))
     return corpus.truncate_vocabulary(max_types)

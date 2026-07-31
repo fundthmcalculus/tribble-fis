@@ -147,6 +147,7 @@ class FuzzyHierarchy:
         self.terminals = set(terminals) if terminals is not None else set(nodes)
         self._level_keys: dict[int, list[str]] = {}
         self._level_index: dict[int, dict[str, int]] = {}
+        self._plans: dict[tuple[int, int], tuple] = {}
         for level in range(n_levels):
             keys = sorted({self.project(k, level) for k in self.terminals})
             self._level_keys[level] = keys
@@ -183,6 +184,36 @@ class FuzzyHierarchy:
     def zeros(self, level: int) -> np.ndarray:
         return np.zeros(self.width(level), dtype=np.float32)
 
+    def _rollup_plan(self, from_level: int, to_level: int):
+        """Cached grouping that turns a rollup into one vectorised reduction.
+
+        ``rollup`` used to walk every key at ``from_level`` and call ``project`` per key,
+        per call. That is a pure-Python loop over up to 9,864 nodes, repeated for every
+        level of every token, and it dominated the whole pipeline: profiling attributed
+        **8.7 million ``project`` calls to 400 token types** (21,700 each), and cold
+        featurisation of a 3,000-type vocabulary cost 58s, which was 88% of total fit time
+        (``../LOG.md`` E23).
+
+        The parent of each coordinate is fixed by the hierarchy, so the mapping
+        ``i -> j`` is structural and can be computed once. Sorting the source indices by
+        destination makes each destination's sources contiguous, so the aggregation becomes
+        a single ``ufunc.reduceat`` -- no Python-level iteration at all.
+        """
+        cached = self._plans.get((from_level, to_level))
+        if cached is not None:
+            return cached
+
+        idx = np.empty(self.width(from_level), dtype=np.intp)
+        for key, i in self._level_index[from_level].items():
+            idx[i] = self._level_index[to_level][self.project(key, to_level)]
+        order = np.argsort(idx, kind="stable")
+        dest = idx[order]
+        # First position of each run of equal destinations.
+        starts = np.concatenate(([0], np.nonzero(np.diff(dest))[0] + 1))
+        plan = (order, dest[starts], starts)
+        self._plans[(from_level, to_level)] = plan
+        return plan
+
     def rollup(self, vec: np.ndarray, from_level: int, to_level: int,
                op: str = "max") -> np.ndarray:
         """Aggregate a level-``from_level`` vector up to ``to_level``.
@@ -192,12 +223,39 @@ class FuzzyHierarchy:
         ``op="max"`` is the standard t-conorm; ``"probor"`` is the probabilistic
         sum ``a + b - ab``; ``"sum"`` matches the Ruspini sibling-partition variant
         (and may exceed 1 if the partition is not enforced).
+
+        Vectorised; ``_rollup_reference`` is the original elementwise implementation, kept
+        because a test asserts the two agree. The exactness of the multi-resolution readout
+        is the central claim of this representation, so the fast path is only allowed to
+        stand while it is provably identical to the obvious one.
         """
+        if to_level > from_level:
+            raise ValueError("rollup only aggregates upward (to_level <= from_level)")
+        if op not in ("max", "sum", "probor"):
+            raise ValueError(f"unknown rollup op {op!r}")
+        if to_level == from_level:
+            return vec.astype(np.float32, copy=True)
+
+        order, groups, starts = self._rollup_plan(from_level, to_level)
+        vals = np.asarray(vec, dtype=np.float32)[order]
+        out = self.zeros(to_level)
+        if op == "max":
+            out[groups] = np.maximum.reduceat(vals, starts)
+        elif op == "sum":
+            out[groups] = np.add.reduceat(vals, starts)
+        else:
+            # probor is 1 - prod(1 - v) over the group: associative and commutative, so
+            # a product reduction gives exactly the pairwise a + b - ab accumulation.
+            out[groups] = 1.0 - np.multiply.reduceat(1.0 - vals, starts)
+        return out
+
+    def _rollup_reference(self, vec: np.ndarray, from_level: int, to_level: int,
+                          op: str = "max") -> np.ndarray:
+        """The original elementwise rollup. Kept only as a correctness oracle."""
         if to_level > from_level:
             raise ValueError("rollup only aggregates upward (to_level <= from_level)")
         if to_level == from_level:
             return vec.astype(np.float32, copy=True)
-
         out = self.zeros(to_level)
         for key, i in self._level_index[from_level].items():
             j = self._level_index[to_level][self.project(key, to_level)]

@@ -154,8 +154,84 @@ class JointNextTokenRanker:
         p = w / w.sum()
         return rng, p
 
+    def _tables(self, corpus: Corpus, vocab: list[str]):
+        """Featurise every token *type* once, into a context table and a candidate table.
+
+        Featurisation is per-type, but ``build`` needs it per-row, and there are ~9 rows per
+        position against ~3,000 types. Doing it once into a table and then indexing turns the
+        row assembly into pure fancy-indexing (E23). The two tables differ only by the
+        candidate-side lexeme mask, which is why both are materialised rather than masking
+        on the fly.
+
+        Row ``-1`` of the context table is the out-of-range boundary vector, so padding is
+        an index rather than a branch.
+        """
+        types = {t for sent in corpus.sentences for t in sent}
+        types.update(vocab)
+        keys = sorted(types)
+        ctx_rows = [self.f._token_vector(k) for k in keys]
+        ctx_rows.append(self.f._token_vector(""))          # boundary, at index -1
+        ctx_table = np.asarray(ctx_rows, dtype=np.float32)
+        ctx_id = {k: i for i, k in enumerate(keys)}
+        cand_table = np.asarray([self.cand_vector(w) for w in vocab], dtype=np.float32)
+        return ctx_table, ctx_id, cand_table
+
     def build(self, corpus: Corpus, vocab: list[str], max_positions: int,
               seed_offset: int = 0) -> tuple[np.ndarray, np.ndarray]:
+        """Assemble the (context, candidate) design matrix.
+
+        Two phases. The Python loop collects only integer ids -- and makes exactly the same
+        sequence of RNG draws as the original elementwise version, so the output is
+        bit-identical (asserted by a test against ``_build_reference``). The second phase
+        materialises ``X`` with one indexing pass per window slot.
+        """
+        rng, p = self._sampler(corpus, vocab)
+        rng = np.random.default_rng(self.seed + seed_offset)
+        vocab_set = set(vocab)
+        vocab_id = {w: i for i, w in enumerate(vocab)}
+
+        ctx_table, ctx_id, cand_table = self._tables(corpus, vocab)
+        decodable = cand_table.sum(axis=1) > 0
+        boundary = len(ctx_table) - 1
+
+        sents = [s for s in corpus.sentences if len(s) > self.window]
+        order = rng.permutation(len(sents))
+
+        ctx_ids: list[list[int]] = []
+        cand_ids: list[int] = []
+        y: list[float] = []
+        target = max_positions * (1 + self.n_negatives)
+        for si in order:
+            sent = sents[si]
+            for i in range(self.window, len(sent)):
+                true_tok = sent[i]
+                if true_tok not in vocab_set:
+                    continue
+                ti = vocab_id[true_tok]
+                if not decodable[ti]:
+                    continue     # undecodable target; nothing to rank toward
+                slots = [ctx_id[sent[i - lag]] if i - lag >= 0 else boundary
+                         for lag in range(self.window, 0, -1)]
+                ctx_ids.append(slots); cand_ids.append(ti); y.append(1.0)
+                # Same draw, same order, same size as before, so ids match exactly.
+                negs = rng.choice(len(vocab), size=self.n_negatives, p=p)
+                for ni in negs:
+                    if vocab[ni] == true_tok:
+                        continue
+                    ctx_ids.append(slots); cand_ids.append(int(ni)); y.append(0.0)
+            if len(y) >= target:
+                break
+        if not y:
+            raise RuntimeError("no training pairs; check vocabulary coverage")
+
+        C = np.asarray(ctx_ids, dtype=np.intp)
+        blocks = [ctx_table[C[:, k]] for k in range(self.window)]
+        blocks.append(cand_table[np.asarray(cand_ids, dtype=np.intp)])
+        return np.hstack(blocks), np.asarray(y, dtype=np.float32)
+
+    def _build_reference(self, corpus: Corpus, vocab: list[str], max_positions: int,
+                         seed_offset: int = 0) -> tuple[np.ndarray, np.ndarray]:
+        """The original row-at-a-time build. Kept only as a correctness oracle."""
         rng, p = self._sampler(corpus, vocab)
         rng = np.random.default_rng(self.seed + seed_offset)
         vocab_arr = np.asarray(vocab, dtype=object)
@@ -174,7 +250,7 @@ class JointNextTokenRanker:
                 cvec = self._context_vector(sent, i)
                 tvec = self.cand_vector(true_tok)
                 if tvec.sum() <= 0:
-                    continue     # undecodable target; nothing to rank toward
+                    continue
                 X.append(np.concatenate([cvec, tvec]))
                 y.append(1.0)
                 negs = vocab_arr[rng.choice(len(vocab_arr), size=self.n_negatives,
