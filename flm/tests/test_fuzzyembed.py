@@ -652,3 +652,49 @@ def test_generator_factorised_scoring_matches_direct():
     eps = 0.05
     fact = np.clip((num + eps * model.default_) / (den + eps), 0.0, 1.0)
     assert np.allclose(direct, fact, atol=1e-9)
+
+
+def test_oov_match_pruning_drops_the_weak_tail_but_keeps_real_ambiguity():
+    """OOV blending was E23.5's bug: a word got four unrelated supersenses at ~0.5 each.
+
+    Pruning is *relative* on purpose. Genuine ambiguity between two near-equal candidates is
+    exactly what a fuzzy representation should preserve; a long tail at half the best
+    candidate's degree is not evidence of anything, and merging it fed the rule learner noise
+    that grew with corpus size.
+    """
+    from flm.fuzzyembed.embedder import OOV_RELATIVE_KEEP, FuzzyEmbedder
+
+    class M:
+        def __init__(self, lexeme, degree):
+            self.lexeme, self.degree = lexeme, degree
+
+    # Exact hits already arrive as a single match; pruning must not disturb them.
+    assert len(FuzzyEmbedder._prune_matches([M("little", 1.0)])) == 1
+    assert FuzzyEmbedder._prune_matches([]) == []
+
+    # Near-equal candidates: real ambiguity, both kept.
+    kept = FuzzyEmbedder._prune_matches([M("little", 0.74), M("littler", 0.70)])
+    assert [m.lexeme for m in kept] == ["little", "littler"]
+
+    # The E23.5 shape: one good candidate and a tail of weak unrelated ones.
+    kept = FuzzyEmbedder._prune_matches(
+        [M("wood", 0.90), M("woolen", 0.55), M("golden", 0.52), M("garden", 0.46)])
+    assert [m.lexeme for m in kept] == ["wood"], "weak tail must not be merged"
+
+    # The threshold is what the docstring says it is.
+    kept = FuzzyEmbedder._prune_matches(
+        [M("a", 1.0), M("b", OOV_RELATIVE_KEEP + 0.01), M("c", OOV_RELATIVE_KEEP - 0.01)])
+    assert [m.lexeme for m in kept] == ["a", "b"]
+
+
+def test_full_coverage_is_the_default_and_keeps_level_two_width():
+    """``max_types=None`` must mean the whole vocabulary, and must not change dimensions.
+
+    The fix in E23.6 is only safe because the model reads level 2, which is WordNet's 45
+    lexicographer files however large the vocabulary is. If widening coverage changed the
+    feature width, perplexity would stop being comparable across conditions and the fix
+    would be confounded with a capacity change.
+    """
+    import inspect
+    from flm.fuzzyembed.embedder import build_embedder
+    assert inspect.signature(build_embedder).parameters["max_types"].default is None

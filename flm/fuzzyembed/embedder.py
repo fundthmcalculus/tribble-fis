@@ -56,6 +56,10 @@ NEGATORS = frozenset({"not", "no", "never", "none", "nothing", "cannot", "n't"})
 # such rather than dressed up.
 SCOPE_WINDOW = 3
 
+#: For an out-of-vocabulary token, keep only lexeme matches within this fraction of the best
+#: match's degree. See ``FuzzyEmbedder._prune_matches`` for the measurement that set it.
+OOV_RELATIVE_KEEP = 0.8
+
 
 @dataclass
 class Explanation:
@@ -107,6 +111,30 @@ class FuzzyEmbedder:
         return float(w * values.max() + (1.0 - w) * values.mean())
 
     @staticmethod
+    def _prune_matches(matches: list) -> list:
+        """Keep only lexeme matches close to the best one.
+
+        Merging *every* candidate a fuzzy lookup returns produces a blend of unrelated
+        senses rather than a reading. Measured on an out-of-vocabulary word (E23.5):
+
+            'wooden'  noun.substance=0.57, noun.group=0.56, noun.person=0.51,
+                      adj.all=0.49, verb.cognition=0.46
+
+        Four unrelated supersenses at roughly equal degree is not graded ambiguity, it is
+        noise -- and the rule learner then has to fit it. A person reading an unfamiliar word
+        entertains the one or two nearest real words, not the eight nearest strings.
+
+        Relative rather than absolute: genuine ambiguity between two close candidates is
+        exactly what this representation should keep (``littel`` -> ``little`` and possibly
+        ``list``), while a long tail at half the best degree is not evidence of anything.
+        Exact vocabulary hits already return a single match, so this only affects OOV forms.
+        """
+        if len(matches) <= 1:
+            return matches
+        floor = OOV_RELATIVE_KEEP * matches[0].degree
+        return [m for m in matches if m.degree >= floor]
+
+    @staticmethod
     def _scope_modifiers(tokens: list[str]) -> tuple[list[float], list[bool], list[str]]:
         """Per-token hedge exponent and negation flag, from a right-scoped window."""
         n = len(tokens)
@@ -137,7 +165,7 @@ class FuzzyEmbedder:
         assignments = []
         keep_idx = []
         for i, tok in enumerate(tokens):
-            matches = self.lexicon.match(tok)
+            matches = self._prune_matches(self.lexicon.match(tok))
             if explain:
                 exp.lexical.append(self.lexicon.explain(tok))
             if not matches:
@@ -208,11 +236,30 @@ class FuzzyEmbedder:
 # Assembly
 # --------------------------------------------------------------------------
 
-def build_embedder(corpus: Corpus, n_levels: int = 6, max_types: int = 4000,
+def build_embedder(corpus: Corpus, n_levels: int = 6, max_types: int | None = None,
                    train_lexical: bool = True, verbose: bool = True,
                    ) -> tuple[FuzzyEmbedder, dict]:
-    """Build the whole stack from a corpus. Returns ``(embedder, info)``."""
-    vocab = corpus.vocabulary[:max_types]
+    """Build the whole stack from a corpus. Returns ``(embedder, info)``.
+
+    ``max_types=None`` (the default) gives sense and lexicon coverage over the **whole**
+    vocabulary. Truncating it was the E23.5 bug: any type outside the prefix was treated as
+    a possible misspelling and resolved by fuzzy lexical access, so 24,044 of 27,044 types on
+    the 1M-token corpus got a blend of neighbours' senses instead of their own. That cost
+    ~293s of a 325s fit *and* fed the rule learner noise -- the larger the corpus, the larger
+    the fraction of context that was blur.
+
+    Full coverage is close to free, which is what makes truncation indefensible rather than
+    merely suboptimal:
+
+    * **Dimensionality does not change.** The model reads level 2, and level 2 is WordNet's 45
+      lexicographer files regardless of vocabulary size -- measured widths went
+      ``[1, 4, 45, 4983, ...]`` at 3,000 types to ``[1, 4, 45, 12628, ...]`` at 27,044. Only
+      the levels below the one in use grow, so perplexity stays comparable.
+    * **Build time does not grow.** 3.7s for 27,044 types against 5.6s for 3,000.
+
+    Pass an integer only to *deliberately* study a truncated lexicon.
+    """
+    vocab = corpus.vocabulary if max_types is None else corpus.vocabulary[:max_types]
     if verbose:
         print(f"building hierarchy over {len(vocab)} vocabulary types...")
     hierarchy, lemma_synsets = build_wordnet_hierarchy(vocab, n_levels=n_levels)

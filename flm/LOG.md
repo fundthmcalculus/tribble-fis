@@ -39,6 +39,8 @@ Convention: **WORKED** / **FAILED** / **PARTIAL**, each with a why.
 | E20 | Why n-grams work; a correction to my own trigram claim | diagnosis + correction |
 | E21 | Fuzzy tokenizer and linguistic parameter space (`fuzzytok/`) | built; 2 bugs found by running it |
 | E22 | The parameter space wired into the ranker; size/quality frontier | space FAILED (dominated); smallness WORKED |
+| E23 | Corpus scale and parallel training | profile overturned the premise; scale went the wrong way |
+| E24 | The OOV fix | correct + 5.1x faster; did NOT improve the model |
 
 ---
 
@@ -1539,7 +1541,7 @@ explicit `BOUNDARY` dimension rather than an all-zero vector).
 
 ---
 
-## Standing summary — CURRENT (as of E22)
+## Standing summary (SUPERSEDED — see the final one)
 
 **Best results.** As a language model: perplexity **324.8** at 860 rules / 2520 learned
 parameters. It beats a unigram (448.4) and loses head-to-head to both a bigram (256.3) and
@@ -1741,3 +1743,148 @@ OOV blending) rather than the method. Testable by pinning the candidate set and 
 the sense vocabulary and context lexicalisation -- `experiments/capacity.py`.
 
 64 tests pass (2 new equivalence oracles for the vectorised paths).
+
+---
+
+## E24 — The OOV fix: **correct and 5.1x faster, but it did not improve the model**
+
+Two changes, both from E23.5: sense and lexicon coverage over the whole vocabulary instead of
+a truncated prefix, and relative pruning of out-of-vocabulary lexeme matches so a weak tail is
+not merged into a reading.
+
+### E24.1 Both stated goals achieved
+
+**Resolution is now correct.** The same words that E23.5 showed as blends:
+
+| token | before (E23.5) | after |
+|---|---|---|
+| `wooden` | noun.substance 0.57, noun.group 0.56, noun.person 0.51, verb.cognition 0.46 | **adj.all 1.00, OPEN_ADJ 1.00** |
+| `arriving` | adj.all 0.55, noun.act 0.11, verb.communication 0.11 | **verb.motion 1.00, OPEN_VERB 1.00**, verb.social 0.50 |
+| `doorway` | (empty) | **noun.artifact 1.00, OPEN_NOUN 1.00** |
+| `harpooneer` | — | **noun.person 1.00, OPEN_NOUN 1.00** |
+| `wodden` (real typo) | — | adj.all 0.69 — still graded, so robustness survives |
+
+That last row is the one that matters for not having over-corrected: a genuine misspelling
+still gets partial membership through fuzzy lexical access. The fix distinguishes "rare word"
+from "misspelled word" instead of treating every unknown string as a typo.
+
+**Cold fit: 324.9s -> 63.1s (5.1x)** on the 1M-token corpus, and it is nearly free --
+full-vocabulary hierarchy build is 3.7s vs 5.6s for 3,000 types, and level 2 stays at exactly
+45 dimensions (widths `[1, 4, 45, 12630, ...]` vs `[1, 4, 45, 4983, ...]`), so no
+dimensionality or comparability changes. Combined with E23's 43x, cold training on 1M tokens
+went from ~5.4 minutes to ~1 minute on one core.
+
+### E24.2 And it did **not** improve perplexity — the capacity hypothesis is refuted
+
+| | before | after |
+|---|---|---|
+| fuzzy ppl | 320.6 | **317.5** (1.0%) |
+| bigram | 253.3 | 253.3 |
+| best mixture | 253.3 @ lambda=0.0 | 253.3 @ **lambda=0.0** |
+
+E23.5's hypothesis was that the ceiling was featuriser capacity: 24,044 of 27,044 types
+getting blended noise, growing with corpus size. The blending was real, it was expensive, and
+it was semantically wrong -- and fixing it bought **1%**, with the mixture weight still zero.
+
+So the ceiling is not OOV representation quality. **Two of my hypotheses have now been
+refuted in a row** (corpus scale in E23.4, featuriser capacity here), which is worth stating
+plainly rather than moving quietly to a third.
+
+### E24.3 Why generation fails, read directly off the rules
+
+This is the first place where the interpretability claim actually paid a diagnostic dividend.
+Sample output (14 tokens, prompt in bold):
+
+```
+the little | in with the time and it not of to the all his of she
+she was    | not and the as and of to and you will his but you to
+the old    | of his man the said of he would no said he was no the
+```
+
+Against the bigram on identical data:
+
+```
+the little | of he kept going to one who he woman of all an about time
+she was    | true hull so young gentleman she the skeleton they him nay together like sun
+the old    | mind jew theresa seated and him and he you situation to had mr tied
+```
+
+The fuzzy output is **function-word soup**; the bigram's is visibly more word-like. The rule
+trace says exactly why:
+
+```
+IF ctx:prev1:PREPOSITION  AND cand:DETERMINER   THEN P ~ 0.298  (support=2956, lift=+10.09)
+IF ctx:prev2:=the         AND cand:PREPOSITION  THEN P ~ 0.203  (support=1554, lift=+3.59)
+IF cand:CONJUNCTION                             THEN P ~ 0.112  (support=17250)
+```
+
+**Every high-lift rule is about closed-class categories.** The model has genuinely learned
+English function-word syntax -- "after a preposition, expect a determiner" is correct and
+carries lift +10 -- and it has essentially nothing that *selects a content word*. So it
+generates the things it can score, which are function words. The top alternatives at each
+step confirm it: `the(0.829), and(0.083), his(0.022), that(0.012)`.
+
+The cause is support. Closed-class categories are the highest-support features available
+(`cand:CONJUNCTION` alone has support 17,250), so a greedy, support-gated rule search spends
+its budget where the evidence is densest, and function words are where the evidence is
+densest by an order of magnitude. Content-word selection needs discrimination *within*
+`OPEN_NOUN`, which 45 supersenses at word granularity do not provide.
+
+Also: `hedge=3.0` (Zadeh concentration, `mu**3`) makes generation *worse*, not sharper --
+`and the all of the and to the`. Concentration amplifies the already-dominant function words,
+so it sharpens toward exactly the wrong thing.
+
+### E24.4 What this points at
+
+Not more data (E23.4), not OOV quality (E24.2). The rule base is **budget-misallocated**: it
+is spending itself on the densest signal rather than the most useful one. Testable directions,
+in order of how directly they attack that:
+
+1. **Stratify the rule budget** so closed-class antecedents cannot consume it -- an explicit
+   quota for rules whose candidate side is open-class, analogous to the existing `order_quota`.
+2. **Reweight training positions** toward content-word targets, so support stops being
+   dominated by function-word co-occurrence.
+3. **Discriminate within open classes** -- the E22 verdict said the parameter space was a
+   better reporting language and a worse predictive one, but *within* `OPEN_NOUN` is precisely
+   where the WordNet space is also thin.
+
+66 tests pass (2 new: OOV pruning keeps real ambiguity and drops the weak tail; full coverage
+is the default).
+
+---
+
+## Standing summary — CURRENT (as of E24)
+
+**Best results.** On the 1M-token narrative corpus: perplexity **317.5** against a bigram's
+253.3, with optimal mixture weight **zero**. On the old 87K-token children's corpus:
+perplexity 324.8, and mixing with a bigram beat the bigram alone (253.9 vs 256.3). The
+representation claims all hold: coverage 96.7%, exact multi-resolution rollup asserted in CI,
+L2 similarity gap +0.278, explainable typo robustness, correct sense assignment for rare words.
+
+**Smallness and speed.** 285 learned parameters reach within 5% of the full 2,520-parameter
+model, against 34,021 stored counts for a bigram. Cold training on 1M tokens is ~1 minute on
+one CPU core (from ~5.4 minutes), no GPU. Rule count drives inference cost, not training cost.
+
+**Honest framing.** As a language model this loses to a bigram trained on the same text, and
+at 1M tokens it contributes nothing to a mixture with one. What it does deliver is a *readable
+diagnosis of its own failure* (E24.3), which no dense model of comparable quality offers.
+
+**Ruled out:** context width (E12), rule order for ranking (E12, E15), Gaussian antecedents
+(E9/E10), symmetric decode similarity (E11), Cython (E14 -- and BLAS threading is worth
+nothing here either, E23.3), raw score normalisation (E18.2), candidate-side lexicalisation
+(E19), the linguistic parameter space as a replacement feature space (E22), **corpus scale as
+the lever that closes the gap (E23.4 -- it widens it), thread-based parallelism (E23.3 --
+0.47x, GIL), and OOV representation quality as the ceiling (E24.2 -- worth 1%)**.
+
+**Confirmed:** vectorising beat parallelising by 11x (E23.2); within-category discrimination is
+the live constraint, now with a mechanism -- **the rule budget goes to the highest-support
+features, which are closed-class** (E24.3).
+
+**Corrected along the way:** the 0.569 balanced accuracy (E12.1); all pre-E17 ranking numbers;
+the trigram baseline (E20.2); E19.4's mixture gain quoted without its budget dependence
+(E22.4); E22.3's attribution of fit cost (E23.1); my own recommendation to push corpus size
+(E23.4).
+
+**Open:** generation is function-word soup, and E24.4 says why and what to try; hits@1 caps
+near 0.14; GPT-2 untested (blocked, and a data-gap comparison anyway); no neural-embedding
+comparison; Experiment B's real encoder and SST paths unrun.
