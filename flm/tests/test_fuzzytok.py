@@ -201,3 +201,81 @@ def test_lookup_is_case_folded_but_surface_is_preserved():
     assert tk.surface == "Margery", "surface form must survive for shape features"
     assert tk.best().degree == 1.0
     assert [u.label() for u in tk.best().units] == ["margery"]
+
+
+# --------------------------------------------------------------------------
+# Featuriser: interface compatibility with the joint ranker
+# --------------------------------------------------------------------------
+
+def _featuriser(lexeme_top_k=0, vocab=None):
+    from flm.fuzzytok.featuriser import ParameterFeaturiser
+    vocab = vocab or ["the", "and", "happy", "rabbit", "not"]
+    t = FuzzyTokenizer(head_words=vocab, stems=set(vocab))
+    e = LinguisticParameterEncoder(polarity={"happy": 1.0})
+    return ParameterFeaturiser(t, e, lexeme_top_k=lexeme_top_k, vocabulary=vocab)
+
+
+def test_featuriser_matches_the_ranker_interface():
+    """The ranker needs exactly _token_vector, _output_names, and lexemes."""
+    f = _featuriser(lexeme_top_k=3)
+    assert callable(f._token_vector) and callable(f._output_names)
+    assert len(f._output_names()) == len(f._token_vector("happy"))
+    assert isinstance(f.lexemes, list) and len(f.lexemes) == 3
+
+
+def test_featuriser_widths_are_consistent_across_tokens():
+    f = _featuriser(lexeme_top_k=2)
+    widths = {len(f._token_vector(t)) for t in ("the", "happy", "", "xqzzyv", "Rabbit")}
+    assert len(widths) == 1, widths
+
+
+def test_boundary_is_distinguishable_from_unknown():
+    """Padding must not look like 'a token with no recognised parameters'."""
+    from flm.fuzzytok.featuriser import BOUNDARY
+    f = _featuriser()
+    names = f._output_names()
+    i = names.index(BOUNDARY)
+    assert f._token_vector("")[i] == 1.0
+    assert f._token_vector("xqzzyv")[i] == 0.0
+
+
+def test_identity_block_is_last_so_the_candidate_mask_works():
+    """JointNextTokenRanker.cand_vector masks the FINAL n_lex dims; order matters."""
+    f = _featuriser(lexeme_top_k=3, vocab=["the", "and", "happy", "rabbit"])
+    names = f._output_names()
+    assert all(n.startswith("=") for n in names[-3:]), names[-3:]
+    v = f._token_vector("the")
+    assert v[-3:].sum() == 1.0, "the identity dim for 'the' should fire"
+
+
+def test_combined_featuriser_concatenates_and_prefixes():
+    from flm.fuzzytok.featuriser import CombinedFeaturiser
+    a, b = _featuriser(), _featuriser(lexeme_top_k=2)
+    c = CombinedFeaturiser(a, b, first_tag="x", second_tag="y")
+    assert len(c._output_names()) == len(c._token_vector("happy"))
+    names = c._output_names()
+    assert any(n.startswith("x:") for n in names)
+    assert any(n.startswith("y:") for n in names)
+    # Identity dims must still be last, unprefixed.
+    assert all(n.startswith("=") for n in names[-2:]), names[-2:]
+
+
+def test_combined_rejects_identity_on_both_sides():
+    """Two identity blocks would break the candidate mask's offset assumption."""
+    from flm.fuzzytok.featuriser import CombinedFeaturiser
+    with pytest.raises(ValueError):
+        CombinedFeaturiser(_featuriser(lexeme_top_k=2), _featuriser(lexeme_top_k=2))
+
+
+def test_fuzzy_readings_ablation_changes_the_vector():
+    """use_fuzzy_readings=False is the ablation isolating the tokenizer's contribution."""
+    from flm.fuzzyembed.lexical import FuzzyLexicon
+    from flm.fuzzytok.featuriser import ParameterFeaturiser
+    vocab = ["happy", "the", "rabbit"]
+    lex = FuzzyLexicon(vocab, threshold=0.3)
+    t = FuzzyTokenizer(head_words=vocab, stems=set(vocab), lexicon=lex)
+    e = LinguisticParameterEncoder(polarity={"happy": 1.0})
+    on = ParameterFeaturiser(t, e, use_fuzzy_readings=True)
+    off = ParameterFeaturiser(t, e, use_fuzzy_readings=False)
+    # A misspelling should reach the correct unit only through the fuzzy readings.
+    assert on._token_vector("hapy").sum() > off._token_vector("hapy").sum()
