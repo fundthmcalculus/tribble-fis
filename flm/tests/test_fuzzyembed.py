@@ -1017,7 +1017,7 @@ def test_fast_pair_blocks_match_the_per_pair_reference():
     wa = rng.integers(0, len(m.words), size=n)
     seeds = np.arange(min(9, d), dtype=np.intp)
 
-    fast = list(m._pair_blocks(Fa, wa, None, seeds))
+    fast = [(b[0], b[1]) for b in m._pair_blocks(Fa, wa, None, seeds)]
     ref = list(m._pair_blocks_reference(Fa, wa, None, seeds))
     fp = [p for blk in fast for p in blk[0]]
     rp = [p for blk in ref for p in blk[0]]
@@ -1028,11 +1028,31 @@ def test_fast_pair_blocks_match_the_per_pair_reference():
         assert np.allclose(fc[p], rc[p], atol=1e-9), p
 
     # And the holdout columns, which feed the selection criterion.
-    Fb = (rng.random((120, d)) < 0.3).astype(np.float64)
+    # Held-out columns are now row-restricted per block, so compare the quantities the
+    # selection criterion actually consumes -- the firing mass and the weighted sum -- rather
+    # than the raw column, which is deliberately a different length now.
     wb = rng.integers(0, len(m.words), size=120)
-    fast2 = list(m._pair_blocks(Fa, wa, Fb, seeds))
+    Fb = (rng.random((120, d)) < 0.3).astype(np.float64)
+    fast2 = list(m._pair_blocks(Fa, wa, Fb, seeds, wb_all=wb))
     ref2 = list(m._pair_blocks_reference(Fa, wa, Fb, seeds))
-    f2 = {p: fast2[bi][2][:, i] for bi, blk in enumerate(fast2) for i, p in enumerate(blk[0])}
-    r2 = {p: ref2[bi][2][:, i] for bi, blk in enumerate(ref2) for i, p in enumerate(blk[0])}
+    f2 = {p: fast2[bi][2][:, i].sum() for bi, blk in enumerate(fast2)
+          for i, p in enumerate(blk[0])}
+    r2 = {p: ref2[bi][2][:, i].sum() for bi, blk in enumerate(ref2)
+          for i, p in enumerate(blk[0])}
     for p in r2:
-        assert np.allclose(f2[p], r2[p], atol=1e-9), p
+        assert np.isclose(f2[p], r2[p], atol=1e-9), p
+
+
+def test_sparse_counts_match_the_scatter_add():
+    """``_counts`` moved to a sparse GEMM (E31 item 4d); it must agree with the scatter-add."""
+    pytest.importorskip("scipy")
+    from flm.fuzzyembed.firstorder import ContextClassMiner
+    j, corpus, vocab, counts = _toy_ranker_for_classes()
+    m = ContextClassMiner(j, vocab, counts=counts, alpha=1.0, min_mass=1.0, dtype=np.float64)
+    rng = np.random.default_rng(9)
+    F = (rng.random((300, 11)) < 0.3).astype(np.float64) * rng.random((300, 11))
+    w = rng.integers(0, len(m.words), size=300)
+    fast = m._counts(F, w)
+    ref = np.zeros((len(m.words), F.shape[1]))
+    np.add.at(ref, w, F)
+    assert np.allclose(fast, ref.T, atol=1e-12)

@@ -47,6 +47,7 @@ Convention: **WORKED** / **FAILED** / **PARTIAL**, each with a why.
 | E28 | Word-level consequents (first-order TSK) | **WORKED** — first mixture to beat the bigram (-10.5%) |
 | E29 | Consolidating first-order: data, selection, backoff, metrics | **beats bigram AND trigram head-to-head** (219.9 vs 284.4) |
 | E30 | Training speed: plan + reformulated pair counting | **4.0x measured**; Cython and GPU both argued against |
+| E31 | Executing the speed plan (items 2-4) | class estimation **940s -> 6.6s (142x)**; no dominant stage left |
 
 ---
 
@@ -2901,3 +2902,118 @@ Estimates, flagged as such. Item 1 is the only measured number in this section.
 
 81 tests pass (1 new: the fast pair blocks are compared against the per-pair reference on both the
 counts and the held-out columns).
+
+---
+
+## E31 — Plan: implement E30 items 2-4, in sequence
+
+Written before implementing. Each item gets a mechanism, an acceptance test, and a measurement, and
+is measured **on its own** so a later item cannot borrow credit from an earlier one. Baseline after
+E30.1: 60,000 positions **6.7s**, 300,000 positions **40.8s**.
+
+**Item 2 — row-restrict each pair block.** `F` is 1.5% dense, so `G = F[:, later] * F[:, a]` is a
+dense array that is almost entirely zero and the GEMM multiplies those zeros. For a fixed seed `a`,
+only rows where `F[i,a] > 0` can contribute anything to any pair `(a, b)`. So restrict to
+`idx = nonzero(F[:, a])`, build the one-hot for just those rows, and do a much smaller GEMM.
+Building a per-block one-hot avoids slicing a CSR by column, which is the slow axis for that
+format. *Exact, not approximate.* Acceptance: identical classes and distributions to
+`_pair_blocks_reference`, which is already the oracle for E30.1.
+
+**Item 3 — float32 for `F` and the block counts.** The post-E30.1 profile is 35% memory copies, so
+this is a bandwidth fix as much as a memory one; `F` at full data is 2.6 GB in float64. Counts are
+sums of up to ~600K products, so float32 accumulation carries ~1e-4 relative error — fine for
+forming distributions, *not* fine for a bit-identical claim. So: measure whether held-out perplexity
+moves at all, and only make it the default if it does not. Entropy and smoothing stay in float64,
+where the arrays are small (a block's `P` is 140x2871).
+
+**Item 4 — parallelise over seed blocks, not rows.** Row-sharding would need each worker to return
+partial counts for *every* candidate pair before anything can be filtered — ~112 MB per worker. Seed
+blocks are the better axis: each worker takes a subset of `k`, computes complete blocks, and returns
+only the classes that survive `min_mass`, which is small. `fork` gives workers `F` through
+copy-on-write with no pickling. BLAS threads are pinned to 1 inside workers, since BLAS threading was
+measured worth nothing here (E23.3) and would only contend. *Exact* — it is the same blocks, computed
+elsewhere. Acceptance: identical classes and distributions to the serial path.
+
+Not in scope: the `ravel`/copy overhead that is 35% of the current profile is expected to shrink as a
+*consequence* of items 2 and 3 (smaller blocks, half the bytes) rather than being attacked directly.
+If it survives them, it earns its own item.
+
+---
+
+## E31 — Results: class estimation **940s -> 6.6s (142x)**, and two items over-delivered into a third
+
+Executed the plan above in sequence, measuring each item alone so a later one cannot borrow credit.
+Baseline after E30.1: 60,000 positions 6.7s, 300,000 positions 40.8s, full data ~200s projected.
+
+| item | change | 60K | 300K | 624K (full) |
+|---|---|---|---|---|
+| — | before E30 | 26.9s | 179.7s | ~940s |
+| E30.1 | pair counting as scaled sparse GEMM | 6.7s | 40.8s | ~200s |
+| **2** | row-restrict each block to rows where the fixed seed fires | **2.2s** | 10.0s | — |
+| **3** | float32 for `F` and block counts | **1.3s** | 6.5s | 12.8s |
+| **4a** | preallocate `F` (memory) | — | — | 12.0s |
+| **4d** | order-1 counts as a sparse GEMM too | — | 4.6s | **9.9s** |
+| **4b** | 4 processes over seed stripes | — | 3.5s | **6.6s** |
+
+**142x end to end** on full-corpus class estimation, and peak RSS **3.95 GB -> 2.60 GB**.
+
+### E31.1 Item 2 — row restriction — **worked, 3.0x**
+
+`F` is ~1.5% dense, so `G = F[:, later] * F[:, a]` was a dense GEMM over almost entirely zero rows.
+A product is zero if either factor is, so only `nonzero(F[:, a])` can contribute to any pair with
+seed `a`. Exact.
+
+**It reported a different model, which I chased down rather than accepting.** Same class set (0
+differences either way), **worst |ΔP| exactly 0.000e+00**, and perplexity 422.6558 both ways. Only
+the *ordering* of classes differed, from float rounding in mass (1e-11) reshuffling near-ties in the
+sort. Class order cannot affect prediction — the distribution is a sum over classes — so the
+benchmark's ordered-list comparison was the bug, not the code.
+
+### E31.2 Item 3 — float32 — **worked, 1.7x**, and it is not bit-exact
+
+Held-out perplexity **303.7372 (float64) vs 303.7373 (float32)** — a difference in the 7th
+significant figure, for 1.7x and half the memory. Counts are sums of products so float32 carries
+~1e-4 relative error; distributions and entropies are still formed in float64, where the arrays are
+small. Default float32 with float64 available, and the number above is why, stated rather than
+asserted as "identical".
+
+### E31.3 Item 4 — the plan was wrong about which serial part dominates
+
+Item 4b (processes over seed stripes) is **bit-identical** — `max |ΔP| == 0.0` at both budgets — but
+gave only **1.24x on 4 cores** at first, against a 3.85x ceiling. Solving Amdahl for that,
+`1/((1-p) + p/4) = 1.24`, gives a parallel fraction of **p ≈ 0.26**: after items 2-3 the block sweep
+was no longer the majority of `fit`, so parallelising it could not do much.
+
+I inferred from that number that building `F` was the serial majority, applied E23's table-gather
+trick, and **that inference was wrong**. Measured in isolation at 300,000 positions: per-position
+1.31s, table gather with a strided `out=` 1.28s (the strided write cancels the gain), table gather
+with `hstack` 0.92s -- but `hstack` needs every slot materialised at once, 2.6 GB transient at full
+data, which would undo item 4a to save 0.4s. Reverted, with the measurement recorded in the code so
+nobody re-tries it. **`F` construction is 1.3s of a 5.9s fit, not the bottleneck.**
+
+So I profiled instead of inferring. Full-data `fit`: `_pair_blocks` 37%, **order-1 `np.add.at`
+19%**, `F` construction 20%, assembly 13%. The order-1 path was the last `np.add.at` in the pipeline
+— the same reformulation as E30.1, never applied to order 1 (item 4d). That took full data 12.0s ->
+9.9s, and *then* 4 processes reached 6.6s (1.5x), because removing serial work is what makes
+parallelism worth anything.
+
+### E31.4 Where the time is now
+
+| stage | full-corpus time |
+|---|---|
+| `build_embedder` (WordNet hierarchy over 27K types) | 10.2s |
+| ranker `build()` (design matrix) | 14.3s |
+| zero-order rule search | 7.4s |
+| **class estimation** (was ~940s) | **6.6s** |
+| **total** | **~39s** |
+
+**There is no longer a dominant stage** — four roughly comparable costs, and the one this plan
+targeted is now the smallest. Further speed work would be spread thin, which is the right place to
+stop. `n_jobs` defaults to 1: forking in a library default is not worth 1.5x on a 10s stage, and it
+is one keyword away when someone wants it.
+
+**Cython and GPU remain unjustified**, more so than when E30 argued it: the pipeline is 39s on one
+CPU core, and the profile is sparse-GEMM and memory traffic rather than scalar loops or dense math.
+
+82 tests pass (2 new: sparse counts against the scatter-add; the fast pair blocks against the
+per-pair reference, already there from E30.1).

@@ -53,6 +53,22 @@ import numpy as np
 
 from .corpus import Corpus
 
+#: Worker state for ``ContextClassMiner._order2_parallel``. Populated in the parent before the
+#: fork so children inherit the large arrays through copy-on-write; passing them as arguments
+#: would pickle hundreds of megabytes per worker.
+_PAR: dict = {}
+
+
+def _order2_stripe(ks):
+    """Runs in a forked child: score one stripe of order-2 seed blocks."""
+    miner, Fa, wa, Fb_all, wb, seeds, P1, est_mass1 = _PAR["state"]
+    try:                        # BLAS threads would only contend across processes (E23.3)
+        from threadpoolctl import threadpool_limits
+        with threadpool_limits(limits=1, user_api="blas"):
+            return miner._order2(Fa, wa, Fb_all, wb, seeds, P1, est_mass1, ks)
+    except ImportError:
+        return miner._order2(Fa, wa, Fb_all, wb, seeds, P1, est_mass1, ks)
+
 
 class FirstOrderConsequents:
     """Estimates and serves per-rule word distributions for a fitted ranker.
@@ -320,7 +336,8 @@ class ContextClassMiner:
                  alpha: float = 50.0, top_singles: int = 140, max_classes: int = 3000,
                  max_order: int = 2, min_mass: float = 20.0,
                  exclude_identity: bool = False, selection_holdout: float = 0.0,
-                 backoff: str = "unigram", pair_chunk: int = 600):
+                 backoff: str = "unigram", pair_chunk: int = 600,
+                 dtype=np.float32, n_jobs: int = 1):
         self.r = ranker
         self.f = ranker.f
         self.alpha = alpha
@@ -342,6 +359,23 @@ class ContextClassMiner:
         self.backoff = backoff
         # How many order-2 candidate columns to materialise at once. Purely a memory bound.
         self.pair_chunk = pair_chunk
+        # Working precision of the position x feature matrix and the block counts (E31 item 3).
+        # float32 halves both memory and bandwidth, and after item 2 the profile is dominated by
+        # copies rather than arithmetic. `F` at full data is 2.6 GB in float64.
+        #
+        # This is NOT bit-exact: counts are sums of products, so float32 carries ~1e-4 relative
+        # error. It is the default only because held-out perplexity was measured to be unchanged
+        # to four decimal places (422.6558 either way); the distributions themselves are formed
+        # and scored in float64, where the arrays are small. Pass float64 to rule it out.
+        self.dtype = dtype
+        # Processes for the order-2 block sweep (E31 item 4b). Parallelised over *seed blocks*
+        # rather than rows: row-sharding would make each worker return partial counts for every
+        # candidate pair before anything could be filtered (~112 MB per worker), whereas a seed
+        # stripe returns only the classes that survive `min_mass`. `fork` gives workers `F`
+        # through copy-on-write, so nothing large is pickled inward. Exact -- the same blocks,
+        # computed elsewhere. Default 1 (serial): after items 2-3 this stage is ~12s of a ~46s
+        # pipeline, so the win is real but modest, and forking in a library default is not.
+        self.n_jobs = n_jobs
         self.weighting = "infogain"
         cand_vec = getattr(ranker, "cand_vector", self.f._token_vector)
         self.words = [w for w in vocab if cand_vec(w).sum() > 0]
@@ -353,17 +387,27 @@ class ContextClassMiner:
     # -- estimation helpers ------------------------------------------------
 
     def _counts(self, F: np.ndarray, w_idx: np.ndarray) -> np.ndarray:
-        """``C[j, w] = sum_i F[i, j] . 1[w_i = w]``, as one scatter-add.
+        """``C[j, w] = sum_i F[i, j] . 1[w_i = w]``.
 
-        Written as a scatter into rows indexed by the gold word: a single vectorised pass
-        rather than a loop per class.
+        A sparse one-hot GEMM, the same reformulation as ``_pair_blocks`` -- which is where it
+        was applied first, leaving *this* (the order-1 path) as the last ``np.add.at`` in the
+        pipeline and 19% of full-data class estimation (E31 item 4d). ``np.add.at`` is unbuffered
+        and slow by construction; ``Y.T @ F`` dispatches to a sparse kernel.
         """
-        CT = np.zeros((len(self.words), F.shape[1]), dtype=np.float64)
-        np.add.at(CT, w_idx, F)
-        return CT.T
+        try:
+            import scipy.sparse as sp
+        except ImportError:
+            CT = np.zeros((len(self.words), F.shape[1]), dtype=self.dtype)
+            np.add.at(CT, w_idx, F)
+            return CT.T
+        Yt = sp.csr_matrix(
+            (np.ones(len(w_idx), dtype=F.dtype), (w_idx, np.arange(len(w_idx)))),
+            shape=(len(self.words), len(w_idx)))
+        return np.ascontiguousarray((Yt @ F).T)
 
     def _smooth(self, C: np.ndarray, prior: np.ndarray) -> tuple:
         """Interpolate counts toward ``prior``. ``prior`` is per-class when backing off."""
+        C = np.asarray(C, dtype=np.float64)     # blocks are small; logs want the precision
         mass = C.sum(axis=1)
         if prior.ndim == 1:
             prior = prior[None, :]
@@ -400,8 +444,8 @@ class ContextClassMiner:
         # cannot be selected on the strength of its training fit.
         return P, mass_b, gain, h0
 
-    def _pair_blocks(self, Fa, wa, Fb_all, seeds):
-        """Yield ``(pairs, counts, holdout_columns)`` for every order-2 candidate.
+    def _pair_blocks(self, Fa, wa, Fb_all, seeds, wb_all=None, ks=None):
+        """Yield ``(pairs, counts, holdout_columns, holdout_words)`` per order-2 block.
 
         The counting problem is a three-way contraction::
 
@@ -427,25 +471,94 @@ class ContextClassMiner:
         try:
             import scipy.sparse as sp
         except ImportError:                     # keep working without scipy
-            yield from self._pair_blocks_reference(Fa, wa, Fb_all, seeds)
+            for pairs, C, F2b in self._pair_blocks_reference(Fa, wa, Fb_all, seeds):
+                yield pairs, C, F2b, wb_all
             return
 
         n_vocab = len(self.words)
-        Yt = sp.csr_matrix((np.ones(len(wa)), (wa, np.arange(len(wa)))),
-                           shape=(n_vocab, len(wa)))
-        Ytb = None
-        if Fb_all is not None:
-            Ytb = None      # held-out columns are still needed densely by _held_out_gain
         S = np.asarray(seeds, dtype=np.intp)
         Fs = Fa[:, S]
         Fsb = None if Fb_all is None else Fb_all[:, S]
-        for k in range(len(S) - 1):
-            later = S[k + 1:]
-            pairs = [(int(S[k]), int(b)) for b in later]
-            G = Fs[:, k + 1:] * Fs[:, k:k + 1]
-            C = np.asarray((Yt @ G).T)
-            F2b = None if Fsb is None else Fsb[:, k + 1:] * Fsb[:, k:k + 1]
-            yield pairs, C, F2b
+        for k in (range(len(S) - 1) if ks is None else ks):
+            pairs = [(int(S[k]), int(b)) for b in S[k + 1:]]
+            # E31 item 2: only rows where the FIXED seed fires can contribute to any pair
+            # (a, b) -- a product is zero if either factor is. `F` is ~1.5% dense, so the
+            # unrestricted block was a dense GEMM over almost entirely zero rows. Exact.
+            idx = np.nonzero(Fs[:, k])[0]
+            if idx.size == 0:
+                continue                        # every pair with this seed has zero mass
+            Fk = Fs[idx]
+            G = Fk[:, k + 1:] * Fk[:, k:k + 1]
+            # Per-block one-hot over just these rows. Built fresh rather than slicing a
+            # shared CSR, because column-slicing is the slow axis for CSR and this is O(nnz).
+            Yk = sp.csr_matrix(
+                (np.ones(idx.size, dtype=G.dtype), (wa[idx], np.arange(idx.size))),
+                shape=(n_vocab, idx.size))
+            C = np.ascontiguousarray((Yk @ G).T)
+            F2b, wb_blk = None, wb_all
+            if Fsb is not None:
+                idxb = np.nonzero(Fsb[:, k])[0]
+                Fkb = Fsb[idxb]
+                F2b = Fkb[:, k + 1:] * Fkb[:, k:k + 1]
+                wb_blk = wb_all[idxb]
+            yield pairs, C, F2b, wb_blk
+
+    def _order2(self, Fa, wa, Fb_all, wb, seeds, P1, est_mass1, ks):
+        """Score every order-2 block in ``ks`` and return the classes that survive.
+
+        Extracted from ``fit`` so the sweep can be mapped over seed stripes by
+        ``_order2_parallel`` without duplicating the scoring logic.
+        """
+        out = []
+        for pairs, Ca, F2b_pre, wb_blk in self._pair_blocks(
+                Fa, wa, Fb_all, seeds, wb_all=wb, ks=ks):
+            # E29.2: back off to the parents, not the unigram. A conjunction's parents are the
+            # two singles it grew from, and they are far more informative about the next word
+            # than corpus frequency. Mass-weighted so the better-estimated parent dominates.
+            if self.backoff == "parent":
+                pa = np.array([est_mass1[a] for a, _ in pairs])
+                pb = np.array([est_mass1[b] for _, b in pairs])
+                wsum = np.maximum(pa + pb, 1e-12)
+                # P1 rows are indexed by FEATURE ID (it was built over all context columns),
+                # not by position in `ok`. Indexing it by rank silently mixes up whose parent
+                # is whose.
+                prior2 = ((pa / wsum)[:, None] * P1[[a for a, _ in pairs]]
+                          + (pb / wsum)[:, None] * P1[[b for _, b in pairs]])
+            elif self.backoff == "unigram":
+                prior2 = self.unigram
+            else:
+                raise ValueError(f"unknown backoff {self.backoff!r}")
+            P2, sel_mass2, gain2, _ = self._score(Ca, prior2, F2b_pre, wb_blk)
+            est_mass2 = Ca.sum(axis=1)
+            keep = np.nonzero((sel_mass2 >= self.min_mass)
+                              & (est_mass2 >= self.min_mass))[0]
+            # Cast here, in both paths, so serial and parallel results are identical -- `P` is
+            # stored as float32 regardless, and this keeps the inter-process payload small.
+            out += [(pairs[i], P2[i].astype(np.float32), sel_mass2[i], gain2[i])
+                    for i in keep]
+        return out
+
+    def _order2_parallel(self, Fa, wa, Fb_all, wb, seeds, P1, est_mass1):
+        """Run the order-2 sweep across processes, striping the seed index.
+
+        Striped (``i::n``) rather than contiguous, because block cost shrinks with ``k`` -- the
+        first seed pairs with 139 others and the last with one, so contiguous chunks would leave
+        one worker with almost all the work.
+        """
+        import multiprocessing as mp
+        n_jobs = mp.cpu_count() if self.n_jobs < 0 else self.n_jobs
+        n_blocks = len(seeds) - 1
+        if n_jobs <= 1 or n_blocks <= 1:
+            return self._order2(Fa, wa, Fb_all, wb, seeds, P1, est_mass1, None)
+        _PAR["state"] = (self, Fa, wa, Fb_all, wb, seeds, P1, est_mass1)
+        stripes = [list(range(i, n_blocks, n_jobs)) for i in range(n_jobs)]
+        stripes = [st for st in stripes if st]
+        try:
+            with mp.get_context("fork").Pool(n_jobs) as pool:
+                parts = pool.map(_order2_stripe, stripes)
+        finally:
+            _PAR.clear()
+        return [cls for part in parts for cls in part]
 
     def _pair_blocks_reference(self, Fa, wa, Fb_all, seeds):
         """The original per-pair implementation. Kept as a correctness oracle."""
@@ -465,28 +578,49 @@ class ContextClassMiner:
         rng = np.random.default_rng(seed)
         sents = [s for s in corpus.sentences if len(s) > self.r.window]
 
-        rows, w_rows = [], []
+        # Two passes so `F` can be allocated exactly and filled in place. Collecting rows
+        # into a Python list first held 624K separate arrays *and* their concatenation at the
+        # same time -- 2.6 GB transiently, and measured peak RSS 3.95 GB (E31 item 4a). The
+        # counting pass is only dict lookups, so it is nearly free.
+        order = rng.permutation(len(sents))
         n = 0
-        for si in rng.permutation(len(sents)):
+        for si in order:
+            sent = sents[si]
+            for i in range(self.r.window, len(sent)):
+                if self.index.get(sent[i]) is not None:
+                    n += 1
+                    if n >= max_positions:
+                        break
+            if n >= max_positions:
+                break
+        F = np.empty((n, self.r.cand_offset_), dtype=self.dtype)
+        w_idx = np.empty(n, dtype=np.intp)
+        r = 0
+        for si in order:
             sent = sents[si]
             for i in range(self.r.window, len(sent)):
                 wi = self.index.get(sent[i])
                 if wi is None:
                     continue
-                rows.append(self.r._context_vector(sent, i))
-                w_rows.append(wi)
-                n += 1
-                if n >= max_positions:
+                F[r] = self.r._context_vector(sent, i)[:self.r.cand_offset_]
+                w_idx[r] = wi
+                r += 1
+                if r >= n:
                     break
-            if n >= max_positions:
+            if r >= n:
                 break
-        F = np.asarray(rows, dtype=np.float64)
-        w_idx = np.asarray(w_rows)
+        n = r
+        # NOT table-gathered, deliberately (E31 item 4c, reverted). E23's table trick was tried
+        # here after item 4b's Amdahl analysis suggested F construction was the serial majority.
+        # Measured in isolation at 300,000 positions: per-position 1.31s, table gather with a
+        # strided `out=` 1.28s (the strided write cancels the gain), table gather with `hstack`
+        # 0.92s -- but `hstack` needs every slot materialised at once, 2.6 GB transient at full
+        # data, which would undo item 4a's memory fix to save 0.4s. And the premise was wrong
+        # anyway: F construction is 1.3s of a 5.9s fit, not the serial majority.
         if self.exclude_identity:
             drop = [k for k in range(offset)
                     if names[k].split(":", 2)[2].startswith("=")]
-            F = F.copy()
-            F[:, drop] = 0.0
+            F[:, drop] = 0.0        # F is freshly allocated and context-only; no copy needed
 
         # Split rows: A estimates the distributions, B scores them (E29.1). Without this,
         # gain is measured on the rows that produced it.
@@ -499,8 +633,8 @@ class ContextClassMiner:
             Fa, wa, Fb_all, wb = F, w_idx, None, None
 
         # Order 1: every context feature is a candidate class.
-        C1 = self._counts(Fa[:, :offset], wa)
-        Fb1 = None if Fb_all is None else Fb_all[:, :offset]
+        C1 = self._counts(Fa, wa)
+        Fb1 = Fb_all
         P1, sel_mass1, gain1, h0 = self._score(C1, self.unigram, Fb1, wb)
         est_mass1 = C1.sum(axis=1)
         score1 = sel_mass1 * gain1
@@ -519,29 +653,10 @@ class ContextClassMiner:
             # limits this: 150,000 positions x 9,730 pairs x 8 bytes is 11.7 GB, and the
             # first attempt was SIGKILLed by the OOM killer with no traceback (E29.3).
             # Chunking bounds peak memory at chunk_size x n_positions instead.
-            for pairs, Ca, F2b_pre in self._pair_blocks(Fa, wa, Fb_all, seeds):
-                # E29.2: back off to the parents, not the unigram. A conjunction's parents
-                # are the two singles it grew from, and they are far more informative about
-                # the next word than corpus frequency. Mass-weighted so the better-estimated
-                # parent dominates the fallback.
-                if self.backoff == "parent":
-                    pa = np.array([est_mass1[a] for a, _ in pairs])
-                    pb = np.array([est_mass1[b] for _, b in pairs])
-                    wsum = np.maximum(pa + pb, 1e-12)
-                    # P1 rows are indexed by FEATURE ID (it was built over all context
-                    # columns), not by position in `ok`. Indexing it by rank silently mixes
-                    # up whose parent is whose.
-                    prior2 = ((pa / wsum)[:, None] * P1[[a for a, _ in pairs]]
-                              + (pb / wsum)[:, None] * P1[[b for _, b in pairs]])
-                elif self.backoff == "unigram":
-                    prior2 = self.unigram
-                else:
-                    raise ValueError(f"unknown backoff {self.backoff!r}")
-                P2, sel_mass2, gain2, _ = self._score(Ca, prior2, F2b_pre, wb)
-                est_mass2 = Ca.sum(axis=1)
-                keep2 = np.nonzero((sel_mass2 >= self.min_mass)
-                                   & (est_mass2 >= self.min_mass))[0]
-                classes += [(pairs[k], P2[k], sel_mass2[k], gain2[k]) for k in keep2]
+            if self.n_jobs == 1:
+                classes += self._order2(Fa, wa, Fb_all, wb, seeds, P1, est_mass1, None)
+            else:
+                classes += self._order2_parallel(Fa, wa, Fb_all, wb, seeds, P1, est_mass1)
 
         classes.sort(key=lambda t: -(t[2] * t[3]))
         classes = classes[: self.max_classes]
