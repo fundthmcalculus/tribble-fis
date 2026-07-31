@@ -41,6 +41,7 @@ Convention: **WORKED** / **FAILED** / **PARTIAL**, each with a why.
 | E22 | The parameter space wired into the ranker; size/quality frontier | space FAILED (dominated); smallness WORKED |
 | E23 | Corpus scale and parallel training | profile overturned the premise; scale went the wrong way |
 | E24 | The OOV fix | correct + 5.1x faster; did NOT improve the model |
+| E25 | Open-class rule quota | FAILED (no effect); found the real bug was `top_k=20` |
 
 ---
 
@@ -1853,7 +1854,7 @@ is the default).
 
 ---
 
-## Standing summary — CURRENT (as of E24)
+## Standing summary (SUPERSEDED — see the final one)
 
 **Best results.** On the 1M-token narrative corpus: perplexity **317.5** against a bigram's
 253.3, with optimal mixture weight **zero**. On the old 87K-token children's corpus:
@@ -1888,3 +1889,151 @@ the trigram baseline (E20.2); E19.4's mixture gain quoted without its budget dep
 **Open:** generation is function-word soup, and E24.4 says why and what to try; hits@1 caps
 near 0.14; GPT-2 untested (blocked, and a data-gap comparison anyway); no neural-embedding
 comparison; Experiment B's real encoder and SST paths unrun.
+
+---
+
+## E25 — Open-class rule quota — **FAILED (no effect)**, and it exposed a wrong diagnosis
+
+E24.4 proposed stratifying the rule budget so closed-class antecedents could not consume it.
+Implemented as `reserved_features` / `reserved_quota` in `MembershipRuleRegressor`, wired to
+`JointNextTokenRanker(open_class_quota=...)`, swept at 0.0 / 0.25 / 0.50 / 0.75.
+
+### E25.1 The quota changed literally nothing
+
+| quota | ppl | 2gram | mix | lambda | rules | open-class rules | content% |
+|---|---|---|---|---|---|---|---|
+| 0.00 | 317.5 | 253.3 | 253.3 | 0.0 | 860 | 386 | 7.1% |
+| 0.25 | 317.5 | 253.3 | 253.3 | 0.0 | 860 | 386 | 7.1% |
+| 0.50 | 317.5 | 253.3 | 253.3 | 0.0 | 860 | 386 | 7.1% |
+| 0.75 | 317.5 | 253.3 | 253.3 | 0.0 | 860 | 386 | 7.1% |
+
+Every figure identical. **The rule base saturates at 860 rules against a 2,500 budget**, so the
+budget was never scarce and a quota had nothing to reallocate. This was already documented in
+`joint.py` -- the beam comment records that "the candidate supply runs out at ~835 admissible
+order-2 rules, not because the beam binds" -- and I proposed a budget fix anyway without
+checking whether the budget bound.
+
+**And the rules I claimed were missing were already there.** 386 of 860 rules are open-class,
+with high lift:
+
+```
+IF ctx:prev1:DETERMINER    AND cand:OPEN_NOUN  THEN P ~ 0.265  (support=3014, lift=+8.411)
+IF ctx:prev1:INFINITIVE_TO AND cand:OPEN_VERB  THEN P ~ 0.272  (support=865,  lift=+4.700)
+IF ctx:prev1:=his          AND cand:noun.body  THEN P ~ 0.663  (support=65,   lift=+4.440)
+IF ctx:prev1:OPEN_ADJ      AND cand:OPEN_NOUN  THEN P ~ 0.211  (support=2672, lift=+5.098)
+```
+
+So **E24.3's diagnosis was wrong.** I read "every high-lift rule is closed-class" off the six
+rules that happened to fire in one generation trace and generalised it to the rule base. The
+base is 45% open-class. Reading a trace is not measuring a distribution.
+
+### E25.2 The real cause was a decoding default: `top_k=20`
+
+If the content-selection rules exist, the failure has to be downstream. Measured aggregate
+probability mass on content words per step, and how much survives truncation:
+
+| prompt | full distribution | top-20 | top-100 | top-500 |
+|---|---|---|---|---|
+| `the little` | **50.6%** | 1.9% | 15.8% | 36.3% |
+| `she was` | **42.8%** | 2.7% | 12.4% | 29.7% |
+| `he did` | **38.8%** | 2.1% | 9.3% | 26.1% |
+
+Real held-out text is **46.2%** content words. **The model's distribution was already right.**
+Content rate in free generation:
+
+| `top_k` | content rate |
+|---|---|
+| 20 (old default) | 7.1% |
+| 100 | 8.3% |
+| 500 | 33.3% |
+| 0 = all 2,871 | **48.8%** |
+
+The mechanism: a category rule says "a noun comes next" but not *which* noun, so its consequent
+spreads over ~2,699 content words, while a function word gets identity-level rules *and* a large
+q(w) in the NCE inversion. Per token, any one function word outscores any one noun -- so the 20
+highest-probability words are always function words, and `top_k=20` over 2,871 candidates kept
+~2% of the content mass. Real text is 46% content because thousands of individually-rare words
+have large *aggregate* mass, which is exactly what the truncation discarded.
+
+`hedge` was wrong for the same reason and is now 1.0: concentration (`mu**h`) sharpens toward
+whatever already dominates, so `hedge=3.0` amplified the function words.
+
+Samples at the corrected defaults:
+
+```
+the little | though information to dislike that do top not great to party little was became
+she was    | but be to on his what ship that are ashore acknowledge can well he
+he did     | to emperor time of father daughter should reasonable to give my and soon road
+```
+
+Still not grammatical, but it is now real vocabulary at roughly the right content density, and
+comparable in character to the bigram's output rather than degenerate.
+
+**Perplexity is unchanged (317.5).** `top_k` is a decoding parameter and never entered scoring,
+so this fixes generation quality without touching any reported perplexity -- which also means
+none of the perplexity conclusions in E18-E24 were affected by it.
+
+### E25.3 Three wrong diagnoses in a row, and what that pattern says
+
+E23.4 (corpus scale), E24.2 (OOV capacity), E24.3/E25.1 (rule budget) were all wrong, and the
+actual bug was a default argument. The common error: I inferred mechanism from aggregate
+symptoms and from single traces instead of measuring the intermediate quantity. The measurement
+that finally worked -- "how much mass is on content words, before and after each processing
+step" -- is the obvious one and cost one short script.
+
+The quota code is kept (defaulting to 0.0, i.e. off) because it is correct, tested, and cheap,
+and it will matter if the candidate supply ever exceeds the budget. But it is not a fix for
+anything currently observed, and it is recorded as a **negative result**, not as a feature.
+
+71 tests pass (5 new: quota mechanics on a constructed support imbalance, the reserved set
+excluding closed-class and identity dims, and the generation defaults, which are now
+load-bearing).
+
+---
+
+## Standing summary — CURRENT (as of E25)
+
+**Best results.** On the 1M-token narrative corpus: perplexity **317.5** against a bigram's
+253.3, optimal mixture weight zero. On the 87K-token children's corpus: 324.8, and mixing with
+a bigram beat the bigram alone (253.9 vs 256.3). Generation now produces real vocabulary at
+**48.8% content words against 46.2% in real text** (E25.2), though it is not grammatical.
+Representation claims all hold: coverage 96.7%, exact multi-resolution rollup asserted in CI,
+L2 similarity gap +0.278, explainable typo robustness, correct senses for rare words.
+
+**Smallness and speed.** 285 learned parameters reach within 5% of the full 2,520-parameter
+model, against 34,021 stored counts for a bigram. Cold training on 1M tokens is ~1 minute on
+one CPU core, down from ~5.4. Rule count drives inference cost, not training cost.
+
+**Honest framing.** As a language model this loses to a bigram on the same text, and at 1M
+tokens contributes nothing to a mixture with one. The distribution is better calibrated than
+the samples suggested -- content-word mass was right all along and a decoding default was
+throwing it away.
+
+**Ruled out:** context width (E12), rule order for ranking (E12, E15), Gaussian antecedents
+(E9/E10), symmetric decode similarity (E11), Cython and BLAS threading (E14, E23.3), raw score
+normalisation (E18.2), candidate-side lexicalisation (E19), the linguistic parameter space as a
+feature space (E22), corpus scale as the closing lever (E23.4 -- it widens the gap),
+thread-based parallelism (E23.3 -- 0.47x, GIL), OOV representation quality as the ceiling
+(E24.2 -- worth 1%), **and the open-class rule quota (E25.1 -- no effect; the budget was never
+scarce and the base is already 45% open-class)**.
+
+**Confirmed:** vectorising beat parallelising by 11x (E23.2); the rule base does contain
+high-lift content-selection rules (E25.1); the model's content/function mass split matches real
+text (E25.2).
+
+**Corrected along the way:** the 0.569 balanced accuracy (E12.1); all pre-E17 ranking numbers;
+the trigram baseline (E20.2); E19.4's mixture gain quoted without its budget dependence (E22.4);
+E22.3's attribution of fit cost (E23.1); my recommendation to push corpus size (E23.4);
+**E24.3's "the rules are all closed-class" diagnosis, which came from reading one trace rather
+than measuring the base (E25.1)**.
+
+**Open:** generation is not grammatical -- word choice is now plausible but there is no
+agreement, no clause structure, and a 2-token window cannot supply either. hits@1 caps near
+0.14. GPT-2 untested (blocked, and a data-gap comparison anyway). No neural-embedding
+comparison. Experiment B's real encoder and SST paths unrun.
+
+**Methodological note (E25.3).** Four hypotheses about the quality ceiling have now been
+refuted, and the real bug was a default argument. The recurring error was inferring mechanism
+from aggregate symptoms or single traces instead of measuring the intermediate quantity. The
+measurement that worked -- mass on content words before and after each processing step -- was
+cheap and should have come first.

@@ -76,7 +76,7 @@ class JointNextTokenRanker:
     def __init__(self, featuriser, window: int = 2, n_negatives: int = 8,
                  max_rules: int = 2500, max_order: int = 2, seed: int = 42,
                  order_quota: dict[int, float] | None = None, beam: int = 800,
-                 lexeme_side: str = "ctx"):
+                 lexeme_side: str = "ctx", open_class_quota: float = 0.0):
         self.f = featuriser
         self.window = window
         self.n_negatives = n_negatives
@@ -108,6 +108,13 @@ class JointNextTokenRanker:
         # the categories cannot express ("after *the*, expect a noun") and q(w) says
         # nothing about it.
         self.lexeme_side = lexeme_side
+        # Fraction of the rule budget reserved for rules whose *candidate* side is
+        # open-class or semantic rather than a closed-class category. E24.3 measured why
+        # this is needed: |lift| follows support, closed-class features carry by far the
+        # most support, so the base filled with function-word syntax and learned nothing
+        # that selects a content word -- generation came out as function-word soup.
+        # 0.0 keeps the pre-E25 behaviour.
+        self.open_class_quota = open_class_quota
         self.seed = seed
         self.model_: MembershipRuleRegressor | None = None
         self.feature_names_: list[str] = []
@@ -293,6 +300,8 @@ class JointNextTokenRanker:
             # identically on a position's positive and its negatives), so they must be
             # force-seeded or no ctx-x-cand interaction is ever generated.
             seed_features=set(range(self.cand_offset_)),
+            reserved_features=self.open_class_features(),
+            reserved_quota=self.open_class_quota,
         ).fit(X, y, self.feature_names_)
 
         if verbose:
@@ -302,6 +311,32 @@ class JointNextTokenRanker:
                   f"{len(self.model_.rules_)} rules "
                   f"by order {self.model_.order_histogram()}")
         return self
+
+    def open_class_features(self) -> set[int]:
+        """Candidate-side feature indices that are open-class or semantic.
+
+        "Open-class" is defined by exclusion, because that is the robust direction: the
+        closed-class inventory is a short, fixed, hand-listed set (``syntax.CLOSED_CLASS``),
+        while the open-class side is every WordNet supersense plus the ``OPEN_*`` tags and
+        will differ per featuriser. Excluded from the reserved pool: closed-class categories,
+        the boundary marker, and lexeme identity dims -- identity is a frequency signal (E19),
+        not content-word *selection*, and reserving budget for `cand:=the` would defeat the
+        purpose.
+
+        Only candidate-side indices are returned. A reserved context feature would not help:
+        the problem is which *candidate* a rule can discriminate, not which context it reads.
+        """
+        from .syntax import BOUNDARY, CLOSED_CLASS
+        closed = set(CLOSED_CLASS) | {BOUNDARY, "Boundary"}
+        if not self.feature_names_:
+            self.feature_names_ = self._names()
+        out = set()
+        for i in range(self.cand_offset_, len(self.feature_names_)):
+            base = self.feature_names_[i].split(":", 1)[1]     # strip "cand:"
+            if base in closed or base.startswith("="):
+                continue
+            out.add(i)
+        return out
 
     # -- scoring / evaluation ---------------------------------------------
 

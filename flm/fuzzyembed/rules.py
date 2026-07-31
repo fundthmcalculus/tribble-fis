@@ -83,7 +83,9 @@ class MembershipRuleRegressor:
                  top_singles: int = 24, min_interaction: float = 0.02,
                  beam: int = 24, must_include: set[int] | None = None,
                  order_quota: dict[int, float] | None = None,
-                 seed_features: set[int] | None = None):
+                 seed_features: set[int] | None = None,
+                 reserved_features: set[int] | None = None,
+                 reserved_quota: float = 0.0):
         if t_norm not in T_NORMS:
             raise ValueError(f"t_norm must be one of {T_NORMS}")
         self.max_rules = max_rules
@@ -115,6 +117,10 @@ class MembershipRuleRegressor:
         # learn candidate marginals. This is the XOR problem for greedy selection:
         # informative jointly, invisible marginally.
         self.seed_features = set(seed_features) if seed_features else None
+        # Feature indices guaranteed ``reserved_quota`` of the rule budget. See
+        # ``_apply_quota`` for the measurement that motivated it (E24.3).
+        self.reserved_features = set(reserved_features) if reserved_features else None
+        self.reserved_quota = reserved_quota
         self.rules_: list[Rule] = []
         self.default_: float = 0.0
         self.feature_names_: list[str] = []
@@ -297,19 +303,56 @@ class MembershipRuleRegressor:
                     else np.empty((X.shape[0], 0)))
         return out_rules, fire_mat
 
-    def _apply_quota(self, candidates: list[Rule]) -> list[Rule]:
-        """Select the rule base, honouring ``order_quota`` if given."""
+    def _select_by_order(self, candidates: list[Rule], budget: int) -> list[Rule]:
+        """Top ``budget`` rules, honouring ``order_quota`` within this pool."""
+        if budget <= 0:
+            return []
         if not self.order_quota:
-            return candidates[: self.max_rules]
+            return candidates[:budget]
         by_order: dict[int, list[Rule]] = {}
         for rule in candidates:
             by_order.setdefault(len(rule.features), []).append(rule)
         chosen: list[Rule] = []
         for order, frac in sorted(self.order_quota.items()):
-            take = int(round(self.max_rules * frac))
-            chosen.extend(by_order.get(order, [])[:take])
-        # Backfill any unused quota (an order may have too few candidates) from the
-        # global ranking, so a quota never shrinks the rule base.
+            chosen.extend(by_order.get(order, [])[: int(round(budget * frac))])
+        # Backfill unused quota (an order may have too few candidates) from the global
+        # ranking, so a quota never shrinks the rule base.
+        if len(chosen) < budget:
+            have = {r.features for r in chosen}
+            for rule in candidates:
+                if rule.features not in have:
+                    chosen.append(rule)
+                    if len(chosen) >= budget:
+                        break
+        chosen.sort(key=lambda r: -abs(r.lift))
+        return chosen[:budget]
+
+    def _apply_quota(self, candidates: list[Rule]) -> list[Rule]:
+        """Select the rule base, honouring the order and reserved-feature quotas.
+
+        ``reserved_quota`` exists because of a *measured* budget misallocation (E24.3).
+        Ranking by ``|lift| = |consequent - default| * sqrt(support)`` follows support, and
+        on the joint ranking task the highest-support features are closed-class by an order
+        of magnitude (``cand:CONJUNCTION`` alone has support 17,250). The whole rule base
+        therefore filled with function-word syntax -- correct rules, `IF prev1:PREPOSITION
+        AND cand:DETERMINER` carries lift +10.09 -- and nothing that selects a *content*
+        word, so generation produced only function words.
+
+        This is the same failure shape as ``order_quota`` (lift favouring high-support
+        singles until interactions were guaranteed a share) applied to a different axis, so
+        it takes the same remedy: reserve part of the budget and let the reserved pool
+        compete only against itself.
+        """
+        if not self.reserved_features or self.reserved_quota <= 0:
+            return self._select_by_order(candidates, self.max_rules)
+
+        res = self.reserved_features
+        hit = [r for r in candidates if any(f in res for f in r.features)]
+        rest = [r for r in candidates if not any(f in res for f in r.features)]
+        n_res = int(round(self.max_rules * self.reserved_quota))
+        chosen = self._select_by_order(hit, n_res)
+        chosen += self._select_by_order(rest, self.max_rules - len(chosen))
+        # Backfill, so a quota can never shrink the base below what it would have been.
         if len(chosen) < self.max_rules:
             have = {r.features for r in chosen}
             for rule in candidates:
@@ -319,6 +362,12 @@ class MembershipRuleRegressor:
                         break
         chosen.sort(key=lambda r: -abs(r.lift))
         return chosen[: self.max_rules]
+
+    def reserved_histogram(self) -> dict[str, int]:
+        """How much of the final base actually touches a reserved feature."""
+        res = self.reserved_features or set()
+        hit = sum(1 for r in self.rules_ if any(f in res for f in r.features))
+        return {"reserved": hit, "other": len(self.rules_) - hit}
 
     def order_histogram(self) -> dict[int, int]:
         out: dict[int, int] = {}

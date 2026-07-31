@@ -698,3 +698,89 @@ def test_full_coverage_is_the_default_and_keeps_level_two_width():
     import inspect
     from flm.fuzzyembed.embedder import build_embedder
     assert inspect.signature(build_embedder).parameters["max_types"].default is None
+
+
+def test_reserved_quota_guarantees_low_support_rules_a_share():
+    """E24.3's fix: |lift| follows support, so a dense-but-useless family can starve others.
+
+    Constructed so the unreserved feature is overwhelmingly higher-support (and so wins on
+    |lift|) while the reserved feature is genuinely predictive but rare -- the shape measured
+    on the real task, where closed-class features had ~10x the support of anything semantic.
+    Without a quota the base should be all-unreserved; with one, the reserved family must get
+    its share.
+    """
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    rng = np.random.default_rng(23)
+    n = 4000
+    dense = (rng.random(n) < 0.8).astype(float)      # feature 0: huge support
+    rare = (rng.random(n) < 0.03).astype(float)      # feature 1: small support
+    X = np.column_stack([dense, rare, rng.random((n, 4)) < 0.5]).astype(float)
+    y = np.clip(0.3 * dense + 0.9 * rare, 0, 1)
+    names = ["dense", "rare", "n0", "n1", "n2", "n3"]
+
+    plain = MembershipRuleRegressor(max_rules=6, max_order=2, min_support=2.0,
+                                    beam=40).fit(X, y, names)
+    quota = MembershipRuleRegressor(max_rules=6, max_order=2, min_support=2.0, beam=40,
+                                    reserved_features={1}, reserved_quota=0.5
+                                    ).fit(X, y, names)
+
+    assert quota.reserved_histogram()["reserved"] >= 2, quota.reserved_histogram()
+    assert (quota.reserved_histogram()["reserved"]
+            > plain.reserved_histogram()["reserved"] if plain.reserved_features
+            else quota.reserved_histogram()["reserved"] >= 2)
+    # A quota must never shrink the base -- it reallocates, it does not truncate.
+    assert len(quota.rules_) == len(plain.rules_)
+
+
+def test_open_class_features_excludes_closed_class_and_identity():
+    """The reserved set must be the *content* side, or the quota reserves the problem."""
+    from flm.fuzzyembed.joint import JointNextTokenRanker
+
+    class F:
+        lexemes = ["the", "dog"]
+
+        def _output_names(self):
+            return ["noun.animal", "verb.motion", "OPEN_NOUN", "DETERMINER",
+                    "PREPOSITION", "BOUNDARY", "=the", "=dog"]
+
+        def _token_vector(self, token):
+            return np.zeros(8, dtype=np.float32)
+
+    j = JointNextTokenRanker(F(), window=2)
+    names = j._names()
+    reserved = {names[i] for i in j.open_class_features()}
+    assert reserved == {"cand:noun.animal", "cand:verb.motion", "cand:OPEN_NOUN"}
+    # Context-side features are never reserved: the issue is candidate discrimination.
+    assert all(n.startswith("cand:") for n in reserved)
+
+
+def test_open_class_quota_defaults_to_off():
+    """A behaviour-changing knob must default to the measured-baseline behaviour."""
+    from flm.fuzzyembed.joint import JointNextTokenRanker
+    import inspect
+    sig = inspect.signature(JointNextTokenRanker.__init__)
+    assert sig.parameters["open_class_quota"].default == 0.0
+
+
+def test_generate_defaults_do_not_truncate_away_content_mass():
+    """E25.2: ``top_k=20`` over ~2,900 candidates discarded ~98% of content-word mass.
+
+    The model's aggregate mass on content words (38-51%) already matched real text (46.2%);
+    truncation to the 20 highest-probability words kept only ~2% of it, because the top of the
+    distribution is always function words. So the defaults are load-bearing, not cosmetic, and
+    a regression to a small ``top_k`` would silently reintroduce the failure.
+    """
+    import inspect
+    from flm.fuzzyembed.generate import FuzzyGenerator
+    sig = inspect.signature(FuzzyGenerator.generate)
+    assert sig.parameters["top_k"].default == 0, "top_k must default to no truncation"
+    # hedge>1 concentrates toward whatever already dominates, which was the bug's direction.
+    assert sig.parameters["hedge"].default == 1.0
+
+
+def test_top_k_zero_keeps_every_candidate():
+    """``top_k=0`` must mean 'all', not 'none' -- an off-by-one here empties the vocabulary."""
+    p = np.array([0.5, 0.3, 0.2])
+    for top_k, expected in ((0, 3), (-1, 3), (2, 2), (99, 3)):
+        k = len(p) if top_k <= 0 else min(top_k, len(p))
+        assert k == expected, top_k

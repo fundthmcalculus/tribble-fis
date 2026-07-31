@@ -192,9 +192,36 @@ class FuzzyGenerator:
 
     # -- generation --------------------------------------------------------
 
-    def generate(self, prompt: list[str], n_tokens: int = 12, hedge: float = 3.0,
-                 top_k: int = 20, block_repeat: int = 2,
+    def generate(self, prompt: list[str], n_tokens: int = 12, hedge: float = 1.0,
+                 top_k: int = 0, block_repeat: int = 2,
                  explain: bool = False) -> tuple[list[str], list[GenStep]]:
+        """Sample a continuation. ``top_k=0`` means no truncation.
+
+        **The old ``top_k=20`` default was a bug, not a tuning choice** (E25.2). With ~2,871
+        candidates it discarded almost all of the model's content-word mass, and that -- not
+        the rule base -- was why generation read as function-word soup. Measured aggregate
+        mass on content words per step is 38-51%, against 46.2% in real held-out text, so the
+        distribution was already about right; truncation to 20 kept only ~2% of it, because
+        the 20 highest-probability words are always function words. Content rate in free
+        generation against the 46.2% target:
+
+        ============  ============
+        ``top_k``     content rate
+        ============  ============
+        20            7.1%
+        100           8.3%
+        500           33.3%
+        0 (all)       **48.8%**
+        ============  ============
+
+        ``hedge`` defaults to 1.0 for the same reason: concentration (``mu**h``, Zadeh's
+        hedge) sharpens toward whatever already dominates, which was the function words, so
+        ``hedge=3.0`` made the failure worse rather than sharper.
+
+        ``top_k`` is retained as a coherence knob -- sampling the full tail admits rare words
+        the context does not really support. Nucleus (top-p) sampling would be the principled
+        version and is not implemented.
+        """
         out = list(prompt)
         steps: list[GenStep] = []
         for _ in range(n_tokens):
@@ -204,7 +231,7 @@ class FuzzyGenerator:
                     i = self.index.get(w)
                     if i is not None:
                         p[i] = 0.0
-            k = min(top_k, len(p))
+            k = len(p) if top_k <= 0 else min(top_k, len(p))
             top_idx = np.argpartition(p, -k)[-k:]
             top_idx = top_idx[np.argsort(p[top_idx])[::-1]]
             q = p[top_idx]
