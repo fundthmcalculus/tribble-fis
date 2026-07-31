@@ -147,7 +147,8 @@ that gap, not to hobble the model.
 | `similarity.py` | fuzzy Jaccard / Dice, hierarchy-aware variant |
 | `syntax.py` | **fuzzy syntax** — named closed-class categories + graded open-class markers |
 | `rules.py` | **membership rule learner** — TSK for inputs that are already memberships |
-| `sequence.py` | fuzzy sequence model — next-token prediction over the joint space |
+| `sequence.py` | fuzzy sequence model — per-dimension marginal prediction |
+| `joint.py` | **joint next-token ranker** — scores (context, candidate) pairs; the version that works |
 | `decode.py` | fuzzy decoder — Zadeh linguistic approximation |
 | `run_flm.py` | driver: `--stage coverage|embed|sequence|generate|all` |
 

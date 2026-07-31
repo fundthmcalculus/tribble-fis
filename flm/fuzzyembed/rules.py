@@ -81,7 +81,9 @@ class MembershipRuleRegressor:
     def __init__(self, max_rules: int = 24, max_order: int = 2,
                  min_support: float = 8.0, t_norm: str = "product",
                  top_singles: int = 24, min_interaction: float = 0.02,
-                 beam: int = 24):
+                 beam: int = 24, must_include: set[int] | None = None,
+                 order_quota: dict[int, float] | None = None,
+                 seed_features: set[int] | None = None):
         if t_norm not in T_NORMS:
             raise ValueError(f"t_norm must be one of {T_NORMS}")
         self.max_rules = max_rules
@@ -91,6 +93,28 @@ class MembershipRuleRegressor:
         self.top_singles = top_singles
         self.min_interaction = min_interaction
         self.beam = beam
+        # Feature indices of which every rule must use at least one. Needed by the
+        # joint ranker: a rule over context features *only* assigns the same score to
+        # every candidate word, so it cannot affect a ranking at all -- it would just
+        # consume rule slots while contributing a constant.
+        self.must_include = set(must_include) if must_include else None
+        # Fraction of the rule budget reserved per antecedent order. Needed because
+        # ranking by |lift| = |consequent - default| * sqrt(support) systematically
+        # favours high-support single-term rules: on the joint ranking task the whole
+        # 40-rule base filled with candidate-only marginals and not one
+        # context-x-candidate interaction survived, so the scorer could not depend on
+        # context at all. Quotas guarantee interactions a share of the budget.
+        self.order_quota = order_quota
+        # Feature indices always admitted to the growth seed pool regardless of their
+        # marginal lift. Required for **pure-interaction** structure, which lift-based
+        # seeding provably cannot find: on the joint ranking task a position's positive
+        # and all its negatives share one context vector, so every `ctx:` feature fires
+        # identically on both and its firing-weighted target equals the base rate --
+        # marginal lift exactly zero. Those features never reached the top-k seed pool,
+        # so no context-x-candidate rule was ever generated and the ranker could only
+        # learn candidate marginals. This is the XOR problem for greedy selection:
+        # informative jointly, invisible marginally.
+        self.seed_features = set(seed_features) if seed_features else None
         self.rules_: list[Rule] = []
         self.default_: float = 0.0
         self.feature_names_: list[str] = []
@@ -102,6 +126,12 @@ class MembershipRuleRegressor:
             return X[:, features[0]]
         cols = X[:, list(features)]
         return cols.prod(axis=1) if self.t_norm == "product" else cols.min(axis=1)
+
+    def _admissible(self, features: tuple[int, ...]) -> bool:
+        """Whether a rule may enter the base (see ``must_include``)."""
+        if self.must_include is None:
+            return True
+        return any(f in self.must_include for f in features)
 
     @property
     def max_order_used(self) -> int:
@@ -138,12 +168,17 @@ class MembershipRuleRegressor:
             singles.append(Rule((j,), (self.feature_names_[j],), cons, sup, lift))
 
         singles.sort(key=lambda r: -abs(r.lift))
-        candidates = list(singles)
+        candidates = [r for r in singles if self._admissible(r.features)]
 
         # Higher orders by level-wise growth (Apriori-style): extend each surviving
         # order-(k-1) rule by one strong single. A beam bounds the cost, which would
         # otherwise be combinatorial in the number of features.
         seeds = singles[: self.top_singles]
+        if self.seed_features:
+            have = {r.features[0] for r in seeds}
+            seeds = seeds + [r for r in singles
+                             if r.features[0] in self.seed_features
+                             and r.features[0] not in have]
         # Carry each frontier rule's firing vector alongside it. Extending a rule is
         # then a single vectorised multiply against one column, instead of
         # re-multiplying all k columns from scratch -- the naive version recomputed
@@ -192,11 +227,41 @@ class MembershipRuleRegressor:
                         cons, sup, lift), fire))
             grown.sort(key=lambda rf: -abs(rf[0].lift))
             frontier = grown[: self.beam]
-            candidates.extend(r for r, _ in frontier)
+            candidates.extend(r for r, _ in frontier
+                              if self._admissible(r.features))
 
         candidates.sort(key=lambda r: -abs(r.lift))
-        self.rules_ = candidates[: self.max_rules]
+        self.rules_ = self._apply_quota(candidates)
         return self
+
+    def _apply_quota(self, candidates: list[Rule]) -> list[Rule]:
+        """Select the rule base, honouring ``order_quota`` if given."""
+        if not self.order_quota:
+            return candidates[: self.max_rules]
+        by_order: dict[int, list[Rule]] = {}
+        for rule in candidates:
+            by_order.setdefault(len(rule.features), []).append(rule)
+        chosen: list[Rule] = []
+        for order, frac in sorted(self.order_quota.items()):
+            take = int(round(self.max_rules * frac))
+            chosen.extend(by_order.get(order, [])[:take])
+        # Backfill any unused quota (an order may have too few candidates) from the
+        # global ranking, so a quota never shrinks the rule base.
+        if len(chosen) < self.max_rules:
+            have = {r.features for r in chosen}
+            for rule in candidates:
+                if rule.features not in have:
+                    chosen.append(rule)
+                    if len(chosen) >= self.max_rules:
+                        break
+        chosen.sort(key=lambda r: -abs(r.lift))
+        return chosen[: self.max_rules]
+
+    def order_histogram(self) -> dict[int, int]:
+        out: dict[int, int] = {}
+        for rule in self.rules_:
+            out[len(rule.features)] = out.get(len(rule.features), 0) + 1
+        return dict(sorted(out.items()))
 
     # -- predict -----------------------------------------------------------
 

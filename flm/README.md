@@ -10,7 +10,7 @@ recover names from a dense model after the fact.
 | | Experiment | Status | Doc |
 |---|---|---|---|
 | **A** | **Fuzzy embedding model** — coordinates are membership degrees in named nodes of a curated lexical hierarchy | **built & measured** (WordNet backend; M0 coverage 96.7%, exact rollup PASS, L2 similarity gap +0.278) | [`FUZZY_EMBEDDING_PLAN.md`](FUZZY_EMBEDDING_PLAN.md) · [`fuzzyembed/`](fuzzyembed/) |
-| **A2** | **Fuzzy sequence + fuzzy syntax + fuzzy decoder** — next-token prediction over named semantic *and* syntactic dimensions, then Zadeh linguistic approximation | built; rules at logreg parity (bal-acc 0.528 → **0.569**), category-correct decoding; **aggregate skill still marginal (bal-acc 0.527±0.010) and generation not grammatical** | [`fuzzyembed/README.md`](fuzzyembed/README.md) |
+| **A2** | **Fuzzy sequence + fuzzy syntax + fuzzy decoder** — next-token prediction over named semantic *and* syntactic dimensions, then Zadeh linguistic approximation | built; rules at logreg parity (bal-acc 0.528 → **0.569**), category-correct decoding; **joint ranker beats unigram baseline, MRR 0.196 → 0.257**; generation still not grammatical | [`fuzzyembed/README.md`](fuzzyembed/README.md) |
 | **B** | **FIS head on a frozen neural embedding model** — sentiment analysis, TSK heads vs. linear probe | harness built & smoke-tested; not run on real data | [`FIS_ON_EMBEDDINGS_PLAN.md`](FIS_ON_EMBEDDINGS_PLAN.md) · [`exp_b/`](exp_b/) |
 
 **Experiment A is implemented** in [`fuzzyembed/`](fuzzyembed/) — see that README for
@@ -104,8 +104,12 @@ because next-word prediction is driven mostly by **syntax and function words**, 
 semantic representation discards by construction; adding a **fuzzy model of syntax**
 (named closed-class categories) plus an antecedent representation suited to
 membership-valued inputs raised separation ~6x (+0.015 → +0.094), though balanced
-accuracy stays marginal at 0.527 ± 0.010. Widening the context and allowing order-3
-rules were both predicted to help and measurably **do not**. In particular,
+accuracy stays marginal at 0.527 ± 0.010. Widening the context and allowing order-3 rules
+were both predicted to help and measurably **do not**. What did work was reframing the
+target: predicting per-dimension marginals never enforces that the prediction describes
+*one word*, and scoring `(context, candidate)` pairs jointly instead
+([`fuzzyembed/joint.py`](fuzzyembed/joint.py)) beats a unigram baseline on MRR
+(0.196 → 0.257) with a readable rule base that recovers real grammar. In particular,
 `MixtureOfGaussiansFuzzySequenceClassifier` in this repo is a confusion-driven
 cascade of specialists, not a temporal sequence model, and is not a seed for (2).
 

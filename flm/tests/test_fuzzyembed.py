@@ -375,3 +375,57 @@ def test_rules_grow_to_order_three():
     # The 3-conjunct rule must predict the interaction better than order 2 can.
     probe = np.array([[1, 1, 1, 0, 0, 0]], dtype=float)
     assert order3.predict(probe)[0] > order2.predict(probe)[0]
+
+
+def test_rules_find_pure_interaction_only_when_seeded():
+    """Pure-interaction structure is invisible to marginal-lift seeding.
+
+    Regression test for the joint ranker: features with zero marginal effect but a
+    strong joint effect must be force-seeded, or no interaction rule is generated.
+    """
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    rng = np.random.default_rng(11)
+    n = 2000
+    # `ctx` is balanced and, alone, carries no signal about y at all.
+    ctx = (rng.random(n) < 0.5).astype(float)
+    cand = (rng.random(n) < 0.5).astype(float)
+    y = (ctx == cand).astype(float)          # pure XOR-style interaction
+    # Pad with high-marginal-lift noise so top-k seeding prefers the decoys.
+    decoy = np.column_stack([(rng.random(n) < 0.5).astype(float) for _ in range(20)])
+    X = np.column_stack([ctx, cand, decoy])
+    names = ["ctx", "cand"] + [f"d{i}" for i in range(20)]
+
+    # ctx alone must look useless -- that is the premise of the test.
+    plain = MembershipRuleRegressor(max_rules=30, top_singles=6).fit(X, y, names)
+    assert abs(plain.rules_[0].consequent - plain.default_) < 0.5
+
+    seeded = MembershipRuleRegressor(
+        max_rules=30, top_singles=6, seed_features={0},
+        order_quota={1: 0.2, 2: 0.8}).fit(X, y, names)
+    pairs = [r for r in seeded.rules_ if set(r.names) == {"ctx", "cand"}]
+    assert pairs, f"force-seeding failed to surface the interaction: {seeded.render()}"
+
+
+def test_order_quota_reserves_slots():
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    rng = np.random.default_rng(5)
+    n = 800
+    X = (rng.random((n, 8)) < 0.4).astype(float)
+    y = np.clip(X[:, 0] * 0.5 + X[:, 1] * X[:, 2] * 0.5, 0, 1)
+    quota = MembershipRuleRegressor(max_rules=10, order_quota={1: 0.5, 2: 0.5}).fit(X, y)
+    hist = quota.order_histogram()
+    assert hist.get(2, 0) >= 1, hist
+    assert sum(hist.values()) == len(quota.rules_) <= 10
+
+
+def test_joint_ranker_excludes_context_only_rules():
+    """Every rule must touch the candidate, or it cannot change a ranking."""
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    rng = np.random.default_rng(13)
+    n = 900
+    X = (rng.random((n, 6)) < 0.4).astype(float)
+    y = np.clip(X[:, 4] * 0.6 + X[:, 0] * X[:, 4] * 0.4, 0, 1)
+    cand_idx = {4, 5}
+    model = MembershipRuleRegressor(max_rules=20, must_include=cand_idx).fit(X, y)
+    for rule in model.rules_:
+        assert any(f in cand_idx for f in rule.features), rule.render()

@@ -571,3 +571,124 @@ representation (E9/E10 — fixed), the decode metric (E11 — fixed), feature hy
 **Still open, in the order I would test:** corpus size (~90K tokens is ~50x under a
 TinyStories subset); the independent-per-dimension target space (nothing enforces that
 the prediction corresponds to *one* word); and the absence of any clause-level state.
+
+---
+
+## E13 — Joint target prediction — **WORKED.** The first real win over a baseline
+
+**What.** The one untested item from E12, and the one I had flagged as possibly the
+deeper design flaw. `sequence.py` predicts a degree per named dimension
+*independently*; nothing enforces that the result describes **one actual word**. A
+vector with `OPEN_NOUN=0.5, OPEN_VERB=0.5` is a fine marginal prediction and a
+description of nothing.
+
+So the target was reframed (`joint.py`): instead of "what degree does dimension *c*
+have next?", ask **"is *w* the next word here?"** — one binary, genuinely joint
+question, with features = context-window memberships ⊕ the candidate's own. This is
+noise-contrastive estimation with an interpretable scorer, and it buys a real metric:
+rank the true next token against frequency-sampled distractors → MRR, hits@k.
+
+Distractors are **frequency-weighted**, not uniform. Uniform sampling from a Zipfian
+vocabulary draws almost only rare words, which makes the task trivially easy and the
+numbers meaningless.
+
+### E13.1 Measuring the ceiling first — **the representation was NOT the bottleneck**
+
+Before tuning anything, I checked whether the task was winnable at all. At L2 the joint
+space has 61 dims; among 2897 decodable words there are **2133 distinct signatures**
+(largest collision buckets 156, 123, 99). A perfect scorer, with pessimistic tie-breaking
+on identical signatures, would reach **MRR 0.822, hits@1 0.698**.
+
+**Why this mattered.** My working hypothesis had been that L2 was too coarse to rank
+individual words. It is not. That killed a plausible and expensive line of work
+(re-decoding at L3/L5) before I started it, and pointed the blame at the learner.
+
+### E13.2 First run — **FAILED, and the rules said exactly why**
+
+MRR 0.191 vs unigram-frequency 0.196 vs chance 0.180. Worse than a frequency baseline.
+
+The rule dump was unambiguous: **every top rule was `cand:`-only.** The base had learned
+the marginal prior over candidate types ("which supersenses tend to be next tokens") and
+not one context-dependent rule. With no `ctx:`×`cand:` interaction, the scorer literally
+could not depend on context.
+
+### E13.3 Two separate causes, found in order
+
+**Cause 1 — marginals crowd out interactions.** `lift = (consequent − default) ×
+√support` systematically favours high-support single-term rules. Fixed with
+`order_quota`, reserving a share of the rule budget per antecedent order.
+
+That helped less than expected: the quota asked for 75–85% order-2 and got **2 rules**.
+So cross rules were being rejected at *generation*, not selection.
+
+**Cause 2 — pure-interaction structure is invisible to lift-based seeding.** Growth seeds
+from the top-*k* singles by |lift|. But for a given position, the positive and all eight
+negatives **share one context vector**, so every `ctx:` feature fires identically on both
+and its firing-weighted target equals the base rate — marginal lift *exactly zero*. Context
+features could never enter the seed pool, so no ctx×cand pair was ever generated. The two
+order-2 rules that did appear were cand×cand.
+
+This is the **XOR problem for greedy feature selection**: informative jointly, invisible
+marginally. Fixed with `seed_features`, which force-admits given indices to the seed pool
+regardless of lift. `test_rules_find_pure_interaction_only_when_seeded` is the regression
+test, and it asserts both halves — that the interaction is missed without seeding and found
+with it.
+
+**Also encoded:** every rule must touch a candidate feature (`must_include`). A
+context-only rule fires identically for all candidates, shifts every score by the same
+constant, and therefore *cannot* change a ranking — it would silently consume budget,
+and context features outnumber candidate features by the window size.
+
+### E13.4 After the fixes — real grammar, learned from data
+
+```
+IF ctx:prev1:PRONOUN       AND cand:AUXILIARY       THEN P(next) ~ 0.373   (default 0.112)
+IF ctx:prev1:AUXILIARY     AND cand:NEGATOR         THEN P(next) ~ 0.559
+IF ctx:prev1:DETERMINER    AND cand:noun.food       THEN P(next) ~ 0.596
+IF ctx:prev1:INFINITIVE_TO AND cand:verb.cognition  THEN P(next) ~ 0.503
+IF ctx:prev1:verb.motion   AND cand:PREPOSITION     THEN P(next) ~ 0.326
+IF ctx:prev2:WH_WORD       AND cand:AUXILIARY       THEN P(next) ~ 0.364
+```
+
+"he ___" takes an auxiliary; "was ___" takes *not*; "the ___" takes a noun; "to ___"
+takes a verb; "ran ___" takes a preposition; wh-questions invert to an auxiliary. That is
+English grammar in readable rules, at 3–5x the base rate.
+
+### E13.5 Beam, not `max_rules`, was the binding constraint
+
+Scaling `max_rules` saturated at 81 rules regardless (40 → 0.235, 80 → 0.244, 160/320/640 →
+0.244). Cause: `frontier = grown[:beam]` with `beam=24` caps how many order-2 rules survive
+per growth level, so the interaction supply was fixed at 24 no matter the rule budget.
+
+| config | MRR | hits@1 | hits@5 | hits@10 | rules |
+|---|---|---|---|---|---|
+| chance | 0.180 | — | — | — | — |
+| unigram frequency | 0.196 | 0.075 | 0.280 | 0.492 | 0 |
+| joint, beam 24 | 0.244 | **0.100** | 0.343 | 0.578 | 80 |
+| **joint, beam 200** | **0.257** | 0.095 | 0.403 | 0.635 | 257 |
+| joint, beam 400 | 0.254 | 0.085 | **0.415** | **0.680** | 457 |
+| oracle ceiling | 0.822 | 0.698 | — | — | — |
+
+Defaults are now `beam=200`, the measured MRR optimum. Note the tradeoff: hits@1 peaks at
+the *smallest* rule base (0.100 at 80 rules) and declines as rules are added, while hits@5
+and hits@10 keep improving. With 457 rules the firing-weighted blend averages over more
+rules, which sharpens mid-rank ordering and smooths the top. Raise the beam if recall
+matters more than top-1.
+
+### E13.6 Honest accounting
+
+**MRR 0.196 → 0.257 over the unigram baseline (+31% relative); hits@10 0.492 → 0.680.**
+That is the first result in this project that clearly beats a real baseline on a real
+language-modelling metric, and the scorer is a readable rule base rather than a black box.
+
+But it captures only **(0.257 − 0.180) / (0.822 − 0.180) ≈ 12%** of the available headroom
+above chance, and hits@1 stalls near 0.10. The remaining gap is a coverage problem: 257
+category-level rules over a 122 × 61 space of possible interactions is sparse, and rules at
+the supersense level cannot separate `bread` from `cake`. The oracle can, because it may use
+the full 61-dim signature.
+
+**Next, in order:** (1) more interactions — the beam curve had not flattened on hits@k;
+(2) order-3 rules *on this task* — worth retrying even though E12 found them useless for
+the marginal formulation, since ctx×ctx×cand is a different structure; (3) a bigger corpus,
+still the leading suspect at ~90K tokens; (4) finer candidate features for within-category
+discrimination — the one thing that can lift hits@1.
