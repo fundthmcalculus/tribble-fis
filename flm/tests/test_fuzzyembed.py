@@ -483,3 +483,85 @@ def test_growth_dedupes_feature_sets():
                                     min_interaction=-1.0, beam=100).fit(X, y)
     keys = [frozenset(r.features) for r in model.rules_]
     assert len(keys) == len(set(keys))
+
+
+def test_corpus_split_is_disjoint_by_sentence():
+    """Held-out sentences must not appear in training -- the original leak."""
+    sents = [[f"s{i}", f"w{i}", f"x{i}"] for i in range(50)]
+    c = Corpus("t", sents, ["a"], {"a": 1})
+    train, test = c.split(test_frac=0.2, seed=0)
+    assert len(train.sentences) + len(test.sentences) == len(sents)
+    tr = {tuple(s) for s in train.sentences}
+    te = {tuple(s) for s in test.sentences}
+    assert not (tr & te), "train and test share sentences"
+    # Vocabulary is shared on purpose, so the candidate set is comparable.
+    assert train.vocabulary is c.vocabulary and test.vocabulary is c.vocabulary
+
+
+# --------------------------------------------------------------------------
+# Generation / NCE correction
+# --------------------------------------------------------------------------
+
+def test_nce_correction_widens_dynamic_range():
+    """Raw scores are too flat to be a distribution; the odds ratio is not.
+
+    Regression test for the finding that normalising raw NCE scores gave perplexity
+    2478 against a 2897 uniform floor, while the NCE inversion gave 386.
+    """
+    s = np.array([0.05, 0.10, 0.20, 0.40, 0.60])
+    q = np.full(len(s), 1.0 / len(s))
+
+    raw = s / s.sum()
+    odds = q * (s / (1 - s))
+    corrected = odds / odds.sum()
+
+    raw_range = raw.max() / raw.min()
+    cor_range = corrected.max() / corrected.min()
+    assert cor_range > raw_range * 2, (raw_range, cor_range)
+    assert corrected.sum() == pytest.approx(1.0)
+
+
+def test_nce_correction_reduces_to_noise_prior_on_constant_scores():
+    """With an uninformative scorer the corrected distribution *is* the unigram prior.
+
+    This is what makes the perplexity decomposition clean: any gain over the unigram
+    baseline is exactly what the context rules contribute, since a constant score
+    recovers the prior identically.
+    """
+    q = np.array([0.5, 0.3, 0.15, 0.05])
+    for const in (0.05, 0.3, 0.9):
+        s = np.full(len(q), const)
+        w = q * (s / (1 - s))
+        assert np.allclose(w / w.sum(), q)
+
+
+def test_generator_factorised_scoring_matches_direct():
+    """The ctx/cand factorisation must equal evaluating the rule base directly."""
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+
+    rng = np.random.default_rng(29)
+    n, ctx_w, cand_w = 500, 6, 4
+    X = (rng.random((n, ctx_w + cand_w)) < 0.4).astype(float)
+    y = np.clip(X[:, 0] * X[:, ctx_w] + 0.1 * X[:, ctx_w + 1], 0, 1)
+    model = MembershipRuleRegressor(
+        max_rules=12, max_order=2, must_include=set(range(ctx_w, ctx_w + cand_w)),
+        seed_features=set(range(ctx_w))).fit(X, y)
+
+    ctx = (rng.random(ctx_w) < 0.5).astype(float)
+    cands = (rng.random((7, cand_w)) < 0.5).astype(float)
+
+    direct = model.predict(np.hstack([np.repeat(ctx[None, :], 7, axis=0), cands]))
+
+    # Factorised: scalar context part per rule x precomputed candidate part.
+    num = np.zeros(7)
+    den = np.zeros(7)
+    for rule in model.rules_:
+        c_idx = [f for f in rule.features if f < ctx_w]
+        d_idx = [f - ctx_w for f in rule.features if f >= ctx_w]
+        cf = ctx[c_idx].prod() if c_idx else 1.0
+        fire = cf * (cands[:, d_idx].prod(axis=1) if d_idx else 1.0)
+        num += fire * rule.consequent
+        den += fire
+    eps = 0.05
+    fact = np.clip((num + eps * model.default_) / (den + eps), 0.0, 1.0)
+    assert np.allclose(direct, fact, atol=1e-9)

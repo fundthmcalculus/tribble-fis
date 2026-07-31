@@ -10,7 +10,8 @@ recover names from a dense model after the fact.
 | | Experiment | Status | Doc |
 |---|---|---|---|
 | **A** | **Fuzzy embedding model** — coordinates are membership degrees in named nodes of a curated lexical hierarchy | **built & measured** (WordNet backend; M0 coverage 96.7%, exact rollup PASS, L2 similarity gap +0.278) | [`FUZZY_EMBEDDING_PLAN.md`](FUZZY_EMBEDDING_PLAN.md) · [`fuzzyembed/`](fuzzyembed/) |
-| **A2** | **Fuzzy sequence + fuzzy syntax + fuzzy decoder** — next-token prediction over named semantic *and* syntactic dimensions, then Zadeh linguistic approximation | built; rules at logreg parity (bal-acc 0.528 → **0.569**), category-correct decoding; **joint ranker beats unigram: MRR 0.189 → 0.319, hits@1 0.068 → 0.142**; generation still not grammatical | [`fuzzyembed/README.md`](fuzzyembed/README.md) |
+| **A2** | **Fuzzy sequence + fuzzy syntax + fuzzy decoder** — next-token prediction over named semantic *and* syntactic dimensions, then Zadeh linguistic approximation | built; rules at logreg parity (bal-acc 0.528 → **0.569**), category-correct decoding; **as an LM: perplexity 386 vs 473 unigram, 279 bigram** on held-out text; generation not yet grammatical | [`fuzzyembed/README.md`](fuzzyembed/README.md) |
+| **A3** | **Fuzzy language model** — generation + perplexity, vs n-gram baselines on identical data | built; **beats unigram (386 vs 473), level with trigram (370), loses to bigram (279)** | [`fuzzyembed/generate.py`](fuzzyembed/generate.py) · [`baselines.py`](fuzzyembed/baselines.py) |
 | **B** | **FIS head on a frozen neural embedding model** — sentiment analysis, TSK heads vs. linear probe | harness built & smoke-tested; not run on real data | [`FIS_ON_EMBEDDINGS_PLAN.md`](FIS_ON_EMBEDDINGS_PLAN.md) · [`exp_b/`](exp_b/) |
 
 **Experiment A is implemented** in [`fuzzyembed/`](fuzzyembed/) — see that README for

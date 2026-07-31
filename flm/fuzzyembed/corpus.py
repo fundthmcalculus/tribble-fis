@@ -61,6 +61,30 @@ class Corpus:
                 f"{self.n_tokens:,} tokens, {len(self.vocabulary):,} types "
                 f"(top: {top})")
 
+    def split(self, test_frac: float = 0.2, seed: int = 0) -> tuple[Corpus, Corpus]:
+        """Sentence-level train/test split, sharing one vocabulary.
+
+        Splitting by *sentence* rather than by position is essential and was missing
+        at first: the joint ranker's ``build`` and ``evaluate`` both iterated the full
+        sentence list under different shuffles, so held-out positions came from
+        sentences the model had trained on. Every ranking number measured before this
+        existed is optimistic.
+
+        Vocabulary and counts stay shared, deliberately -- they are properties of the
+        lexicon and the frequency prior, not of the split, and re-deriving them per
+        side would change the candidate set between train and test and make the two
+        incomparable.
+        """
+        import random
+        idx = list(range(len(self.sentences)))
+        random.Random(seed).shuffle(idx)
+        n_test = max(1, int(len(idx) * test_frac))
+        test_idx, train_idx = set(idx[:n_test]), idx[n_test:]
+        train = [self.sentences[i] for i in sorted(train_idx)]
+        test = [self.sentences[i] for i in sorted(test_idx)]
+        return (Corpus(f"{self.name}/train", train, self.vocabulary, self.counts),
+                Corpus(f"{self.name}/test", test, self.vocabulary, self.counts))
+
     def truncate_vocabulary(self, max_types: int | None) -> Corpus:
         """Keep only the ``max_types`` most frequent types (a small-model knob)."""
         if max_types is None or max_types >= len(self.vocabulary):

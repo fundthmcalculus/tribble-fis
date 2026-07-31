@@ -846,3 +846,132 @@ corpus.
 vocabulary diversity makes the 20-candidate ranking harder. So the *level* is
 corpus-dependent while the *trend* replicates — which is exactly the pair of claims worth
 making.
+
+---
+
+## E17 — Evaluation leak in my own ranking numbers — **FOUND AND FIXED**
+
+Discovered while planning the perplexity comparison, not by a failing test.
+
+`JointNextTokenRanker.build` and `.evaluate` both iterated `corpus.sentences` under
+different shuffles. Different *positions*, but the **same sentences** — so held-out
+positions came from text the model had trained on. **Every ranking number reported before
+this (E13-E16, including MRR 0.319) is optimistic.**
+
+Fixed with `Corpus.split`, a sentence-level train/test split. Vocabulary and counts stay
+shared on purpose: they are properties of the lexicon and the frequency prior, not of the
+split, and re-deriving them per side would change the candidate set between train and test
+and make the two incomparable. `test_corpus_split_is_disjoint_by_sentence` guards it.
+
+**Lesson.** "Different random seed" is not a split. I had reached for a seed offset in
+`evaluate` and mistaken it for held-out data; it only reorders the same material.
+
+## E18 — Fuzzy generation and the comparison to conventional LMs
+
+**What.** `generate.py` — a language model built on the joint ranker rather than the
+marginal decoder, plus `baselines.py` for the comparison.
+
+**On GPT-2.** It cannot run here: the weights come from Hugging Face, outside the egress
+allowlist. `baselines.gpt2_perplexity` implements it for a machine that can reach HF,
+under the same restriction so the number is comparable. But the comparison is also
+scientifically weak on its own: GPT-2 saw ~40GB, this model sees ~90K tokens, so GPT-2
+wins by a margin that measures the *data* gap, not either method. **The controlled
+baseline at this scale is an n-gram LM on the same corpus**, which is what was run — and
+n-grams are genuinely strong on 90K tokens.
+
+### E18.1 Making the comparison possible at all
+
+A joint *score* is not a distribution, so there was no shared yardstick with any
+conventional LM. Normalising the scores over the whole vocabulary gives `p(w | context)`
+and therefore perplexity. Comparability rules applied to every model: same sentence
+split, same vocabulary, and the same restriction to positions whose gold token the fuzzy
+model can represent (94.5% of held-out tokens; the rest are skipped and the coverage is
+reported, because a floor probability on unrepresentable words would let the floor set the
+number).
+
+### E18.2 Raw score normalisation — **FAILED badly**
+
+| model | perplexity |
+|---|---|
+| uniform floor | 2897.0 |
+| **fuzzy, raw normalised** | **2477.8** |
+| 2-gram | 279.2 |
+
+Almost no information over uniform, and **9x worse than a bigram**. The generation trace
+showed why immediately: every alternative sat at p ≈ 0.001-0.002. The distribution was
+nearly flat.
+
+**Why.** The scores are bounded in [0, 1] and span less than one order of magnitude
+across candidates, while a language model needs ratios of ~10^3 between likely and
+unlikely words. No amount of rule-learning fixes that: it is the *output transform* that
+was wrong.
+
+**This also reframes E13-E16.** MRR 0.319 looked respectable because ranking against 19
+frequency-sampled distractors mostly rewards getting the **category** right. Perplexity
+over 2897 candidates demands the **word**, and exposed that the model had very little
+word-level information. Two metrics, very different verdicts, and the harsher one is the
+more honest for a generative model.
+
+### E18.3 The NCE inversion — **WORKED, 6.4x**
+
+The ranker was trained contrastively, so its output is not `p` but
+
+    s = p(w|ctx) / (p(w|ctx) + k*q(w))
+
+with `q` the noise distribution the negatives were drawn from. Solving for `p`:
+
+    p(w|ctx)  proportional to  q(w) * s / (1 - s)
+
+The odds ratio `s/(1-s)` is unbounded, so it can express the needed dynamic range, and
+multiplying by `q` restores the unigram information the contrastive objective deliberately
+factored out — the model was never asked to learn frequency, because negatives were drawn
+*from* frequency.
+
+| model | perplexity | nll |
+|---|---|---|
+| uniform (floor) | 2897.0 | 7.971 |
+| 1-gram (same data) | 472.9 | 6.159 |
+| **2-gram (same data)** | **279.2** | 5.632 |
+| 3-gram (same data) | 370.2 | 5.914 |
+| fuzzy, raw normalised | 2477.8 | 7.815 |
+| **fuzzy, NCE-corrected** | **385.8** | 5.955 |
+
+**Honest positioning: the fuzzy LM beats a unigram (386 vs 473), is level with a trigram
+(386 vs 370), and loses to a well-smoothed bigram (386 vs 279).** On 90K tokens, a
+2-token window, and 860 human-readable rules.
+
+**The gain over unigram is exactly what the rules contribute, and that is provable rather
+than asserted:** a constant score makes the NCE inversion reduce *identically* to `q`, i.e.
+the unigram model (`test_nce_correction_reduces_to_noise_prior_on_constant_scores`). So
+473 -> 386 is precisely the context rules' contribution, with no double-counting of
+frequency.
+
+Generation is visibly better too — function words now appear at realistic rates
+(`the` 0.165, `and` 0.118, `to` 0.094 as top alternatives) instead of the earlier
+category-salad — though still not grammatical.
+
+### E18.4 Efficiency of generation
+
+A step scores the whole vocabulary. Under the product t-norm each rule's antecedent splits
+into a context part and a candidate part, so firing factorises:
+
+    firing(rule, w) = prod(ctx values) x prod(cand values for w)
+
+The candidate half is precomputed once into an `(n_vocab, n_rules)` matrix and a step is
+one scalar-vector scaling plus two reductions.
+`test_generator_factorised_scoring_matches_direct` asserts it equals evaluating the rule
+base directly.
+
+## Standing summary (updated)
+
+**Beats a real baseline:** ranking MRR over unigram; perplexity 386 vs 473 unigram.
+**Loses to:** a smoothed bigram (279). **Untested:** GPT-2 (blocked; and a data-gap
+comparison anyway).
+
+**Ruled out:** context width, rule order, Gaussian antecedents, symmetric decode
+similarity, representation coarseness, Cython, raw score normalisation (E18.2).
+
+**Confirmed binding:** corpus size (E16); within-category discrimination — supersense
+rules cannot separate `bread` from `cake`, which caps both hits@1 and perplexity.
+
+**Corrected:** all pre-E17 ranking numbers were measured with train/test sentence overlap.

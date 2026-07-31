@@ -149,7 +149,9 @@ that gap, not to hobble the model.
 | `rules.py` | **membership rule learner** — TSK for inputs that are already memberships |
 | `sequence.py` | fuzzy sequence model — per-dimension marginal prediction |
 | `joint.py` | **joint next-token ranker** — scores (context, candidate) pairs; the version that works |
-| `decode.py` | fuzzy decoder — Zadeh linguistic approximation |
+| `decode.py` | fuzzy decoder — Zadeh linguistic approximation (marginal pipeline) |
+| `generate.py` | **fuzzy language model** — generation + perplexity from the joint ranker |
+| `baselines.py` | n-gram LMs on identical data, and a GPT-2 path for machines with HF access |
 | `run_flm.py` | driver: `--stage coverage|embed|sequence|generate|all` |
 
 ## The rule learner, and why TRIBBLE's estimators do not fit here
