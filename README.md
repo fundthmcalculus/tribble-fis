@@ -1,3 +1,3 @@
 # Tribble FIS
 
-Financial Forecasting System project.
+Building FIS using a consequent first approach.
