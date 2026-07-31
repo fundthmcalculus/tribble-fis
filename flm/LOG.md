@@ -35,6 +35,10 @@ Convention: **WORKED** / **FAILED** / **PARTIAL**, each with a why.
 | E16 | Corpus size | CONFIRMED binding |
 | E17 | Evaluation leak in my own numbers | FOUND AND FIXED |
 | E18 | Generation + perplexity vs n-gram LMs | beats unigram, loses to bigram |
+| E19 | Closing the bigram gap: lexicalise the context, not the candidate | WORKED; mixture beats bigram |
+| E20 | Why n-grams work; a correction to my own trigram claim | diagnosis + correction |
+| E21 | Fuzzy tokenizer and linguistic parameter space (`fuzzytok/`) | built; 2 bugs found by running it |
+| E22 | The parameter space wired into the ranker; size/quality frontier | space FAILED (dominated); smallness WORKED |
 
 ---
 
@@ -1180,7 +1184,7 @@ structurally cannot hold.
 
 ---
 
-## Standing summary — CURRENT (as of E19)
+## Standing summary (SUPERSEDED — see the final one)
 
 **Best results.** As a language model: perplexity **363.4**, beating unigram (472.9) and
 trigram (370.2), losing to bigram (279.2). **Mixed with a bigram it beats the bigram alone**
@@ -1392,3 +1396,181 @@ same split -- has not been run. Until it is, the honest claim is only that the e
 produces sensible graded features on inspection, not that it improves the language model.
 
 54 tests pass (17 new for this module, including regression tests for both bugs above).
+
+---
+
+## E22 — The parameter space wired into the ranker — **FAILED (strictly dominated)**
+
+E21.5 said the honest claim was only that the encoder produces sensible features on
+inspection, and that the perplexity comparison had not been run. It has now been run.
+
+### E22.1 The A/B: worse alone, at every budget
+
+Same split, same rule ceiling (2500), same held-out positions, same candidate vocabulary.
+Wiring cost nothing structural: `JointNextTokenRanker` and `FuzzyGenerator` need only
+`_token_vector`, `_output_names`, and an optional `lexemes` list, so `ParameterFeaturiser`
+swaps the representation without the ranker changing at all.
+
+| representation | dims | ppl | rules | fit |
+|---|---|---|---|---|
+| WordNet sem+syntax (baseline) | 261 | **324.8** | 860 | 68s |
+| linguistic parameters | 267 | 360.0 | 841 | **14s** |
+| linguistic params, fuzzy tokenizer OFF | 267 | 354.9 | 841 | 10s |
+| combined (WN + params) | 328 | 364.2 | 901 | 64s |
+| 2-gram, same data, tuned | — | 256.3 | — | — |
+
+Replicated at a larger evaluation budget with identical ordering (365.0 / 397.0 / 394.3 /
+410.4), so the ranking is not an artefact of one eval sample.
+
+**Not a budget artefact.** Both spaces saturate at ~850 rules out of the same 2500 ceiling,
+so the parameter space is not simply being starved of rules relative to its dimensionality.
+
+**The fuzzy tokenizer made it slightly worse** (360.0 with graded readings vs 354.9 encoding
+the surface form directly). The multi-reading machinery costs accuracy here rather than
+paying for itself. Two readings of `hoping` mean the parameter vector is a blend of two
+lemmas' features, and blending is exactly what a next-token decision does not want when one
+reading is right.
+
+### E22.2 Complementarity: none, in any combination
+
+This is the test that mattered, because E19.4 established that losing head-to-head is a
+different question from carrying no information -- the fuzzy model lost to a bigram and
+still improved a mixture with it. So every pair was swept on **identical positions**.
+
+```
+alone:   wn 325.0    lp 346.9    2g 256.3
+wn/2g:   BEST lam=0.2  ppl=253.9      <- beats the bigram alone; replicates E19.4 in sign
+lp/2g:   BEST lam=0.0  ppl=256.3      <- adds nothing
+lp/wn:   BEST lam=0.0  ppl=325.0      <- adds nothing
+lp on top of wn+2g:   0.0=254.6  0.1=257.7  0.2=261.4  0.3=265.7   (monotonically worse)
+```
+
+**Optimal weight is zero, three times out of three.** That is a much stronger negative than
+"loses head-to-head": the space is *strictly dominated*, carrying no information the
+WordNet space or the bigram does not already have.
+
+**Why, most likely.** The parameter space collapses WordNet's 45 supersenses into 14 coarse
+semantic groups. It buys morphology, orthographic shape, and proper nouns, and pays in
+semantic resolution -- and on this task the semantic block is where the win lives. The
+purchase was real; the price was higher than the goods. Note this does *not* contradict
+E13.1 (representation coarseness was not the blocker): E13.1 tested whether a *finer*
+representation helps, this tests whether a *coarser* one hurts, and the answer to both can
+be yes without inconsistency once discrimination is already near its ceiling.
+
+**A bug in my own sweep, worth recording.** The two generators restrict to different
+decodable vocabularies (2897 vs 3000 -- a word the WordNet space cannot represent is not
+necessarily one the parameter space cannot), so their distributions are over different
+column sets. Mixing them elementwise raised on the shape mismatch, which was lucky: had the
+widths matched by coincidence it would have silently compared different words and produced
+a plausible wrong number. Distributions are now projected onto the shared vocabulary and
+renormalised explicitly.
+
+### E22.3 The size/quality frontier — the knee is very sharp
+
+Motivated by the requirement that this train on local compute without servers. Learned
+parameters counted honestly: one consequent per rule plus its antecedent indices. The
+membership degrees are *not* learned -- that is precisely why the model is small (E10:
+inputs are already memberships, so no membership function is fitted).
+
+| space | budget | rules | learned params | ppl | fit | ms/tok |
+|---|---|---|---|---|---|---|
+| params (lp) | 100 | 100 | 285 | 375.3 | 10.5s | 0.82 |
+| params (lp) | 250 | 250 | 712 | 365.4 | 6.8s | 0.98 |
+| params (lp) | 1000 | 841 | 2482 | 360.0 | 6.9s | 3.56 |
+| wordnet (wn) | 100 | 100 | **285** | **341.2** | 65.0s | 1.45 |
+| wordnet (wn) | 500 | 500 | 1440 | 329.8 | 58.5s | 3.58 |
+| wordnet (wn) | 2500 | 860 | 2520 | 324.8 | 61.7s | 4.64 |
+| 1-gram | — | — | 2,966 stored counts | 448.4 | — | — |
+| 2-gram | — | — | 34,021 stored counts | 264.2 | — | — |
+| 3-gram | — | — | 108,511 stored counts | 269.6 | — | — |
+
+**285 learned parameters reach 341.2, within 5% of the 860-rule model.** An 8.8x increase in
+parameters (285 -> 2520) buys 4.8% perplexity. So the rule base can be shrunk hard almost
+for free, and against the n-gram column that is the compression result: 285 parameters land
+within 29% of a bigram needing **34,021 stored counts**, two orders of magnitude more.
+Fuzzy rules generalise across words where an n-gram stores each context separately.
+
+**Shrinking the rule base does NOT shrink training time** (65.0s at 100 rules, 61.7s at
+2500). Fit cost is dominated by featurisation and the candidate-growth GEMM over the full
+seed pool, not by how many rules survive. The lever for training time is the seed pool and
+negatives per position, not `max_rules`. Inference *does* scale with rule count (1.45 vs
+4.64 ms/token), so the small end is the right place to be for serving.
+
+### E22.4 Complementarity survives shrinking, but the effect is small — and a correction
+
+| rules | params | alone | bigram | best mix | lam | gain over bigram |
+|---|---|---|---|---|---|---|
+| 100 | 285 | 341.2 | 256.3 | 255.3 | 0.1 | **0.39%** |
+| 250 | 712 | 335.2 | 256.3 | 255.2 | 0.1 | 0.43% |
+| 860 | 2520 | 324.8 | 256.3 | 253.9 | 0.2 | 0.94% |
+
+285 parameters do carry information a 34,021-count bigram lacks: the sign replicates at
+every size and the optimal weight stays positive.
+
+**Correction to an expectation E19.4 set.** That entry measured the mixture gain as ~4.7%
+(263.1 vs 276.1). Here, at the same rule count, it is 0.94%. The difference is the fuzzy
+side's training budget (5000 positions here). So the complementarity result replicates in
+*sign* at every size but its *effect size* is budget-dependent and is well under one percent
+at this setting -- E19.4's number should not be quoted as what to expect at a small budget.
+This also reinforces E16: data, not model size, is the binding constraint.
+
+### E22.5 What survives from E21
+
+The negative result is about the *feature space*, not everything in `fuzzytok/`. Three
+things stand on their own and are worth keeping:
+
+* **The rules are more readable.** `IF ctx:prev1:AUX AND cand:Polarity=Neg` and
+  `IF ctx:prev1:DET AND cand:Sem=Entity THEN P(next) ~ 0.262 (support=892, lift=+4.49)` are
+  grammar, stated as grammar. The WordNet space cannot say `Polarity=Neg` at all.
+* **It fits 9x faster** (6.8s vs 61.7s at equal rule count), because the seed pool has far
+  fewer live features. Real, but speed is not the binding cost at this scale.
+* **The hybrid vocabulary sizing and the tokenizer's graded lexical access** are independent
+  of the parameter space and were validated in E21.1--E21.3.
+
+The honest verdict: **the linguistic parameter space is not the way to close the bigram gap.**
+It is a better *reporting* language and a worse *predictive* one. If it earns a place later
+it will be as a readability layer over a representation that discriminates, or on a task
+where morphology and proper nouns matter more than lexical semantics -- not as a replacement
+for the WordNet block on next-token prediction.
+
+61 tests pass (7 new, pinning the two interface constraints that would silently corrupt the
+ranker: identity dims must stay last for the candidate mask, and `""` must map to an
+explicit `BOUNDARY` dimension rather than an all-zero vector).
+
+---
+
+## Standing summary — CURRENT (as of E22)
+
+**Best results.** As a language model: perplexity **324.8** at 860 rules / 2520 learned
+parameters. It beats a unigram (448.4) and loses head-to-head to both a bigram (256.3) and
+a tuned trigram (269.6) on this data. **Mixing with a bigram beats the bigram alone**
+(253.9 vs 256.3, gain 0.94%), replicated in sign down to 285 parameters (0.39%).
+Representation: coverage 96.7%, exact multi-resolution rollup asserted in CI, L2 similarity
+gap +0.278, explainable typo robustness.
+
+**Smallness.** 285 learned parameters get within 5% of the full model, against 34,021 stored
+counts for a bigram. The model is small structurally, because memberships are given rather
+than fitted (E10). Training is seconds-to-a-minute on one CPU core, no GPU. Rule count
+drives inference cost, not training cost.
+
+**Honest framing.** Fuzzy rules do not replace an n-gram LM at this scale. They capture
+something n-grams miss, in a readable form, worth a small but positive share of a mixture --
+under 1% at the current training budget, more at larger budgets (E19.4).
+
+**Ruled out:** context width (E12), rule order for ranking (E12, E15), Gaussian antecedents
+(E9/E10), symmetric decode similarity (E11), representation coarseness as the blocker
+(E13.1), Cython (E14 -- BLAS-bound), raw score normalisation (E18.2), candidate-side
+lexicalisation (E19.1/E19.2), **the linguistic parameter space as a replacement feature
+space (E22 -- strictly dominated), and the fuzzy tokenizer's graded readings as an accuracy
+win (E22.1)**.
+
+**Confirmed binding:** corpus size (E16, replicated on Brown; reinforced by E22.4);
+within-category discrimination, partly relieved by context lexicalisation (E19).
+
+**Corrected along the way:** the 0.569 balanced accuracy (E12.1, bug-inflated); all pre-E17
+ranking numbers (train/test sentence overlap); the trigram baseline (E20.2, mis-weighted);
+E19.4's mixture gain quoted without its budget dependence (E22.4).
+
+**Open:** generation is still not grammatical; hits@1 caps near 0.14; GPT-2 untested
+(blocked, and a data-gap comparison anyway); no neural-embedding comparison; Experiment B's
+real encoder and SST paths unrun.

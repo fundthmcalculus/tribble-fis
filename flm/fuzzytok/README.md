@@ -86,13 +86,45 @@ project. Three specific reasons for these choices:
   variance across cultures, and evaluation is the axis a sentiment task needs — the thing
   Roget's antonymous pairs would have supplied structurally and WordNet does not.
 
-## Status
+## Status — measured, and the parameter space lost
 
-Implemented and unit-tested in isolation: the tokenizer's hybrid vocabulary induction, fuzzy
-segmentation, and the parameter encoder. **Not yet wired into the joint ranker**, so there is
-no perplexity number for it — that is the next step and the only honest thing to say about
-its value so far. The comparison to make is against the current 61-dimensional
-semantic+syntax space at matched rule budget.
+Wired into the joint ranker via [`featuriser.py`](featuriser.py) and measured on the same
+split, rule ceiling, and held-out positions as the existing space (`../LOG.md` E22):
+
+| representation | dims | ppl | rules | fit |
+|---|---|---|---|---|
+| WordNet sem+syntax (baseline) | 261 | **324.8** | 860 | 68s |
+| linguistic parameters | 267 | 360.0 | 841 | **14s** |
+| linguistic params, fuzzy tokenizer OFF | 267 | 354.9 | 841 | 10s |
+| combined (WN + params) | 328 | 364.2 | 901 | 64s |
+
+**Worse alone, and complementary to nothing.** Mixture sweeps on identical positions put the
+optimal weight on the parameter space at **zero** in all three combinations tested — against
+a bigram, against the WordNet space, and on top of an already-good WordNet+bigram mixture.
+That is a stronger negative than losing head-to-head: the space is *strictly dominated*. It
+is not a rule-budget artefact either (both spaces saturate at ~850 rules of a 2500 ceiling).
+
+**The graded readings cost accuracy.** Turning the fuzzy tokenizer off *improved* perplexity
+(354.9 vs 360.0). Blending two readings of `hoping` blends two lemmas' features, and that is
+what a next-token decision does not want when one reading is correct.
+
+**Most likely why.** This space collapses WordNet's 45 supersenses into 14 coarse semantic
+groups: it buys morphology, orthographic shape, and proper nouns, and pays in semantic
+resolution — and the semantic block is where the predictive win lives on this task.
+
+### What survives
+
+- **Readability.** `IF ctx:prev1:DET AND cand:Sem=Entity THEN P(next) ~ 0.262
+  (support=892, lift=+4.49)` is grammar stated as grammar; the WordNet space cannot say
+  `Polarity=Neg` at all. This is a better *reporting* language and a worse *predictive* one.
+- **Speed.** 9× faster to fit at equal rule count (6.8s vs 61.7s), because the seed pool has
+  far fewer live features. Real, but speed is not the binding cost at this scale.
+- **The hybrid vocabulary sizing and graded lexical access** (E21.1–E21.3) are independent of
+  the parameter space and stand on their own.
+
+The honest verdict: not the way to close the bigram gap. If it earns a place later it will be
+as a readability layer over a representation that discriminates, or on a task where
+morphology and proper nouns matter more than lexical semantics.
 
 ## References
 
