@@ -914,3 +914,85 @@ def test_generator_context_matches_the_ranker_slot_definition():
     r = RelationalNextTokenRanker(F(), lookback=64)
     toks = "the dog was very happy".split()
     assert r._context_vector(toks, len(toks)).shape[0] == r.n_slots() * 2
+
+
+def _toy_ranker_for_classes():
+    """A ranker over a tiny deterministic corpus, for the first-order tests."""
+    from flm.fuzzyembed.joint import JointNextTokenRanker
+
+    class F:
+        lexemes = ["the", "did"]
+
+        def _output_names(self):
+            return ["DET", "AUX", "NOUN", "=the", "=did"]
+
+        def _token_vector(self, token):
+            v = np.zeros(5, dtype=np.float32)
+            if not token:
+                return v
+            if token == "the":
+                v[0] = 1.0; v[3] = 1.0
+            elif token == "did":
+                v[1] = 1.0; v[4] = 1.0
+            else:
+                v[2] = 1.0
+            return v
+
+    sents = [["the", "dog", "did", "not", "run"], ["the", "cat", "did", "not", "sleep"],
+             ["the", "bird", "did", "not", "fly"], ["the", "dog", "saw", "the", "cat"]] * 12
+    counts = {}
+    for s in sents:
+        for t in s:
+            counts[t] = counts.get(t, 0) + 1
+    vocab = sorted(counts, key=lambda w: (-counts[w], w))
+    corpus = Corpus("toy", sents, vocab, counts)
+    j = JointNextTokenRanker(F(), window=2, n_negatives=4, max_rules=200, max_order=2,
+                             beam=100, lexeme_side="ctx", seed=3)
+    j.fit(corpus, vocab, max_positions=200, verbose=False)
+    return j, corpus, vocab, counts
+
+
+def test_context_class_miner_finds_conjunctive_classes():
+    """The point of mining context-only classes (E28.2).
+
+    Reusing the zero-order base cannot produce these: ``must_include`` plus ``max_order=2``
+    leaves exactly one context term per rule, so every class was a single feature and the
+    ``firing`` and ``specific`` weightings were provably identical.
+    """
+    from flm.fuzzyembed.firstorder import ContextClassMiner
+    j, corpus, vocab, counts = _toy_ranker_for_classes()
+    m = ContextClassMiner(j, vocab, counts=counts, alpha=1.0, min_mass=1.0,
+                          max_order=2).fit(corpus, max_positions=200)
+    assert m.n_ctx.max() >= 2, "no conjunctive context class was mined"
+    assert len(m.class_names) == len(m.ctx_cols)
+    # Every class distribution is a distribution.
+    assert np.allclose(m.P.sum(axis=1), 1.0, atol=1e-4)
+    assert (m.info_gain_ >= 0).all()
+
+
+def test_first_order_learns_which_word_not_just_which_category():
+    """The capability the scalar consequent structurally lacks.
+
+    In the toy corpus `did` is always followed by `not`. A zero-order rule can only say "a
+    negator follows"; a word-level consequent must put its mass on `not` specifically.
+    """
+    from flm.fuzzyembed.firstorder import ContextClassMiner
+    j, corpus, vocab, counts = _toy_ranker_for_classes()
+    m = ContextClassMiner(j, vocab, counts=counts, alpha=0.5, min_mass=1.0,
+                          max_order=2).fit(corpus, max_positions=400)
+    p = m.distribution(["the", "dog", "did"])
+    assert m.words[int(np.argmax(p))] == "not", dict(
+        zip(m.words, np.round(p, 3)))
+
+
+def test_smoothing_alpha_monotonically_flattens_the_classes():
+    """alpha is the dominant parameter (E28.3), so its direction must be pinned."""
+    from flm.fuzzyembed.firstorder import ContextClassMiner
+    j, corpus, vocab, counts = _toy_ranker_for_classes()
+    ent = []
+    for alpha in (0.5, 50.0):
+        m = ContextClassMiner(j, vocab, counts=counts, alpha=alpha, min_mass=1.0,
+                              max_order=2).fit(corpus, max_positions=200)
+        P = m.P.astype(np.float64)
+        ent.append(float((-(P * np.log(np.maximum(P, 1e-12))).sum(axis=1)).mean()))
+    assert ent[1] > ent[0], "more smoothing must not sharpen the distributions"

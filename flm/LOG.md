@@ -44,6 +44,7 @@ Convention: **WORKED** / **FAILED** / **PARTIAL**, each with a why.
 | E25 | Open-class rule quota | FAILED (no effect); found the real bug was `top_k=20` |
 | E26 | Wider context windows (2-32) | FAILED monotonically; spurious long-range rules dilute |
 | E27 | Significance gating and relational slots | both FAILED; long-range rules are real but redundant |
+| E28 | Word-level consequents (first-order TSK) | **WORKED** — first mixture to beat the bigram (-10.5%) |
 
 ---
 
@@ -2308,7 +2309,7 @@ survives a narrow search and fails a wide one).
 
 ---
 
-## Standing summary — CURRENT (as of E27)
+## Standing summary (SUPERSEDED — see the final one)
 
 **Best results.** 1M-token narrative corpus, window 2, 20,000 training positions: perplexity
 **317.5** against a bigram's 253.3, optimal mixture weight zero. On the 87K-token children's
@@ -2356,3 +2357,185 @@ this one.
 
 **Open:** hits@1 caps near 0.14. GPT-2 untested (blocked, and a data-gap comparison anyway). No
 neural-embedding comparison. Experiment B's real encoder and SST paths unrun.
+
+---
+
+## E28 — Word-level consequents (first-order TSK) — **the first architecture to beat the bigram**
+
+E27.5's conclusion was that the ceiling is the *shape* of the consequent: a zero-order rule
+assigns one scalar to every word matching its antecedent, so it can say "a noun follows" and
+never "which noun". Six refuted hypotheses had all left that untouched. This replaces the scalar
+with a word distribution per rule.
+
+### E28.1 Formulation, and why the obvious first-order is the wrong one
+
+Classic Takagi-Sugeno makes the consequent linear in the inputs. Here that means linear in the
+*candidate's* features -- and it would not help, because those are the same coarse categories the
+antecedent already uses. "Prefer noun.person over noun.substance" is already expressible in the
+zero-order system as two rules; that route buys parameter efficiency, not capability.
+
+What is missing is **word identity**, so:
+
+    p(w | ctx)  =  sum_r  omega_r(ctx) . p_r(w)  /  sum_r omega_r(ctx)
+
+with ``omega_r`` the rule's context-side firing and ``p_r(w)`` the word distribution observed
+when it fires. Each rule becomes a soft, *named*, overlapping context class with its own
+next-word distribution. This is a **fuzzy class-based language model** -- the graded analogue of
+class-based n-grams (Brown, Della Pietra, deSouza, Lai & Mercer, *Class-Based n-gram Models of
+Natural Language*, Computational Linguistics 18(4), 1992), where classes were a hard clustering.
+
+Two structural consequences. **The NCE inversion disappears** -- ``p_r(w)`` are already
+distributions over words, so there is no ``q(w).s/(1-s)`` step and no double-counting of the
+unigram prior, which was the E19 failure. And **``must_include`` inverts**: it was correct for
+scalar consequents (a context-only rule shifts every candidate equally and cannot change a
+ranking) and is *wrong* here, because a context-only rule is exactly a class.
+
+That mattered immediately. Reusing the zero-order rule base gives classes that are all **single
+features** -- ``must_include`` plus ``max_order=2`` leaves exactly one context term per rule --
+which is why the ``firing`` and ``specific`` weightings scored *identically*: ``n_ctx`` was
+constant at 1. So a ``ContextClassMiner`` was added that drops the constraint and selects
+context-only conjunctions by **firing-weighted information gain** about the next word, the
+decision-tree criterion applied to fuzzy memberships. Lift cannot be used, being zero by
+construction for context-only antecedents under the NCE target.
+
+### E28.2 Results
+
+Same protocol as E26/E27: 1M-token corpus, same split, positions >= 32, bigram control.
+
+| model | ppl | params | classes |
+|---|---|---|---|
+| zero-order TSK (scalar consequents) | 355.5 | 7,944 | 2,668 |
+| 2-gram, same data, tuned | **286.4** | 166,970 | — |
+| reuse rules, firing weights | 607.8 | 54,369 | 2,589 |
+| reuse rules, infogain weights | 621.1 | 54,369 | 2,589 |
+| reuse rules, no identity ctx (control) | 791.1 | 23,814 | 1,134 |
+| mined classes, order 1 | 641.1 | 7,812 | 372 |
+| **mined classes, order 2** | **601.2** | 35,091 | 1,671 |
+| mined classes, order 2, no identity | 646.2 | 24,675 | 1,175 |
+
+Standalone this looked like a clear failure -- worse than the zero-order model it replaced. But
+the mixture told a different story, and `explain` showed why.
+
+### E28.3 Smoothing is the dominant parameter, and its optimum depends on the use
+
+`explain` on the first version: ``IF prev2:=the AND prev1:QUANTIFIER -> jackal(0.105)`` -- "jackal"
+as the top prediction after "the little", from a handful of firing observations. Two causes, and
+the second is the E26.1 trap in a new place: ``alpha=0.5`` pseudo-counts is far too little
+smoothing, **and information gain rewards low entropy, so class selection is actively biased
+toward the under-observed classes that look sharp by accident**.
+
+| alpha | classes | standalone ppl | best mixture | lambda |
+|---|---|---|---|---|
+| 0.5 | 1670 | 601.1 | **256.2** | 0.4 |
+| 5 | 1671 | 437.0 | 257.2 | 0.4 |
+| 50 | 1720 | 352.9 | 264.5 | 0.4 |
+| 200 | 1652 | **343.5** | 272.9 | 0.4 |
+
+**Standalone goes 601.1 -> 343.5**, which beats the zero-order model's 355.5 -- the first time a
+change to this architecture has improved standalone perplexity in ten experiments. It still loses
+to the bigram's 286.4.
+
+**And the two optima are at opposite ends of the smoothing axis, for a principled reason.** Heavy
+smoothing makes each class a reliable predictor on its own; a mixture partner already supplies
+reliable mass and wants the fuzzy model's *sharp* class-conditional peaks instead. So "how much to
+smooth" is not a tuning detail, it is a question about what the model is for.
+
+### E28.4 The headline: complementarity, and it is large
+
+| | ppl | vs bigram |
+|---|---|---|
+| bigram alone | 286.4 | — |
+| **mixture at lambda=0.4** | **256.2** | **-10.5%** |
+
+For comparison, the zero-order model at 1M tokens had optimal mixture weight **zero** (E23.4) --
+it contributed nothing. The best complementarity previously measured anywhere in this project was
+0.94% at 87K tokens (E22.4), and E19.4's 4.7% was at a small budget and did not survive scale.
+This is **10.5% at 1M tokens with lambda=0.4**, a substantial weight rather than a token one.
+
+The controls matter, and they hold. A class whose context side is a lexeme identity has
+``p_r(w) = p(w | prev=w')``, which is literally a bigram row, so "beats the bigram" could have
+meant "contains the bigram". Dropping every identity-context class costs 601.2 -> 646.2 standalone
+-- real but not decisive -- so the categorical classes are carrying most of it, and the mixture
+gain is not the model rediscovering its partner.
+
+### E28.5 What the classes look like
+
+```
+IF ctx:prev1:=did                          -> not(0.783), at(0.058), the(0.030)     [5.02 nats]
+IF ctx:prev1:AUXILIARY AND ctx:prev2:=he   -> not(0.183), to(0.044), have(0.037)    [2.04 nats]
+IF ctx:prev1:=very                         -> much(0.095), good(0.059), well(0.036) [2.09 nats]
+IF ctx:prev2:=was AND ctx:prev1:INTENSIFIER-> on(0.066), well(0.066), good(0.066)   [2.69 nats]
+```
+
+Each is a named class with a readable word distribution and a measured information gain in nats.
+This is the interpretability claim finally doing work at the level the project was about: not just
+"why this score" but "which words this context prefers, and how much knowing the context is
+worth". Samples are still not grammatical, but content selection is visibly context-driven --
+``the little | black royal of gingerbread in her hopes as now the instant which had entirely``.
+
+### E28.6 Where this leaves it
+
+**Confirmed:** E27.5's diagnosis was right. The consequent's shape *was* the binding constraint,
+and it is the first thing in this project that, when changed, moved both standalone perplexity
+(355.5 -> 343.5) and complementarity (0% -> 10.5% mixture weight 0.4).
+
+**Still true:** standalone it loses to a bigram trained on the same text (343.5 vs 286.4), and
+parameter count is now 35K sparse rather than 8K, so the extreme-smallness result belongs to the
+zero-order system with significance gating (81 rules / ~240 params / 371.5, E27.4).
+
+**Honest read.** The contribution is an interpretable model that *adds* ~10% to a conventional LM
+while explaining its own predictions as named graded classes over words. It is not a replacement
+for an n-gram at this scale, and the write-up should say so.
+
+80 tests pass (3 new: conjunctive classes are actually mined, the model puts mass on the specific
+word rather than the category, and smoothing monotonically flattens).
+
+---
+
+## Standing summary — CURRENT (as of E28)
+
+**Best result.** First-order TSK (word-level consequents, `firstorder.py`) mixed with a bigram:
+**perplexity 256.2 against the bigram's 286.4, a 10.5% improvement at lambda=0.4** on the
+1M-token corpus. Standalone 343.5, which beats the zero-order model's 355.5 and loses to the
+bigram. This is the first change in the project to move both numbers, and it confirms E27.5's
+diagnosis that the consequent's *shape* was the binding constraint.
+
+**Smallest useful model.** Zero-order with E27's significance gate: **81 rules, ~240 learned
+parameters, ppl 371.5** (against 2,668 rules for 355.5, and 34,021 stored counts for a bigram at
+253.3 on the E27 protocol). Cold training on 1M tokens is ~1 minute on one CPU core, no GPU.
+
+**Representation.** Coverage 96.7%, exact multi-resolution rollup asserted in CI, L2 similarity
+gap +0.278, explainable typo robustness, correct sense assignment for rare words.
+
+**Interpretability, doing actual work.** Named graded classes with readable word distributions and
+information gain in nats (`IF prev1:=did -> not(0.783)`, 5.02 nats). Two of the project's failures
+were diagnosed by reading rules, and three of my own diagnoses were refuted by the experiments
+built to act on them.
+
+**Honest framing.** No configuration beats a bigram trained on the same text standalone. The
+contribution is a model that *adds* ~10% to a conventional LM while explaining itself. Generation
+is not grammatical; content selection is context-driven but syntax is not.
+
+**Ruled out:** context width (E12, E26), rule order (E12, E15), Gaussian antecedents (E9/E10),
+symmetric decode similarity (E11), Cython and BLAS threading (E14, E23.3), raw score normalisation
+(E18.2), candidate-side lexicalisation (E19), the linguistic parameter space (E22), corpus scale as
+the closing lever (E23.4), thread parallelism (E23.3), OOV quality as the ceiling (E24.2),
+open-class rule quota (E25.1), width-aware false-discovery control and relational slots (E27),
+candidate-linear first-order consequents (E28.1, on argument).
+
+**Confirmed:** vectorising beat parallelising 11x (E23.2); the base holds the right categorical
+grammar at adjacency (E25.1) and unbounded distance (E27.3); content/function mass matches real
+text (E25.2); long-range context is real but redundant (E27.2); **the consequent's shape was the
+ceiling (E28)**.
+
+**Corrected along the way:** 0.569 balanced accuracy (E12.1); all pre-E17 ranking numbers; the
+trigram baseline (E20.2); E19.4's mixture gain quoted without budget dependence (E22.4); E22.3's
+fit-cost attribution (E23.1); the recommendation to push corpus size (E23.4); E24.3's "all rules
+are closed-class" (E25.1); a per-condition test set caught by a moving control (E26.2); E26.1's
+dilution mechanism (E27.2); **E28's own first standalone numbers, which were an undersmoothing
+artefact (E28.3)**.
+
+**Open.** Generation is not grammatical. hits@1 caps near 0.14. Class selection by information
+gain is biased toward under-observed classes -- a held-out gain criterion is the obvious fix and is
+untested. GPT-2 untested (blocked, and a data-gap comparison anyway). No neural-embedding
+comparison. Experiment B's real encoder and SST paths unrun.
