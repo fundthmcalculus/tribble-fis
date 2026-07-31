@@ -74,8 +74,8 @@ class JointNextTokenRanker:
     """
 
     def __init__(self, featuriser, window: int = 2, n_negatives: int = 8,
-                 max_rules: int = 300, max_order: int = 2, seed: int = 42,
-                 order_quota: dict[int, float] | None = None, beam: int = 200):
+                 max_rules: int = 2500, max_order: int = 2, seed: int = 42,
+                 order_quota: dict[int, float] | None = None, beam: int = 800):
         self.f = featuriser
         self.window = window
         self.n_negatives = n_negatives
@@ -88,9 +88,11 @@ class JointNextTokenRanker:
         # `beam` caps how many order-2 rules survive per growth level, so it -- not
         # `max_rules` -- is what actually limits the interaction supply. At the old
         # default of 24 the rule base saturated at 81 rules no matter how large
-        # max_rules was set. 200 is the measured MRR optimum: 24 -> 0.244,
-        # 80 -> 0.246, 200 -> 0.257, 400 -> 0.254 (hits@10 keeps rising to 0.680 at
-        # 400, so raise it if recall matters more than top-1).
+        # max_rules was set. 800 is the measured optimum: MRR 0.265 (beam 200) ->
+        # 0.279 (800) -> 0.277 (2000). It saturates there because the *candidate*
+        # supply runs out at ~835 admissible order-2 rules, not because the beam
+        # binds. Affordable only after the GEMM growth in rules.py -- see its
+        # docstring.
         self.beam = beam
         self.seed = seed
         self.model_: MembershipRuleRegressor | None = None
@@ -167,8 +169,18 @@ class JointNextTokenRanker:
 
     # -- fit ---------------------------------------------------------------
 
-    def fit(self, corpus: Corpus, vocab: list[str], max_positions: int = 1500,
+    def fit(self, corpus: Corpus, vocab: list[str], max_positions: int = 12000,
             verbose: bool = True):
+        """Fit the joint scorer.
+
+        ``max_positions`` is the single most important knob. Ranking quality rises
+        monotonically with it and had **not** flattened when the children's corpus ran
+        out of text: MRR 0.260 (750 positions) -> 0.279 (3000) -> 0.293 (6000) ->
+        0.319 (12000), against a 0.189 unigram baseline and a 0.822 oracle. Rule count
+        saturates at ~860 over that whole range, so the gain is better-estimated
+        *consequents*, not more rules -- the rules were already there and their
+        consequents were noisy. Corpus size is the binding constraint on this stack.
+        """
         self.feature_names_ = self._names()
         X, y = self.build(corpus, vocab, max_positions)
         n_feat = X.shape[1]

@@ -184,55 +184,118 @@ class MembershipRuleRegressor:
         # re-multiplying all k columns from scratch -- the naive version recomputed
         # O(beam x top_singles x k) full-length products per output per level and was
         # too slow to finish an order-3 sweep at all.
-        frontier: list[tuple[Rule, np.ndarray]] = [(r, X[:, r.features[0]])
-                                                   for r in seeds]
-        use_min = self.t_norm == "min"
+        seed_cols = np.array([r.features[0] for r in seeds], dtype=np.intp)
+        seed_gain = np.abs(np.array([r.consequent for r in seeds])
+                           - self.default_)
+        Xy = X * y[:, None] if self.t_norm == "product" else None
+
+        frontier_rules = list(seeds)
+        frontier_fire = X[:, seed_cols].copy()
         for _order in range(2, self.max_order + 1):
-            if not frontier:
+            if not frontier_rules:
                 break
-            grown: list[tuple[Rule, np.ndarray]] = []
-            seen: set[frozenset[int]] = set()
-            for base, base_fire in frontier:
-                base_gain = abs(base.consequent - self.default_)
-                for single in seeds:
-                    j = single.features[0]
-                    if j in base.features:
-                        continue
-                    feats = tuple(sorted(base.features + (j,)))
-                    key = frozenset(feats)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    col = X[:, j]
-                    fire = np.minimum(base_fire, col) if use_min else base_fire * col
-                    cons, sup = self._consequent(fire, y)
-                    if sup < self.min_support:
-                        continue
-                    # Keep an extension only if the conjunction says something
-                    # *neither part* says alone -- it must land further from the
-                    # default than both its parents. Without this the rule base fills
-                    # with redundant conjunctions of correlated aliases (the observed
-                    # case was `prev1:adj.all AND prev1:OPEN_ADJ`, two names for "the
-                    # previous token is an adjective": no information, and it costs
-                    # the reader's attention, which is the whole budget an
-                    # interpretable model spends).
-                    gain = abs(cons - self.default_)
-                    parent = max(base_gain,
-                                 abs(single.consequent - self.default_))
-                    if gain <= parent + self.min_interaction:
-                        continue
-                    lift = (cons - self.default_) * np.sqrt(sup)
-                    grown.append((Rule(
-                        feats, tuple(self.feature_names_[f] for f in feats),
-                        cons, sup, lift), fire))
-            grown.sort(key=lambda rf: -abs(rf[0].lift))
-            frontier = grown[: self.beam]
-            candidates.extend(r for r, _ in frontier
+            frontier_rules, frontier_fire = self._grow_level(
+                X, y, Xy, frontier_rules, frontier_fire, seeds, seed_cols,
+                seed_gain)
+            candidates.extend(r for r in frontier_rules
                               if self._admissible(r.features))
 
         candidates.sort(key=lambda r: -abs(r.lift))
         self.rules_ = self._apply_quota(candidates)
         return self
+
+    def _grow_level(self, X, y, Xy, frontier_rules, frontier_fire, seeds,
+                    seed_cols, seed_gain):
+        """One level of rule growth, computed as two matrix products.
+
+        With the **product** t-norm, every candidate extension's two required
+        statistics factor into GEMMs over the frontier firing matrix ``F`` and the
+        seed columns ``S``::
+
+            support   = F.T @ S
+            weighted  = F.T @ (S * y)      ->  consequent = weighted / support
+
+        so a whole level costs two BLAS calls instead of one Python-level numpy call
+        per candidate. That is what makes order-3 and large beams affordable: at
+        beam 200 a level has ~30k candidates, and the per-call overhead of the naive
+        loop -- not the arithmetic -- was the bottleneck.
+
+        This is also why the hot path is *not* a Cython candidate. The work is
+        already dense linear algebra dispatched to an optimised BLAS; hand-writing
+        the loop in C would at best match one thread of it.
+
+        The ``min`` t-norm does not factor this way (``min`` is not bilinear), so it
+        falls back to the per-candidate loop and is correspondingly slower.
+        """
+        n_front = len(frontier_rules)
+        n_seed = len(seeds)
+
+        if self.t_norm == "product":
+            S = X[:, seed_cols]
+            support = frontier_fire.T @ S                    # (n_front, n_seed)
+            weighted = frontier_fire.T @ Xy[:, seed_cols]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                cons = np.where(support > 0, weighted / np.maximum(support, 1e-12),
+                                0.0)
+        else:
+            support = np.empty((n_front, n_seed))
+            cons = np.empty((n_front, n_seed))
+            for i in range(n_front):
+                fire = np.minimum(frontier_fire[:, i][:, None], X[:, seed_cols])
+                support[i] = fire.sum(axis=0)
+                w = (fire * y[:, None]).sum(axis=0)
+                cons[i] = np.where(support[i] > 0,
+                                   w / np.maximum(support[i], 1e-12), 0.0)
+
+        gain = np.abs(cons - self.default_)
+        base_gain = np.abs(np.array([r.consequent for r in frontier_rules])
+                           - self.default_)
+        # An extension must say something *neither part* says alone: it has to land
+        # further from the default than both its parents. Without this the base fills
+        # with redundant conjunctions of correlated aliases.
+        parent = np.maximum(base_gain[:, None], seed_gain[None, :])
+        valid = (support >= self.min_support) & (gain > parent + self.min_interaction)
+
+        # A seed already present in the base rule is not an extension.
+        for i, rule in enumerate(frontier_rules):
+            for f in rule.features:
+                valid[i, seed_cols == f] = False
+        if not valid.any():
+            return [], np.empty((X.shape[0], 0))
+
+        lift = (cons - self.default_) * np.sqrt(np.maximum(support, 0.0))
+        score = np.where(valid, np.abs(lift), -np.inf)
+
+        # Take enough of the ranking to survive de-duplication (distinct (i, j) can
+        # denote the same feature set), then trim to the beam.
+        take = min(int(valid.sum()), self.beam * 4)
+        flat = np.argpartition(score.ravel(), -take)[-take:]
+        flat = flat[np.argsort(score.ravel()[flat])[::-1]]
+
+        out_rules: list[Rule] = []
+        out_cols: list[np.ndarray] = []
+        seen: set[frozenset[int]] = set()
+        for idx in flat:
+            i, j = divmod(int(idx), n_seed)
+            if not valid[i, j]:
+                continue
+            feats = tuple(sorted(frontier_rules[i].features + (int(seed_cols[j]),)))
+            key = frozenset(feats)
+            if key in seen:
+                continue
+            seen.add(key)
+            out_rules.append(Rule(
+                feats, tuple(self.feature_names_[f] for f in feats),
+                float(cons[i, j]), float(support[i, j]), float(lift[i, j])))
+            # Materialise the firing vector only for survivors -- the GEMM gave us
+            # every candidate's statistics without ever forming its firing vector.
+            out_cols.append(self._fire(X, feats))
+            if len(out_rules) >= self.beam:
+                break
+
+        fire_mat = (np.stack(out_cols, axis=1) if out_cols
+                    else np.empty((X.shape[0], 0)))
+        return out_rules, fire_mat
 
     def _apply_quota(self, candidates: list[Rule]) -> list[Rule]:
         """Select the rule base, honouring ``order_quota`` if given."""

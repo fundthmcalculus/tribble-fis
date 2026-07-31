@@ -10,7 +10,7 @@ recover names from a dense model after the fact.
 | | Experiment | Status | Doc |
 |---|---|---|---|
 | **A** | **Fuzzy embedding model** — coordinates are membership degrees in named nodes of a curated lexical hierarchy | **built & measured** (WordNet backend; M0 coverage 96.7%, exact rollup PASS, L2 similarity gap +0.278) | [`FUZZY_EMBEDDING_PLAN.md`](FUZZY_EMBEDDING_PLAN.md) · [`fuzzyembed/`](fuzzyembed/) |
-| **A2** | **Fuzzy sequence + fuzzy syntax + fuzzy decoder** — next-token prediction over named semantic *and* syntactic dimensions, then Zadeh linguistic approximation | built; rules at logreg parity (bal-acc 0.528 → **0.569**), category-correct decoding; **joint ranker beats unigram baseline, MRR 0.196 → 0.257**; generation still not grammatical | [`fuzzyembed/README.md`](fuzzyembed/README.md) |
+| **A2** | **Fuzzy sequence + fuzzy syntax + fuzzy decoder** — next-token prediction over named semantic *and* syntactic dimensions, then Zadeh linguistic approximation | built; rules at logreg parity (bal-acc 0.528 → **0.569**), category-correct decoding; **joint ranker beats unigram: MRR 0.189 → 0.319, hits@1 0.068 → 0.142**; generation still not grammatical | [`fuzzyembed/README.md`](fuzzyembed/README.md) |
 | **B** | **FIS head on a frozen neural embedding model** — sentiment analysis, TSK heads vs. linear probe | harness built & smoke-tested; not run on real data | [`FIS_ON_EMBEDDINGS_PLAN.md`](FIS_ON_EMBEDDINGS_PLAN.md) · [`exp_b/`](exp_b/) |
 
 **Experiment A is implemented** in [`fuzzyembed/`](fuzzyembed/) — see that README for
@@ -109,7 +109,11 @@ were both predicted to help and measurably **do not**. What did work was reframi
 target: predicting per-dimension marginals never enforces that the prediction describes
 *one word*, and scoring `(context, candidate)` pairs jointly instead
 ([`fuzzyembed/joint.py`](fuzzyembed/joint.py)) beats a unigram baseline on MRR
-(0.196 → 0.257) with a readable rule base that recovers real grammar. In particular,
+(0.189 → 0.319, +69%) with a readable 860-rule base that recovers real grammar. Order-3
+rules and a wider beam were then tested: more interactions help, order-3 does not, and
+**corpus size turns out to be the binding constraint** — ranking quality rises
+monotonically with training data and has not flattened when the ~90K-token corpus runs
+out. In particular,
 `MixtureOfGaussiansFuzzySequenceClassifier` in this repo is a confusion-driven
 cascade of specialists, not a temporal sequence model, and is not a seed for (2).
 

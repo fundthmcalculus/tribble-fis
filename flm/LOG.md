@@ -692,3 +692,133 @@ the full 61-dim signature.
 the marginal formulation, since ctx×ctx×cand is a different structure; (3) a bigger corpus,
 still the leading suspect at ~90K tokens; (4) finer candidate features for within-category
 discrimination — the one thing that can lift hits@1.
+
+---
+
+## E14 — Efficiency: two GEMMs instead of a candidate loop — **WORKED**
+
+**The ask** was order-3 rules plus more interactions, with Cython if needed. Cython was
+not needed and would have been the wrong tool.
+
+**Why.** With the **product** t-norm, an entire growth level's statistics factor into
+matrix products over the frontier firing matrix ``F`` and the seed columns ``S``::
+
+    support  = F.T @ S
+    weighted = F.T @ (S * y)        ->  consequent = weighted / support
+
+The old code made one Python-level numpy call per candidate; at beam 200 that is ~30k
+calls per level, and **call overhead, not arithmetic, was the bottleneck**. Hand-writing
+that loop in C would at best match one thread of an optimised BLAS. Expressing it as
+linear algebra instead is both faster and shorter.
+
+Only survivors get their firing vector materialised — the GEMM yields every candidate's
+statistics without ever forming its firing vector.
+
+Measured on a joint-task-shaped problem (13500 x 183):
+
+| order | beam | fit time | rules |
+|---|---|---|---|
+| 2 | 24 | 0.10s | 68 |
+| 2 | 200 | 0.14s | 115 |
+| 2 | 800 | 0.44s | 244 |
+| 3 | 200 | 0.24s | 181 |
+| 3 | 800 | **0.95s** | 474 |
+
+Order-3 at beam 800 in under a second; the previous implementation could not finish a
+single 3-seed sweep at order 3 at all.
+
+``min`` does not factor this way (it is not bilinear), so it keeps the per-candidate
+loop and is correspondingly slower — documented, and covered by
+``test_min_tnorm_still_works``. ``test_batched_growth_matches_bruteforce`` asserts the
+GEMM path reproduces per-candidate support, consequent, and lift exactly.
+
+## E15 — Order-3 on the joint task — **FAILED (again)**; more interactions — **WORKED**
+
+Both asks, measured together. 500 held-out positions, 20 candidates, 3000 training
+positions.
+
+| config | MRR | hits@1 | hits@5 | hits@10 | rules |
+|---|---|---|---|---|---|
+| unigram frequency | 0.189 | 0.068 | 0.266 | 0.486 | 0 |
+| order 2, beam 200 | 0.265 | 0.116 | 0.378 | 0.620 | 259 |
+| **order 2, beam 800** | **0.279** | **0.126** | 0.416 | 0.660 | 859 |
+| order 2, beam 2000 | 0.277 | 0.124 | 0.414 | 0.656 | 894 |
+| order 3, beam 200 | 0.265 | 0.114 | 0.382 | 0.622 | 459 |
+| order 3, beam 800 | 0.275 | 0.118 | **0.430** | **0.662** | 1659 |
+| order 3, beam 2000 | 0.277 | 0.120 | 0.424 | 0.654 | 1761 |
+
+**More interactions: yes.** beam 200 -> 800 lifts MRR 0.265 -> 0.279 and hits@1
+0.116 -> 0.126. It saturates at 800 for a reason worth noting: the *candidate supply*
+runs out (~835 admissible order-2 rules exist), so beam 2000 changes nothing. The
+ceiling is the interaction space, not the beam.
+
+**Order-3: no.** 0.275 vs 0.279 at matched beam — slightly worse on MRR and hits@1,
+marginally better on hits@5 (0.430 vs 0.416), for **double** the rule count. Same verdict
+as E12 for the marginal formulation, now confirmed for the joint one, so it was worth
+retesting on the different structure rather than assuming the earlier null carried over.
+
+**But order-3 gives better *explanations* at no ranking cost**, which is a genuine
+interpretability-vs-accuracy split worth recording:
+
+```
+IF ctx:prev2:CONJUNCTION AND ctx:prev1:PRONOUN     AND cand:AUXILIARY     -> 0.473
+IF ctx:prev2:OPEN_NOUN   AND ctx:prev1:PREPOSITION AND cand:POSSESSIVE    -> 0.676
+IF ctx:prev2:WH_WORD     AND ctx:prev1:PRONOUN     AND cand:AUXILIARY     -> 0.550
+IF ctx:prev1:verb.change AND ctx:prev1:OPEN_VERB   AND cand:INFINITIVE_TO -> 0.456
+```
+
+"and he ___" takes an auxiliary; "house of ___" takes a possessive; "what he ___" takes
+an auxiliary; "began ___" takes *to*. Richer grammar than any order-2 rule states, at
+4-6x the base rate. Use order 3 when the rule base is the deliverable, order 2 when the
+ranking is.
+
+Caveat: some order-3 rules conjoin two features at the *same* position
+(``prev1:verb.change AND prev1:OPEN_VERB``). Not redundant — ``verb.change`` is strictly
+more specific than ``OPEN_VERB`` — but it reads like padding, and the interaction gate
+admits it because the conjunction genuinely narrows.
+
+## E16 — Corpus size is the binding constraint — **CONFIRMED, and it is the biggest lever**
+
+Fits are near-free after E14, so the standing "corpus too small" hypothesis became cheap
+to test in-sample.
+
+| training positions | MRR | hits@1 | hits@5 | hits@10 | rules |
+|---|---|---|---|---|---|
+| unigram frequency | 0.189 | 0.068 | 0.266 | 0.486 | 0 |
+| 750 | 0.260 | 0.112 | 0.400 | 0.614 | 470 |
+| 1500 | 0.262 | 0.098 | 0.410 | 0.688 | 569 |
+| 3000 | 0.279 | 0.126 | 0.416 | 0.660 | 859 |
+| 6000 | 0.293 | 0.140 | 0.422 | 0.704 | 860 |
+| **12000** | **0.319** | **0.142** | **0.504** | **0.784** | 860 |
+| oracle ceiling | 0.822 | 0.698 | — | — | — |
+
+Monotonic, and **still rising when the corpus runs out** — 12000 positions is a large
+fraction of the ~90K-token children's corpus. Headroom captured above chance goes from
+12% to **(0.319 − 0.180) / (0.822 − 0.180) ≈ 22%**.
+
+**Why this is the important finding.** Rule count saturates at ~860 across the entire
+range, so the gain is *not* more rules — it is better-estimated **consequents**. The
+rules were already discovered at 750 positions; their consequents were just noisy. So the
+bottleneck is data, and the single highest-value action for this project is getting the
+real TinyStories corpus (blocked here by egress) rather than any further architectural
+change.
+
+Defaults are now the measured optimum: ``beam=800``, ``max_positions=12000``,
+``max_order=2``.
+
+## Standing summary (updated)
+
+**Best joint result:** MRR **0.319** vs 0.189 unigram (**+69% relative**), hits@1 0.142
+vs 0.068 (**+109%**), hits@10 0.784 vs 0.486 — with a readable 860-rule base that
+recovers English grammar, on an oracle-capped-0.822 task.
+
+**Ruled out:** context width (E12), rule order (E12 marginal, E15 joint), Gaussian
+antecedents (E9/E10), symmetric decode similarity (E11), feature-filter inconsistency
+(E11.1), representation coarseness (E13.1 — oracle 0.822 disproved it), Cython (E14 —
+the work is BLAS-bound).
+
+**Confirmed binding:** corpus size (E16).
+
+**Still open:** within-category discrimination — supersense rules cannot separate
+``bread`` from ``cake``, which is what caps hits@1 near 0.14; and generation, still not
+grammatical.

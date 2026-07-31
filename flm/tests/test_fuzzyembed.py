@@ -429,3 +429,57 @@ def test_joint_ranker_excludes_context_only_rules():
     model = MembershipRuleRegressor(max_rules=20, must_include=cand_idx).fit(X, y)
     for rule in model.rules_:
         assert any(f in cand_idx for f in rule.features), rule.render()
+
+
+def test_batched_growth_matches_bruteforce():
+    """The GEMM formulation must agree with per-candidate computation exactly.
+
+    Guards the optimisation that makes order-3 affordable: support and consequent for
+    every order-2 candidate are read off two matrix products, never by forming the
+    candidate's firing vector.
+    """
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    rng = np.random.default_rng(17)
+    n, d = 400, 12
+    X = (rng.random((n, d)) < 0.35).astype(float)
+    y = (rng.random(n) < 0.4).astype(float)
+
+    model = MembershipRuleRegressor(max_rules=200, max_order=2, min_support=1.0,
+                                    min_interaction=-1.0, top_singles=d,
+                                    beam=200).fit(X, y)
+    default = float(y.mean())
+    for rule in model.rules_:
+        fire = X[:, list(rule.features)].prod(axis=1)
+        sup = fire.sum()
+        assert rule.support == pytest.approx(sup, rel=1e-9, abs=1e-9)
+        assert rule.consequent == pytest.approx((fire * y).sum() / sup, rel=1e-9)
+        assert rule.lift == pytest.approx((rule.consequent - default) * np.sqrt(sup),
+                                          rel=1e-9)
+
+
+def test_min_tnorm_still_works():
+    """The min t-norm cannot factor into a GEMM, so it takes the fallback path."""
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    rng = np.random.default_rng(19)
+    n = 500
+    a = (rng.random(n) < 0.5).astype(float)
+    b = (rng.random(n) < 0.5).astype(float)
+    X = np.column_stack([a, b, rng.random((n, 4))])
+    y = np.minimum(a, b)
+    model = MembershipRuleRegressor(max_rules=10, max_order=2,
+                                    t_norm="min").fit(X, y, list("abcdef"))
+    for rule in model.rules_:
+        fire = X[:, list(rule.features)].min(axis=1)
+        assert rule.support == pytest.approx(fire.sum(), rel=1e-9)
+
+
+def test_growth_dedupes_feature_sets():
+    """Distinct (frontier, seed) pairs can denote one feature set; keep it once."""
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    rng = np.random.default_rng(23)
+    X = (rng.random((600, 10)) < 0.4).astype(float)
+    y = (rng.random(600) < 0.5).astype(float)
+    model = MembershipRuleRegressor(max_rules=300, max_order=3, min_support=1.0,
+                                    min_interaction=-1.0, beam=100).fit(X, y)
+    keys = [frozenset(r.features) for r in model.rules_]
+    assert len(keys) == len(set(keys))
