@@ -1204,3 +1204,191 @@ ranking numbers (train/test sentence overlap).
 
 **Open:** generation is still not grammatical; hits@1 caps near 0.14; GPT-2 untested
 (blocked, and a data-gap comparison anyway).
+
+---
+
+## E20 — Why n-grams work, and a correction to my own trigram claim
+
+**Why the 1-gram works.** Unigram entropy is 6.047 nats, so frequency alone collapses the
+effective vocabulary from 3000 to **423**. The reason is how extreme the Zipf tail is:
+
+| coverage of token mass | types needed | % of vocabulary |
+|---|---|---|
+| 50% | **54** | 1.8% |
+| 80% | 415 | 13.8% |
+| 90% | 943 | 31.4% |
+
+**54 words carry half of all tokens.** This retroactively explains E19: lexicalising the
+top ~200 words covers ~72% of token mass, and the measured saturation of `lexeme_top_k`
+around 200 is exactly where the Zipf head stops paying. The design premise was right for a
+quantifiable reason, not just a plausible one.
+
+**Why higher orders should work — the information is there.** Train-side conditional
+entropy (in-sample, so optimistic, but it bounds what is *available*):
+
+| context | H(next \| context) | implied ppl |
+|---|---|---|
+| none | 6.047 nats | 422.9 |
+| 1 word | 3.504 | 33.3 |
+| 2 words | 1.222 | **3.4** |
+
+Longer context carries enormous information. The training data is nearly deterministic given
+two words.
+
+**Why they nevertheless fail here — context sparsity.** The information is available but not
+*estimable* at 67K training tokens:
+
+| order | test contexts seen in train | seen >= 5 times |
+|---|---|---|
+| 1 (bigram context) | 99.3% | 92.3% |
+| 2 (trigram context) | 66.6% | 39.5% |
+| 3 (4-gram context) | 25.4% | **6.2%** |
+
+For a trigram, three quarters of test positions have a context never seen in training, and
+only 6% have one seen often enough to estimate. The gap between "ppl 3.4 available" and
+"ppl ~300 achievable" is pure estimation error. **This is the same finding as E16 (corpus
+size binds), arrived at from the baseline side.**
+
+### E20.1 CORRECTION: my 3-gram baseline was mis-weighted, and I over-claimed against it
+
+`NgramLM` used fixed Jelinek-Mercer weights proportional to order, so an order-3 model put
+**half its mixture weight on the trigram term** -- the term whose context is unseen 75% of
+the time. That is why my trigram scored *worse* than my bigram, which is not how trigrams
+normally behave and which I should have questioned earlier instead of reporting it as a
+baseline.
+
+| model | perplexity |
+|---|---|
+| 2-gram, fixed weights | 278.7 |
+| **3-gram, weights favouring low order** | **297.5** |
+| 3-gram, balanced | 298.9 |
+| 3-gram, bigram-dominant | 306.9 |
+| 3-gram, fixed weights (as previously reported) | 370.3 |
+
+**The consequence for my claims.** I repeatedly wrote that the fuzzy model at 363.4 "beats
+the trigram (370.2)". That comparison was against a badly-weighted trigram. A
+properly-weighted trigram reaches **297.5**, so **the fuzzy model does not beat a competent
+trigram** -- it loses to it, as it loses to the bigram.
+
+Corrected standing: the fuzzy LM **beats the unigram (472.9)** and **loses to both the
+bigram (278.7) and a well-weighted trigram (297.5)**.
+
+**Unaffected:** the complementarity result (E19.4) interpolated with the *bigram*, never the
+trigram, so mixing still beats the bigram alone (263.1 vs 276.1). That remains the strongest
+result in the project.
+
+**Why I missed it.** The README itself flagged `NgramLM` as "a credible reference, not a
+competitive n-gram implementation" -- I wrote that caveat and then quoted its number as a
+beaten baseline anyway. A baseline being deliberately simple is a reason to distrust
+*favourable* comparisons against it, which is the opposite of how I used it.
+
+Even well-weighted, no trigram beats the bigram here, so the ordering bigram < trigram is
+itself a real finding about 67K tokens rather than an artifact -- but the *magnitude* was.
+
+---
+
+## E21 — A fuzzy tokenizer and a linguistic parameter space (`flm/fuzzytok/`)
+
+**Why.** Two joints in `fuzzyembed/` were the weakest links, and E20 quantified how to fix
+one of them. The word-level vocabulary has no subword generalisation and cannot see proper
+names; the WordNet feature space has an unbalanced ladder, no morphology, and no names.
+
+### E21.1 Vocabulary sizing came from the measurement, not a guess
+
+E20 found **54 types carry 50% of token mass, 415 carry 80%**. So the head is tiny and
+idiosyncratic (no decomposition helps `the`, `of`, `said`) while the tail is large and
+morphologically regular -- which argues for a **hybrid** vocabulary rather than pure BPE or
+pure whole-word. Measured coverage by best-reading kind:
+
+| head size | nameable units | whole-word | decomposed |
+|---|---|---|---|
+| 100 | 147 | 57.0% | 43.0% |
+| 200 | 247 | 67.1% | 32.9% |
+| **500** | **547** | **79.5%** | 20.5% |
+| 1000 | 1047 | 87.6% | 12.4% |
+
+head=500 giving 79.5% whole-word matches the independent Zipf prediction (415 types = 80%)
+almost exactly, which is a useful consistency check on both measurements. **547 nameable
+units** total -- genuinely a "simple vocabulary", and every unit is something a rule can say
+(`un-`, `-ly`, `rabbit`).
+
+### E21.2 The fuzzy part, and how it differs from prior art
+
+BPE (Sennrich et al. 2016) merges greedily; WordPiece (Schuster & Nakajima 2012) maximises
+likelihood; the unigram-LM tokenizer (Kudo 2018) *can* enumerate segmentations with
+probabilities and subword regularisation **samples** one per training step. This keeps all of
+them at once with membership degrees and never samples:
+
+```
+'quickly'   quick + -ly   [0.90, stem in vocabulary]
+            quickl + -y   [0.35, stem shape only]
+'unkindly'  unkind + -ly  [0.90]   un- + kindly [0.90]   un- + kind + -ly [0.90]
+'littel'    little        [0.74, fuzzy lexical access]
+            listen        [0.44, fuzzy lexical access]
+'xqzzyv'    ^xq + xqz + qzz + zzy + zyv + yv$  [0.30, character n-grams]
+```
+
+Two things follow that a hard tokenizer cannot give: misspelling robustness is *intrinsic*
+(the graded lexical-access layer now runs inside tokenization rather than after it), and the
+ambiguity is **reportable** -- `unkindly` is genuinely three-ways ambiguous and the
+tokenizer says so instead of picking one.
+
+Versus tokenizer-free byte/character models (CANINE, ByT5), which also avoid segmentation
+commitment: this keeps units *nameable*, which a byte model cannot.
+
+### E21.3 Two real bugs, both found by running it rather than by tests
+
+The unit tests passed while both bugs were live, because the test vocabularies happened to
+avoid them. Running on the real corpus exposed both.
+
+**Premature commitment on stem variants.** `hoping` resolved *only* to `hop + -ing`, at 0.90,
+with `hope + -ing` never emitted. The affix code short-circuited: if the bare stem was in the
+vocabulary it stopped, and "hop" is a word. So the one case the dropped-`e` rule existed for
+was silently unreachable whenever the truncated stem was also real. Both variants are now
+emitted as competing graded readings. **This is exactly the failure mode a fuzzy tokenizer is
+supposed to prevent**, which made it worth a regression test rather than a quiet fix.
+
+**Case folding.** `Margery` missed the head set and fell through to fuzzy lexical access,
+matching *itself* at 0.73 and competing with `larger` at 0.47. Lookup is now case-folded while
+the surface form is preserved for the shape features -- orthographic case is a *parameter*,
+not a reason to fail lookup.
+
+### E21.4 The parameter space
+
+66 named dimensions in four blocks: UD's 17 UPOS tags and ~20 FEATS (de Marneffe et al.
+2021), 12 orthographic shape features, 14 coarse semantic groups collapsed from WordNet's 45
+supersenses, and Osgood's 3 affective axes (Osgood et al. 1957).
+
+```
+'the':      DET=1.00, Shape=Short=1.00, Affect=Evaluation=0.50
+'not':      PART=1.00, Polarity=Neg=1.00
+'his':      PRON=1.00, Poss=Yes=1.00
+'Margery':  Shape=Capitalised=1.00, PROPN=0.60
+'walking':  Shape=SuffixIng=1.00, Sem=Act=1.00, VERB=0.83, Aspect=Prog=0.70
+'rabbit':   Sem=Entity=1.00, NOUN=0.75, Sem=Animate=0.33
+'happy':    ADJ=1.00, Sem=Quality=1.00, Affect=Evaluation=1.00
+```
+
+Three deliberate choices:
+
+* **UD instead of WordNet** for the syntactic backbone, because it is a *designed, balanced*
+  inventory -- the thing WordNet's hypernym DAG demonstrably is not (E4.2: 45 -> 4527).
+* **Capitalisation at degree 0.6, not 1.0.** It is the cheapest proper-noun signal and names
+  were the dominant coverage gap (E1), but sentence-initial words are capitalised too and this
+  encoder has no sentence position. Overclaiming here would manufacture proper nouns.
+* **Osgood's activity axis is left at 0** rather than inferred. It needs elicited ratings or a
+  norms lexicon; deriving it from orthography would be invention dressed as a feature. Only
+  evaluation is populated (from the opinion lexicon), which is the axis sentiment needs.
+
+Misspelling robustness survives the whole path: parameter-vector overlap 0.944 for
+`happy`/`hapy` and 0.975 for `rabbit`/`rabit`.
+
+### E21.5 What this is NOT yet
+
+**Not wired into the joint ranker, so there is no perplexity number for it.** Everything above
+is component-level validation. The comparison that matters -- 66 named linguistic parameters
+versus the current 61-dimensional semantic+syntax space, at matched rule budget and on the
+same split -- has not been run. Until it is, the honest claim is only that the encoder
+produces sensible graded features on inspection, not that it improves the language model.
+
+54 tests pass (17 new for this module, including regression tests for both bugs above).

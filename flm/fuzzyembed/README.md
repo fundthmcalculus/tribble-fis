@@ -372,8 +372,9 @@ identical held-out text.
 | 1-gram (same data) | 472.9 |
 | fuzzy, raw score normalised | 2477.8 |
 | fuzzy, NCE-corrected | 385.8 |
-| 3-gram (same data) | 370.2 |
+| 3-gram (same data, **mis-weighted** — see correction) | 370.2 |
 | **fuzzy + context lexicalisation (K=500)** | **363.4** |
+| 3-gram (same data, weights tuned) | 297.5 |
 | 2-gram (same data) | 279.2 |
 
 Same sentence split, same vocabulary, same restriction to positions whose gold token the
@@ -414,8 +415,17 @@ frequency and the two compound. Context-side identity has no such overlap.
 | top-200, **context** side | 364.5 | 339.1 |
 | **top-500, context side** | **363.4** | **338.5** |
 
-Same features, same budget — only which half carries them. Saturates after ~200 dimensions.
-**425 of 860** rules end up lexicalised, chosen on lift.
+Same features, same budget — only which half carries them. Saturates after ~200 dimensions,
+which is exactly where the Zipf head stops paying: **54 types carry 50% of token mass and 415
+carry 80%**, so ~200 identity dims cover ~72%. **425 of 860** rules end up lexicalised.
+
+> ⚠ **Correction.** Earlier revisions claimed 363.4 "beats the trigram (370.2)". That 370.2
+> came from `NgramLM`'s fixed Jelinek-Mercer weights, which give an order-3 model **half its
+> mixture weight on the trigram term** — the term whose context is unseen 75% of the time at
+> this corpus size. Properly weighted, the trigram reaches **297.5**. So the fuzzy model
+> **beats the unigram (472.9) and loses to both the bigram (278.7) and a competent trigram
+> (297.5)**. The complementarity result below is unaffected: it interpolates with the
+> *bigram*. See `../LOG.md` E20.1.
 
 ### The fuzzy model is complementary to a bigram, not strictly worse
 

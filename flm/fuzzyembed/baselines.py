@@ -33,6 +33,17 @@ import numpy as np
 from .corpus import Corpus
 
 
+def _low_order_weights(order: int) -> tuple[float, ...]:
+    """Geometrically decaying weights: most mass on the lowest, best-estimated order.
+
+    Measured on the children's corpus (67K train tokens): order-3 with these weights
+    reaches ppl 297.5, against 370.3 for weights proportional to order.
+    """
+    raw = [0.5 ** i for i in range(order)]
+    total = sum(raw)
+    return tuple(r / total for r in raw)
+
+
 class NgramLM:
     """Interpolated n-gram LM with add-k smoothing -- the fair baseline at this scale.
 
@@ -46,9 +57,14 @@ class NgramLM:
                  weights: tuple[float, ...] | None = None):
         self.order = order
         self.add_k = add_k
-        # Weight higher orders more, with mass kept on the unigram for backoff.
-        self.weights = weights or tuple(
-            w / sum(range(1, order + 1)) for w in range(1, order + 1))
+        # Weights FAVOUR LOW ORDER, which is the opposite of the obvious choice and is
+        # measured, not assumed. Weighting by order (the original default) gives an
+        # order-3 model half its mixture weight on the trigram term -- and at 67K
+        # training tokens a trigram context is unseen 75% of the time, so that term is
+        # mostly smoothing noise. It made the trigram score *worse* than the bigram
+        # (370.3 vs 278.7), which then got quoted as a baseline the fuzzy model beat.
+        # It does not: properly weighted the trigram reaches 297.5. See LOG.md E20.1.
+        self.weights = weights or _low_order_weights(order)
         self.counts: list[dict] = [defaultdict(float) for _ in range(order)]
         self.totals: list[dict] = [defaultdict(float) for _ in range(order)]
         self.vocab: list[str] = []
