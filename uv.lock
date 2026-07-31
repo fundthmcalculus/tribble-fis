@@ -29,6 +29,15 @@ wheels = [
 ]
 
 [[package]]
+name = "contextlib2"
+version = "21.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/13/37ea7805ae3057992e96ecb1cffa2fa35c2ef4498543b846f90dd2348d8f/contextlib2-21.6.0.tar.gz", hash = "sha256:ab1e2bfe1d01d968e1b7e8d9023bc51ef3509bba217bb730cee3827e1ee82869", size = 43795, upload-time = "2021-06-27T06:54:40.841Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/76/56/6d6872f79d14c0cb02f1646cbb4592eef935857c0951a105874b7b62a0c3/contextlib2-21.6.0-py2.py3-none-any.whl", hash = "sha256:3fbdb64466afd23abaf6c977627b75b6139a5a3e8ce38405c5b413aed7a0471f", size = 13277, upload-time = "2021-06-27T06:54:20.972Z" },
+]
+
+[[package]]
 name = "contourpy"
 version = "1.3.3"
 source = { registry = "https://pypi.org/simple" }
@@ -397,6 +406,21 @@ wheels = [
 ]
 
 [[package]]
+name = "kmodes"
+version = "0.12.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "joblib" },
+    { name = "numpy" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5c/16/e2b5222bb5efabc56259215bbc9e94df9ee08a43b5a9ed33aae28ce2dade/kmodes-0.12.2.tar.gz", hash = "sha256:d840ac9f4616a668ebacba24a12ec1def87da24a9fd0a0dc2f7499a9b9a6f45b", size = 18883, upload-time = "2022-09-06T19:36:37.14Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1a/a8/0d3bf6f3340cbcb8cf4ad02c306d157af8f09ce86aadf5346e00605870dd/kmodes-0.12.2-py2.py3-none-any.whl", hash = "sha256:b764f7166dd5fe63826135ed74df796693dc7c25fc2cb8a106e14f3bfb371004", size = 20408, upload-time = "2022-09-06T19:36:34.956Z" },
+]
+
+[[package]]
 name = "llvmlite"
 version = "0.47.0"
 source = { registry = "https://pypi.org/simple" }
@@ -623,6 +647,23 @@ wheels = [
 ]
 
 [[package]]
+name = "optimizers"
+version = "0.2.0"
+source = { git = "https://github.com/fundthmcalculus/optimizers.git#42a9f0933f89df04fca2c5a953bbba4d392116af" }
+dependencies = [
+    { name = "contextlib2" },
+    { name = "joblib" },
+    { name = "kmodes" },
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "plotly" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+    { name = "tqdm" },
+]
+
+[[package]]
 name = "packaging"
 version = "26.2"
 source = { registry = "https://pypi.org/simple" }
@@ -776,6 +817,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c3/28/ec0fc38107fc32536908034e990c47914c57cd7c5a3ece4d8d8f7ffd7e27/pillow-12.2.0-pp311-pypy311_pp73-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4a6c9fa44005fa37a91ebfc95d081e8079757d2e904b27103f4f5fa6f0bf78c0", size = 5355404, upload-time = "2026-04-01T14:46:06.33Z" },
     { url = "https://files.pythonhosted.org/packages/5e/8b/51b0eddcfa2180d60e41f06bd6d0a62202b20b59c68f5a132e615b75aecf/pillow-12.2.0-pp311-pypy311_pp73-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:25373b66e0dd5905ed63fa3cae13c82fbddf3079f2c8bf15c6fb6a35586324c1", size = 6002215, upload-time = "2026-04-01T14:46:08.83Z" },
     { url = "https://files.pythonhosted.org/packages/bc/60/5382c03e1970de634027cee8e1b7d39776b778b81812aaf45b694dfe9e28/pillow-12.2.0-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:bfa9c230d2fe991bed5318a5f119bd6780cda2915cca595393649fc118ab895e", size = 7080946, upload-time = "2026-04-01T14:46:11.734Z" },
+]
+
+[[package]]
+name = "plotly"
+version = "6.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "narwhals" },
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/96/07/795c79dbce40c39bece88e69d049babbd23ffa95b5d117f248db8ea03abb/plotly-6.9.0.tar.gz", hash = "sha256:967ad33e8c704fed051800d11d985eb206a9c795c14206b30a6f463ed9c67d0d", size = 6919903, upload-time = "2026-07-09T14:55:59.982Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/24/18/d8544811ab076f876c4892b3714f5b0dad335e1dc33aef826df431b8325d/plotly-6.9.0-py3-none-any.whl", hash = "sha256:36bebe2f1bb13884774fe61689c329071446f6ce4a8927fb1f0d6fb24f581236", size = 9909646, upload-time = "2026-07-09T14:55:55.421Z" },
 ]
 
 [[package]]
@@ -1079,6 +1133,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
+    { name = "optimizers" },
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "seaborn" },
@@ -1098,6 +1153,7 @@ dev = [
 requires-dist = [
     { name = "matplotlib", marker = "extra == 'dev'" },
     { name = "numpy" },
+    { name = "optimizers", git = "https://github.com/fundthmcalculus/optimizers.git" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "scikit-learn" },

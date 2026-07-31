@@ -77,7 +77,58 @@ class TrapezoidMembership(NamedTuple):
         return y
 
 
-AnyMembership = GaussianMembership | TrapezoidMembership
+class TriangularMembership(NamedTuple):
+    """A triangular membership function with apex at ``b``, rising from ``a`` and
+    falling to ``c`` (``a <= b <= c``).
+
+    Shoulders are expressed with infinities: ``a = -inf`` makes a *left shoulder*
+    (membership is 1 for every ``x <= b``) and ``c = +inf`` makes a *right
+    shoulder* (membership is 1 for every ``x >= b``). Triangular terms placed on a
+    shared set of apex knots -- with a left shoulder on the first term and a right
+    shoulder on the last -- form a **Ruspini partition**: their memberships sum to
+    exactly 1 at every point of the axis. See :mod:`tribblefis.ruspini`.
+    """
+
+    a: float
+    b: float
+    c: float
+    id: Optional[uuid.UUID] = None
+
+    @staticmethod
+    def create(a: float, b: float, c: float) -> "TriangularMembership":
+        return TriangularMembership(a=a, b=b, c=c, id=uuid.uuid4())
+
+    def evaluate(self, x: np.ndarray) -> np.ndarray:
+        """Evaluate the triangular membership at ``x`` (handles ``+/-inf`` shoulders)."""
+        x = np.asarray(x, dtype=float)
+        y = np.zeros_like(x, dtype=float)
+
+        # Rising side / left shoulder: x <= b
+        left = x <= self.b
+        if np.isneginf(self.a):
+            y[left] = 1.0
+        else:
+            width = self.b - self.a
+            if width > 0:
+                m = left & (x > self.a)
+                y[m] = (x[m] - self.a) / width
+            # x <= a stays 0
+
+        # Falling side / right shoulder: x > b
+        right = x > self.b
+        if np.isposinf(self.c):
+            y[right] = 1.0
+        else:
+            width = self.c - self.b
+            if width > 0:
+                m = right & (x < self.c)
+                y[m] = (self.c - x[m]) / width
+            # x >= c stays 0
+
+        return y
+
+
+AnyMembership = GaussianMembership | TrapezoidMembership | TriangularMembership
 
 
 class Rule(NamedTuple):
@@ -252,7 +303,7 @@ class GaussianMixtureModel(NamedTuple):
                 label_model = feature_model.label_models.get(label, None)
                 if label_model is None:
                     continue
-                antecedent_ids[feature_name] = [dedup_mfs.get(mf, mf).id for mf in label_model.gaussians]  # type: ignore[misc]
+                antecedent_ids[feature_name] = [dedup_mfs.get(mf, mf).id for mf in label_model.memberships]  # type: ignore[misc]
             rules.append(Rule(antecedents=antecedent_ids, consequent=label))
 
         # Get the input membership functions from the rules

@@ -191,7 +191,7 @@ def run_iterative_prediction(
             running_state = pd.concat([running_state, pd.DataFrame([np.full(running_state.shape[1],np.nan)], columns=running_state.columns)],
                                       ignore_index=True)
         else:
-            # TODO - Predict DELTAS so we can scale to preserve energy!
+            # Predict DELTAS so we can scale to preserve energy!
             next_state_delta_df = regressor.predict(running_state[-window_size:])
             if window_size == 1:
                 new_state = running_state.iloc[-1,:] + next_state_delta_df
@@ -212,8 +212,8 @@ def run_iterative_prediction(
                             fs.col_name]
                 new_state = pd.DataFrame([new_row])
 
-            # TODO - Set better bounds
-            if np.any(np.isnan(new_state)) or np.any(np.abs(new_state) > 1e6):
+            # Set better bounds
+            if np.any(np.isnan(new_state)) or np.any(np.abs(new_state) > 1e4):
                 if diverged_at is None:
                     diverged_at = step + 1
                     if verbose:
@@ -343,9 +343,9 @@ def create_pendulum_animation_with_training(actual_df, predicted_df, train_traje
         pred_frames['theta_1'].values, pred_frames['theta_2'].values, 1.0, 1.0
     )
 
-    # Prepare nearest training trajectories
+    # Prepare nearest training trajectories with very obvious colors
     nearest_data = []
-    colors_train = ['#ffa500', '#00ff00']
+    colors_train = ['#00DD00', '#00AA00']  # bright green shades for training
     for rank, (train_idx, dist, train_traj) in enumerate(nearest_list):
         train_frames = train_traj[OUTPUT_FEATURES].iloc[::step].head(max_frames)
         x1_t, y1_t, x2_t, y2_t = angles_to_xy(
@@ -361,42 +361,42 @@ def create_pendulum_animation_with_training(actual_df, predicted_df, train_traje
     set_axes_style(ax)
 
     ax.set_title('Double Pendulum: All Trajectories Overlaid', color='white', fontsize=14, fontweight='bold')
-    fig.suptitle(f'Training (bg) → Test Reference → Test FIS (front)', color='white', fontsize=12)
+    fig.suptitle(f'Training (dashed) · Test Reference (solid cyan) · Test FIS (solid red)', color='white', fontsize=12)
 
     # Different tail lengths for each trajectory to make them visually distinct
     trail_lens = {
-        'train1': 15,      # shortest (orange)
-        'train2': 25,      # medium (green)
-        'actual': 35,      # longer (cyan)
-        'predicted': 50,   # longest (red)
+        'train1': 15,      # shortest
+        'train2': 25,      # medium
+        'actual': 35,      # longer (test reference)
+        'predicted': 50,   # longest (test predicted)
     }
 
     artists = {
         'train1': {
-            'trail2': ax.plot([], [], '-', color=colors_train[0], linewidth=1.0, alpha=0.3)[0],
-            'rod1': ax.plot([], [], 'o-', color='#e0e0e0', lw=2, ms=5, markerfacecolor='white', alpha=0.3)[0],
-            'rod2': ax.plot([], [], 'o-', color='#e0e0e0', lw=2, ms=5, markerfacecolor=colors_train[0], alpha=0.3)[0],
+            'trail2': ax.plot([], [], '--', color=colors_train[0], linewidth=1.5, alpha=0.6)[0],
+            'rod1': ax.plot([], [], 'o--', color=colors_train[0], lw=1.5, ms=4, markerfacecolor=colors_train[0], alpha=0.5)[0],
+            'rod2': ax.plot([], [], 'o--', color=colors_train[0], lw=1.5, ms=4, markerfacecolor=colors_train[0], alpha=0.5)[0],
         },
         'train2': {
-            'trail2': ax.plot([], [], '-', color=colors_train[1], linewidth=1.0, alpha=0.3)[0],
-            'rod1': ax.plot([], [], 'o-', color='#e0e0e0', lw=2, ms=5, markerfacecolor='white', alpha=0.3)[0],
-            'rod2': ax.plot([], [], 'o-', color='#e0e0e0', lw=2, ms=5, markerfacecolor=colors_train[1], alpha=0.3)[0],
+            'trail2': ax.plot([], [], '--', color=colors_train[1], linewidth=1.5, alpha=0.6)[0],
+            'rod1': ax.plot([], [], 'o--', color=colors_train[1], lw=1.5, ms=4, markerfacecolor=colors_train[1], alpha=0.5)[0],
+            'rod2': ax.plot([], [], 'o--', color=colors_train[1], lw=1.5, ms=4, markerfacecolor=colors_train[1], alpha=0.5)[0],
         },
         'actual': {
-            'trail2': ax.plot([], [], '-', color='#00d4ff', linewidth=1.5, alpha=0.6)[0],
-            'rod1': ax.plot([], [], 'o-', color='#e0e0e0', lw=2.5, ms=6, markerfacecolor='white', alpha=0.8)[0],
+            'trail2': ax.plot([], [], '-', color='#00d4ff', linewidth=2.0, alpha=0.9)[0],
+            'rod1': ax.plot([], [], 'o-', color='#e0e0e0', lw=2.5, ms=6, markerfacecolor='white')[0],
             'rod2': ax.plot([], [], 'o-', color='#e0e0e0', lw=2.5, ms=6, markerfacecolor='#00d4ff')[0],
         },
         'predicted': {
-            'trail2': ax.plot([], [], '-', color='#ff6b6b', linewidth=1.5, alpha=0.8)[0],
+            'trail2': ax.plot([], [], '-', color='#ff1744', linewidth=2.0, alpha=0.9)[0],
             'rod1': ax.plot([], [], 'o-', color='#e0e0e0', lw=2.5, ms=6, markerfacecolor='white')[0],
-            'rod2': ax.plot([], [], 'o-', color='#e0e0e0', lw=2.5, ms=6, markerfacecolor='#ff6b6b')[0],
+            'rod2': ax.plot([], [], 'o-', color='#e0e0e0', lw=2.5, ms=6, markerfacecolor='#ff1744')[0],
         },
     }
 
     time_text = fig.text(0.5, 0.01, '', ha='center', color='#aaaaaa', fontsize=11)
-    legend_text = fig.text(0.5, 0.05, 'Train1 (orange, tail=15) · Train2 (green, tail=25) · Test Ref (cyan, tail=35) · Test FIS (red, tail=50)',
-                           ha='center', color='#aaaaaa', fontsize=9)
+    legend_text = fig.text(0.5, 0.05, 'Train (green dashed) · Test Ref (cyan solid, tail=35) · Test FIS (red solid, tail=50)',
+                           ha='center', color='#aaaaaa', fontsize=10)
 
     def init():
         for key in artists:
@@ -754,7 +754,7 @@ class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
         print("="*60)
         fig_nearest = plot_test_vs_nearest_training(
             actual_trajectory, train_results.trajectories, dt=SimulationParams.dt,
-            features=OUTPUT_FEATURES, k=2
+            features=OUTPUT_FEATURES, k=2, predicted_trajectory=predicted_trajectory
         )
         fig_nearest.savefig("test_vs_nearest_training.png", dpi=200, bbox_inches='tight')
         plt.close(fig_nearest)

@@ -290,7 +290,8 @@ def create_gaussian_membership_dict(
     feature_models = {}
 
     # Use ProcessPoolExecutor for CPU-bound work
-    with ThreadPoolExecutor() as executor:
+    # TODO - This hangs on some linux machines without max_workers=1!
+    with ThreadPoolExecutor(max_workers=1) as executor:
         # Submit all tasks
         futures = [executor.submit(process_feature, name) for name in top_n_var_names]
         
