@@ -1,10 +1,63 @@
 # FLM engineering log
 
-Running record of what was tried, what worked, what didn't, and **why**. Newest
-entries at the bottom. Results and rationale live here; the module READMEs carry the
-settled conclusions.
+Running record of what was tried, what worked, what didn't, and **why**. Newest entries
+at the bottom. Results and rationale live here; the module READMEs carry the settled
+conclusions.
 
 Convention: **WORKED** / **FAILED** / **PARTIAL**, each with a why.
+
+> **The current status is the LAST "Standing summary" section in this file.** Earlier ones
+> are kept in place, marked superseded, because the *sequence* of conclusions is part of
+> the record -- several were later corrected and hiding that would misrepresent how the
+> work went.
+
+## Index
+
+| # | Topic | Verdict |
+|---|---|---|
+| E-B | Experiment B: FIS heads on frozen neural embeddings (predates this log) | harness built, unrun |
+| E0 | Environment reconnaissance; forced substitutions | — |
+| E1 | M0 coverage gate | PASS (96.7%) |
+| E2 | Fuzzy lexical access | WORKED after 5 fixes |
+| E3 | Sense assignment; Zadeh complement for negation | complement FAILED |
+| E4 | Hierarchy structure; prefix consistency | restriction REQUIRED |
+| E5 | Which level discriminates | L2, as predicted |
+| E6 | Fuzzy sequence model, first attempt | FAILED (chance) |
+| E7 | Fuzzy decoder | WORKED |
+| E8 | Adding fuzzy syntax | no help alone |
+| E9 | Control: logreg vs FIS on same features | found the real blocker |
+| E10 | `MembershipRuleRegressor` | WORKED |
+| E11 | Decode metric asymmetry; tagger leak | both FIXED |
+| E12 | Testing my own predictions | 2 of 3 FAILED; a headline corrected |
+| E13 | Joint next-token ranking | WORKED — first real win |
+| E14 | Efficiency: GEMMs, not Cython | WORKED |
+| E15 | Order-3 rules; more interactions | order-3 NO, beam YES |
+| E16 | Corpus size | CONFIRMED binding |
+| E17 | Evaluation leak in my own numbers | FOUND AND FIXED |
+| E18 | Generation + perplexity vs n-gram LMs | beats unigram, loses to bigram |
+
+---
+
+## E-B — Experiment B: FIS heads on frozen neural embeddings
+
+Predates this log; recorded here for completeness. Full write-up in
+[`FIS_ON_EMBEDDINGS_PLAN.md`](FIS_ON_EMBEDDINGS_PLAN.md) and [`exp_b/README.md`](exp_b/README.md).
+
+**What.** A harness sweeping fuzzy and non-fuzzy heads (linear probe, MLP, flat TSK,
+fuzzy tree, HME, Ruspini) over cached frozen embeddings, with rule count and antecedent
+count reported next to accuracy, plus MRR-style width and character-noise sweeps and
+post-hoc dimension naming.
+
+**Status: plumbing verified, science unrun.** The synthetic classification, regression, and
+atlas paths all pass; the real encoder and SST paths were never executed because Hugging
+Face is outside the egress allowlist.
+
+**Why it still mattered.** Framing it revealed the argument that drove everything after:
+a rule like `IF dim_417 is High THEN positive` is *transparent but not interpretable*,
+because `dim_417` has no name. The interpretability bottleneck is the representation, not
+the inference engine — which is what made Experiment A worth building. Also flagged that
+this architecture is already published (Fuzzy Fingerprints), so it is a
+replication-plus-comparison, not a contribution.
 
 ---
 
@@ -554,7 +607,7 @@ are now cached on the instance. Fit time is ~20s per configuration, which is wha
 
 ---
 
-## Standing summary
+## Standing summary (SUPERSEDED — see the final one)
 
 **Working, measured, and tested:** coverage gate (96.7%), exact multi-resolution rollup
 (in CI), L2 semantic similarity (gap +0.278, complete separation), explainable typo
@@ -806,7 +859,7 @@ change.
 Defaults are now the measured optimum: ``beam=800``, ``max_positions=12000``,
 ``max_order=2``.
 
-## Standing summary (updated)
+## Standing summary (SUPERSEDED — see the final one)
 
 **Best joint result:** MRR **0.319** vs 0.189 unigram (**+69% relative**), hits@1 0.142
 vs 0.068 (**+109%**), hits@10 0.784 vs 0.486 — with a readable 860-rule base that
@@ -962,7 +1015,7 @@ one scalar-vector scaling plus two reductions.
 `test_generator_factorised_scoring_matches_direct` asserts it equals evaluating the rule
 base directly.
 
-## Standing summary (updated)
+## Standing summary — CURRENT
 
 **Beats a real baseline:** ranking MRR over unigram; perplexity 386 vs 473 unigram.
 **Loses to:** a smoothed bigram (279). **Untested:** GPT-2 (blocked; and a data-gap
