@@ -822,3 +822,27 @@ the work is BLAS-bound).
 **Still open:** within-category discrimination — supersense rules cannot separate
 ``bread`` from ``cake``, which is what caps hits@1 near 0.14; and generation, still not
 grammatical.
+
+### E16.1 Replication on an independent, larger corpus — **trend confirmed**
+
+The children's corpus ran out of text at 12000 positions, so the rising curve could have
+been an artifact of that one corpus. Re-run on Brown (news+fiction+romance, 191K tokens,
+17.8K types, 6000-type vocabulary):
+
+| brown positions | MRR | hits@1 | hits@5 | hits@10 |
+|---|---|---|---|---|
+| unigram frequency | 0.193 | 0.077 | 0.248 | 0.458 |
+| 6000 | 0.253 | 0.090 | 0.408 | 0.688 |
+| 12000 | 0.273 | 0.117 | 0.432 | 0.722 |
+| 25000 | **0.285** | **0.123** | **0.437** | **0.750** |
+
+Monotonic and **still rising at 25000 positions** — twice as far as the children's corpus
+allowed. The data-scaling finding is therefore a property of the method, not of one
+corpus.
+
+**Absolute values are lower than the children's corpus at matched positions** (0.273 vs
+0.319 at 12000) and that is expected, not a regression: Brown has 17.8K types against
+5.3K, a 6000-type vocabulary against 3000, and a far more varied register. More
+vocabulary diversity makes the 20-candidate ranking harder. So the *level* is
+corpus-dependent while the *trend* replicates — which is exactly the pair of claims worth
+making.
