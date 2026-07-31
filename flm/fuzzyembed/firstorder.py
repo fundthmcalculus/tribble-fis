@@ -319,7 +319,8 @@ class ContextClassMiner:
     def __init__(self, ranker, vocab: list[str], counts: dict[str, int] | None = None,
                  alpha: float = 50.0, top_singles: int = 140, max_classes: int = 3000,
                  max_order: int = 2, min_mass: float = 20.0,
-                 exclude_identity: bool = False):
+                 exclude_identity: bool = False, selection_holdout: float = 0.0,
+                 backoff: str = "unigram", pair_chunk: int = 600):
         self.r = ranker
         self.f = ranker.f
         self.alpha = alpha
@@ -328,6 +329,19 @@ class ContextClassMiner:
         self.max_order = max_order
         self.min_mass = min_mass
         self.exclude_identity = exclude_identity
+        # E29.1: score candidate classes on rows that did NOT estimate them. In-sample
+        # information gain rewards low entropy, so it systematically prefers classes that
+        # happen to look sharp on few observations -- the `jackal` failure (E28.3). Held-out
+        # cross-entropy reduction cannot be gamed that way, because a class sharpened by
+        # accident predicts held-out words no better than the unigram does.
+        self.selection_holdout = selection_holdout
+        # E29.2: what a class's distribution is smoothed *toward*. "unigram" throws away the
+        # hierarchy the miner just built -- `prev2:=the AND prev1:QUANTIFIER` should fall back
+        # on `prev1:QUANTIFIER`, not on corpus frequency. "parent" is the standard remedy
+        # (Katz backoff, Kneser-Ney).
+        self.backoff = backoff
+        # How many order-2 candidate columns to materialise at once. Purely a memory bound.
+        self.pair_chunk = pair_chunk
         self.weighting = "infogain"
         cand_vec = getattr(ranker, "cand_vector", self.f._token_vector)
         self.words = [w for w in vocab if cand_vec(w).sum() > 0]
@@ -338,22 +352,53 @@ class ContextClassMiner:
 
     # -- estimation helpers ------------------------------------------------
 
-    def _distributions(self, F: np.ndarray, w_idx: np.ndarray) -> tuple:
-        """Word distribution and mass for every column of ``F``, in one scatter-add.
+    def _counts(self, F: np.ndarray, w_idx: np.ndarray) -> np.ndarray:
+        """``C[j, w] = sum_i F[i, j] . 1[w_i = w]``, as one scatter-add.
 
-        ``C[j, w] = sum_i F[i, j] . 1[w_i = w]``. Written as a scatter-add into rows indexed
-        by the gold word, which is a single vectorised pass rather than a loop per class.
+        Written as a scatter into rows indexed by the gold word: a single vectorised pass
+        rather than a loop per class.
         """
-        n_vocab = len(self.words)
-        CT = np.zeros((n_vocab, F.shape[1]), dtype=np.float64)
+        CT = np.zeros((len(self.words), F.shape[1]), dtype=np.float64)
         np.add.at(CT, w_idx, F)
-        C = CT.T
+        return CT.T
+
+    def _smooth(self, C: np.ndarray, prior: np.ndarray) -> tuple:
+        """Interpolate counts toward ``prior``. ``prior`` is per-class when backing off."""
         mass = C.sum(axis=1)
-        P = (C + self.alpha * self.unigram[None, :]) / (mass[:, None] + self.alpha)
+        if prior.ndim == 1:
+            prior = prior[None, :]
+        P = (C + self.alpha * prior) / (mass[:, None] + self.alpha)
+        return P, mass
+
+    def _held_out_gain(self, P: np.ndarray, Fb: np.ndarray, wb: np.ndarray) -> np.ndarray:
+        """Cross-entropy reduction over the unigram, on rows that did not estimate ``P``.
+
+        For class ``j``, the firing-weighted mean of ``log p_j(w) - log unigram(w)`` over
+        held-out rows, times held-out mass. A class sharpened by accident scores near zero
+        here because its peak lands on words the held-out rows do not contain -- which is
+        exactly what in-sample entropy could not detect (E28.3).
+        """
+        ratio = np.log(np.maximum(P, 1e-12)) - np.log(np.maximum(self.unigram, 1e-12))[None, :]
+        # per-row log-ratio for each class, firing-weighted: (n_rows, n_classes)
+        per_row = ratio[:, wb].T                      # (n_rows, n_classes)
+        num = (Fb * per_row).sum(axis=0)
+        mass_b = Fb.sum(axis=0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            mean_gain = np.where(mass_b > 0, num / np.maximum(mass_b, 1e-12), 0.0)
+        return mass_b, np.maximum(mean_gain, 0.0)
+
+    def _score(self, C: np.ndarray, prior: np.ndarray, Fb, wb) -> tuple:
+        """Estimate distributions, then score them -- in sample or held out."""
+        P, mass = self._smooth(C, prior)
         h0 = float(-(self.unigram * np.log(np.maximum(self.unigram, 1e-12))).sum())
-        h = -(P * np.log(np.maximum(P, 1e-12))).sum(axis=1)
-        gain = np.maximum(h0 - h, 0.0)
-        return P, mass, gain, h0
+        if Fb is None:
+            h = -(P * np.log(np.maximum(P, 1e-12))).sum(axis=1)
+            gain = np.maximum(h0 - h, 0.0)
+            return P, mass, gain, h0
+        mass_b, gain = self._held_out_gain(P, Fb, wb)
+        # Selection mass is the held-out mass, so a class that never fires on held-out rows
+        # cannot be selected on the strength of its training fit.
+        return P, mass_b, gain, h0
 
     def fit(self, corpus: Corpus, max_positions: int = 20000, seed: int = 11,
             verbose: bool = False):
@@ -385,30 +430,65 @@ class ContextClassMiner:
             F = F.copy()
             F[:, drop] = 0.0
 
+        # Split rows: A estimates the distributions, B scores them (E29.1). Without this,
+        # gain is measured on the rows that produced it.
+        if self.selection_holdout > 0:
+            rs = np.random.default_rng(seed + 1)
+            in_b = rs.random(F.shape[0]) < self.selection_holdout
+            Fa, wa = F[~in_b], w_idx[~in_b]
+            Fb_all, wb = F[in_b], w_idx[in_b]
+        else:
+            Fa, wa, Fb_all, wb = F, w_idx, None, None
+
         # Order 1: every context feature is a candidate class.
-        P1, mass1, gain1, h0 = self._distributions(F[:, :offset], w_idx)
-        score1 = mass1 * gain1
-        ok = np.nonzero(mass1 >= self.min_mass)[0]
+        C1 = self._counts(Fa[:, :offset], wa)
+        Fb1 = None if Fb_all is None else Fb_all[:, :offset]
+        P1, sel_mass1, gain1, h0 = self._score(C1, self.unigram, Fb1, wb)
+        est_mass1 = C1.sum(axis=1)
+        score1 = sel_mass1 * gain1
+        ok = np.nonzero((sel_mass1 >= self.min_mass) & (est_mass1 >= self.min_mass))[0]
         ok = ok[np.argsort(score1[ok])[::-1]]
-        classes = [((int(j),), P1[j], mass1[j], gain1[j]) for j in ok]
+        classes = [((int(j),), P1[j], sel_mass1[j], gain1[j]) for j in ok]
 
         # Order 2: conjunctions among the strongest singles. The pool is bounded by
         # `top_singles` because the pair count is quadratic, and E26.1's lesson is that a
         # larger search space is not free.
         if self.max_order >= 2 and len(ok):
             seeds = ok[: self.top_singles]
-            cols, pairs = [], []
-            for a_i, a in enumerate(seeds):
-                for b in seeds[a_i + 1:]:
-                    cols.append(F[:, a] * F[:, b])
-                    pairs.append((int(a), int(b)))
-            if cols:
-                F2 = np.column_stack(cols)
-                P2, mass2, gain2, _ = self._distributions(F2, w_idx)
-                score2 = mass2 * gain2
-                keep2 = np.nonzero(mass2 >= self.min_mass)[0]
-                keep2 = keep2[np.argsort(score2[keep2])[::-1]]
-                classes += [(pairs[k], P2[k], mass2[k], gain2[k]) for k in keep2]
+            all_pairs = [(int(a), int(b)) for i, a in enumerate(seeds)
+                         for b in seeds[i + 1:]]
+            # Chunked, because materialising every pair column at once is what actually
+            # limits this: 150,000 positions x 9,730 pairs x 8 bytes is 11.7 GB, and the
+            # first attempt was SIGKILLed by the OOM killer with no traceback (E29.3).
+            # Chunking bounds peak memory at chunk_size x n_positions instead.
+            for lo in range(0, len(all_pairs), self.pair_chunk):
+                pairs = all_pairs[lo: lo + self.pair_chunk]
+                Ca = self._counts(
+                    np.column_stack([Fa[:, a] * Fa[:, b] for a, b in pairs]), wa)
+                # E29.2: back off to the parents, not the unigram. A conjunction's parents
+                # are the two singles it grew from, and they are far more informative about
+                # the next word than corpus frequency. Mass-weighted so the better-estimated
+                # parent dominates the fallback.
+                if self.backoff == "parent":
+                    pa = np.array([est_mass1[a] for a, _ in pairs])
+                    pb = np.array([est_mass1[b] for _, b in pairs])
+                    wsum = np.maximum(pa + pb, 1e-12)
+                    # P1 rows are indexed by FEATURE ID (it was built over all context
+                    # columns), not by position in `ok`. Indexing it by rank silently mixes
+                    # up whose parent is whose.
+                    prior2 = ((pa / wsum)[:, None] * P1[[a for a, _ in pairs]]
+                              + (pb / wsum)[:, None] * P1[[b for _, b in pairs]])
+                elif self.backoff == "unigram":
+                    prior2 = self.unigram
+                else:
+                    raise ValueError(f"unknown backoff {self.backoff!r}")
+                F2b = (None if Fb_all is None else
+                       np.column_stack([Fb_all[:, a] * Fb_all[:, b] for a, b in pairs]))
+                P2, sel_mass2, gain2, _ = self._score(Ca, prior2, F2b, wb)
+                est_mass2 = Ca.sum(axis=1)
+                keep2 = np.nonzero((sel_mass2 >= self.min_mass)
+                                   & (est_mass2 >= self.min_mass))[0]
+                classes += [(pairs[k], P2[k], sel_mass2[k], gain2[k]) for k in keep2]
 
         classes.sort(key=lambda t: -(t[2] * t[3]))
         classes = classes[: self.max_classes]

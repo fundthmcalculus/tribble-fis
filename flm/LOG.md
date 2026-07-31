@@ -45,6 +45,7 @@ Convention: **WORKED** / **FAILED** / **PARTIAL**, each with a why.
 | E26 | Wider context windows (2-32) | FAILED monotonically; spurious long-range rules dilute |
 | E27 | Significance gating and relational slots | both FAILED; long-range rules are real but redundant |
 | E28 | Word-level consequents (first-order TSK) | **WORKED** — first mixture to beat the bigram (-10.5%) |
+| E29 | Consolidating first-order: data, selection, backoff, metrics | **beats bigram AND trigram head-to-head** (219.9 vs 284.4) |
 
 ---
 
@@ -2492,7 +2493,7 @@ word rather than the category, and smoothing monotonically flattens).
 
 ---
 
-## Standing summary — CURRENT (as of E28)
+## Standing summary (SUPERSEDED — see the final one)
 
 **Best result.** First-order TSK (word-level consequents, `firstorder.py`) mixed with a bigram:
 **perplexity 256.2 against the bigram's 286.4, a 10.5% improvement at lambda=0.4** on the
@@ -2539,3 +2540,232 @@ artefact (E28.3)**.
 gain is biased toward under-observed classes -- a held-out gain criterion is the obvious fix and is
 untested. GPT-2 untested (blocked, and a data-gap comparison anyway). No neural-embedding
 comparison. Experiment B's real encoder and SST paths unrun.
+
+---
+
+## E29 — Plan: consolidate the first-order win
+
+Written **before** running, so the hypotheses are on record and a negative result cannot be
+retro-fitted into a success. Ordered by how directly each attacks a defect E28 actually measured.
+
+**E29.1 Held-out gain for class selection.** *Defect:* E28.3 showed information gain is computed
+on the same rows that estimated the class, so gain rewards low entropy and selection is biased
+toward classes that look sharp by accident (`jackal` after "the little"). That bias is why low
+alpha -- the setting the mixture wants -- is unusable standalone. *Change:* split positions;
+estimate ``p_r`` on part A, score candidate classes by held-out cross-entropy reduction on part B.
+*Hypothesis:* removes the bias, so sharp classes become reliable and the standalone/mixture
+smoothing tradeoff (E28.3) narrows or disappears. *Success:* standalone at low alpha improves
+substantially, mixture gain does not regress.
+
+**E29.2 Hierarchical backoff instead of unigram smoothing.** *Defect:* every class currently
+smooths toward the **unigram**, but a conjunction like ``prev2:=the AND prev1:QUANTIFIER`` should
+back off to its *parent* class ``prev1:QUANTIFIER``, which is far more informative than the
+unigram. Smoothing to the unigram throws away the class hierarchy the miner just built. *Change:*
+back off an order-2 class to a mass-weighted blend of its order-1 parents. *Hypothesis:* strictly
+better than unigram backoff, and reduces sensitivity to alpha. Standard practice for exactly this
+problem (Katz backoff; Kneser-Ney). *Success:* beats E28's best standalone 343.5.
+
+**E29.3 Class-estimation data.** *Rationale:* E28 estimated distributions from 20,000 positions
+while the corpus has ~800K. Estimating a *distribution* per class needs more data than estimating
+a scalar, and E16 found this stack data-bound. *Hypothesis:* more positions helps monotonically and
+more than it did for the zero-order model. *Success:* monotone improvement.
+
+**E29.4 A stronger mixture partner (honesty check).** *Rationale:* the 10.5% gain is measured
+against a **bigram**. If it evaporates against a trigram, the contribution is much smaller than
+E28 implies, and that must be reported. *Hypothesis:* the gain shrinks but survives, because
+class-based backoff is complementary to sparse higher-order counts for a different reason than a
+bigram is. *Success criterion is honesty, not a number.*
+
+**E29.5 Parameter frontier.** How few classes retain the mixture gain? Ties to the standing
+smallness result (81 rules / ~240 params for the zero-order model).
+
+**E29.6 A number for "not grammatical".** Every generation claim so far has been eyeballed.
+Measure syntactic plausibility of generated text against real text on the same tagger -- the rate
+at which adjacent category pairs are ones the corpus actually produces. Gives a metric that can
+move, instead of an impression.
+
+---
+
+## E29 — Results against the plan: 2 failed, 1 succeeded enormously, 1 metric was broken
+
+Executed against the plan recorded above. Protocol unchanged (1M-token corpus, same split,
+positions >= 32, bigram and trigram controls).
+
+### E29.1 Held-out class selection — **FAILED**
+
+| sel | backoff | alpha | classes | standalone | best mix | lambda |
+|---|---|---|---|---|---|---|
+| 0.0 | unigram | 0.5 | 1671 | 601.2 | **256.2** | 0.4 |
+| 0.0 | unigram | 50 | 1721 | **352.9** | 264.5 | 0.4 |
+| 0.3 | unigram | 0.5 | 397 | 475.8 | 286.4 | **0.0** |
+| 0.3 | unigram | 50 | 397 | 359.1 | 257.1 | 0.4 |
+
+At alpha=0.5 held-out selection *destroys* the mixture contribution (lambda falls to 0). At
+alpha=50 it improves the mixture slightly (264.5 -> 257.1) but not past what plain low-alpha
+already achieves. **Caveat on my own design:** with 30% of rows held out, the `min_mass=20` floor
+applies to held-out mass, so the effective threshold is ~3.3x stricter and class count drops
+1671 -> 397. The experiment therefore conflates *criterion* with *threshold*, and the clean
+version would rescale the floor. The prediction (that removing the sharp-by-accident bias would
+let low alpha work standalone) is not supported either way: standalone at alpha=0.5 stayed poor.
+
+### E29.2 Hierarchical parent backoff — **FAILED, and the reason is instructive**
+
+Worse standalone everywhere (735.2 vs 601.2 at alpha=0.5; 404.6 vs 352.9 at alpha=50), mixture
+identical or worse.
+
+**Why:** in a mixture-of-experts the parents are **already in the mixture**. Katz/Kneser-Ney
+backoff exists for a model that consults *one* distribution and needs a fallback when the specific
+context is unseen; here every class contributes simultaneously, so the averaging already performs
+the backoff. Making a child resemble its parent adds redundancy, not robustness, and dilutes the
+one thing the conjunction contributed. Right idiom, wrong architecture -- worth recording because
+it is a natural thing to reach for and it is wrong here for a structural reason.
+
+### E29.3 Class-estimation data — **WORKED, and it changes the project's conclusion**
+
+| positions | classes | standalone | vs bigram | lambda | vs trigram | lambda | fit |
+|---|---|---|---|---|---|---|---|
+| 20,000 | 1671 | 601.2 | 256.2 | 0.4 | — | — | 17s |
+| 60,000 | 2944 | 456.6 | 239.8 | 0.5 | — | — | 37s |
+| 150,000 | 3000 | 308.2 | 228.7 | 0.6 | — | — | 84s |
+| 300,000 | 3000 | 244.2 | 215.6 | 0.8 | 212.2 | 0.7 | 177s |
+| 600,000 | 3000 | 221.0 | 204.8 | 0.8 | 202.0 | 0.8 | 705s |
+| **624,325 (corpus exhausted)** | 3000 | **219.9** | **204.5** | 0.8 | **201.7** | 0.8 | 940s |
+
+**Standalone 219.9 against a bigram's 286.4 and a tuned trigram's 284.4 — the first time any
+configuration in this project beats an n-gram head-to-head**, by 23%. Mixed, 201.7, a 29% gain
+over the trigram. The mixture weight on the fuzzy model rose from 0.4 to **0.8**: it is now the
+dominant partner rather than a minor correction.
+
+The reason E28 looked so much weaker is simply that it estimated distributions from 20,000
+positions. Estimating a *distribution* per class needs far more data than estimating a scalar --
+which is obvious in hindsight and is exactly the E16 pattern reasserting itself in a new place.
+E23.4's conclusion ("corpus scale is the lever that makes the fuzzy model *relatively worse*")
+was a fact about the **zero-order** model, and it inverts here: with word-level consequents,
+scale is the lever that wins.
+
+**A scaling defect found on the way.** The 150,000-position run was SIGKILLed with no traceback:
+``np.column_stack`` materialised all 9,730 order-2 candidate columns at once, 150,000 x 9,730 x 8
+bytes = 11.7 GB. Pair generation is now chunked, which is what made the 624K run possible at all.
+Same uncatchable-OOM lesson as E26.2.
+
+### E29.4 A stronger partner (honesty check) — **the gain survives**
+
+| partner | alone | best mix | lambda | gain |
+|---|---|---|---|---|
+| bigram | 286.4 | 204.5 | 0.8 | 28.6% |
+| trigram | 284.4 | **201.7** | 0.8 | 29.1% |
+
+3-way mixture: **ppl 201.7 at fuzzy=0.8, bigram=0.0, trigram=0.2.** The bigram receives **zero
+weight** once the fuzzy model is present -- it is subsumed. This was the check that could have
+deflated E28's headline, and it does the opposite.
+
+### E29.5 Parameter frontier
+
+At 300,000 positions:
+
+| classes | params (top-20 sparse) | standalone | best mix |
+|---|---|---|---|
+| 50 | ~1,050 | 312.6 | 257.2 |
+| 200 | ~4,200 | 296.5 | 247.3 |
+| 800 | ~16,800 | 254.6 | 228.6 |
+| 3000 | ~63,000 | 244.2 | 215.6 |
+
+**50 classes / ~1,050 parameters reach 312.6**, better than the zero-order model's best 355.5 at
+8x the parameters. Quality keeps improving with class count, so the smallness and quality optima
+now differ -- unlike the zero-order system, where 285 parameters were within 5% of the best.
+
+### E29.6 The grammaticality metric — **broken as designed, then fixed**
+
+First attempt: "share of adjacent category pairs the corpus produces". Real text, fuzzy
+generation, and a bigram all scored **100.0%**. With ~17 categories there are only ~289 possible
+pairs and essentially all occur somewhere in 20,000 sentences, so the metric cannot discriminate
+anything. Recording it as a failed measurement rather than quietly dropping it.
+
+Replaced with **category-sequence perplexity** under a category bigram fitted on training text --
+graded, so a degenerate sequence cannot saturate it:
+
+| | category ppl (lower = more plausible) |
+|---|---|
+| real held-out text | **8.18** |
+| first-order fuzzy | **10.10** |
+| bigram, same data | 12.84 |
+| unigram (floor) | 14.76 |
+
+So generation is measurably more syntactically plausible than a bigram's and still clearly short
+of real text. "Not grammatical" now has a number, and the fuzzy model sits about 30% of the way
+from bigram to real on this scale. Samples remain locally plausible and globally incoherent:
+``he did | not possession of marrying you could hardly very voice and certainly man his seems``.
+
+### E29.7 What the classes look like at full data
+
+```
+IF ctx:prev2:=he AND ctx:prev1:=did  -> not(0.701), so(0.045), it(0.033)   [4.37 nats]
+IF ctx:prev2:PRONOUN AND ctx:prev1:=did -> not(0.674), it(0.032), so(0.029) [4.03 nats]
+IF ctx:prev1:=little  -> jackal(0.035), boy(0.033), girl(0.025), man(0.020) [0.52 nats]
+```
+
+The `little` class is now sensible -- `boy`, `girl`, `man` -- where at 20,000 positions it was
+`jackal` at 0.105 off a handful of observations. `jackal` survives at 0.035 because Bryant's
+stories genuinely contain "the little jackal" often; at full data it is ranked among plausible
+company instead of dominating.
+
+---
+
+## Standing summary — CURRENT (as of E29)
+
+**Headline.** First-order TSK -- word-level consequents, a fuzzy class-based LM -- **beats
+n-gram baselines head-to-head on the same corpus and split**: perplexity **219.9** against a
+bigram's 286.4 and a tuned trigram's 284.4, a 23% improvement. Mixed with a trigram, **201.7**
+(29% better than the trigram alone) at fuzzy weight 0.8, with the bigram receiving zero weight in
+a 3-way mixture. This is the first configuration in the project to win outright rather than
+contribute to a mixture.
+
+**How it gets there.** Rules keep the antecedents the zero-order system mined, but each rule
+carries a **word distribution** rather than a scalar, estimated as the firing-weighted next-word
+distribution when the rule's context side fires. Classes are mined context-only by
+firing-weighted information gain. Estimation is strongly data-bound: 20,000 -> 624,325 positions
+moves standalone perplexity 601.2 -> 219.9, and the curve only flattened when the corpus ran out.
+
+**Generation.** Category-sequence perplexity **10.10** against real text's 8.18 and a bigram's
+12.84 -- measurably more syntactically plausible than a bigram, clearly short of real text. Text
+is locally plausible, globally incoherent.
+
+**Smallness.** 50 classes / ~1,050 parameters reach 312.6 (better than the zero-order model's best
+355.5 at 8x the parameters). Unlike the zero-order system, quality keeps improving with size, so
+the small and best configurations now differ. Training on 1M tokens is ~16 minutes on one CPU
+core at full data, ~3 minutes at 300K positions, no GPU.
+
+**Representation.** Coverage 96.7%, exact multi-resolution rollup asserted in CI, L2 similarity
+gap +0.278, explainable typo robustness, correct senses for rare words.
+
+**Interpretability.** Named graded classes with readable word distributions and information gain
+in nats: `IF prev2:=he AND prev1:=did -> not(0.701)` [4.37 nats]. This is what the project set out
+to build, and it is now also the best-performing configuration -- interpretability is not being
+paid for with quality here.
+
+**Ruled out:** context width (E12, E26), rule order (E12, E15), Gaussian antecedents (E9/E10),
+symmetric decode similarity (E11), Cython and BLAS threading (E14, E23.3), raw score normalisation
+(E18.2), candidate-side lexicalisation (E19), the linguistic parameter space (E22), thread
+parallelism (E23.3), OOV quality as the ceiling (E24.2), open-class rule quota (E25.1),
+width-aware false-discovery control and relational slots (E27), candidate-linear first-order
+consequents (E28.1, on argument), **held-out class selection (E29.1) and hierarchical parent
+backoff (E29.2 -- the parents are already in the mixture, so backoff adds redundancy)**.
+
+**Confirmed:** vectorising beat parallelising 11x (E23.2); the base holds the right categorical
+grammar (E25.1, E27.3); long-range context is real but redundant (E27.2); the consequent's shape
+was the ceiling (E28); **class estimation is data-bound and scale now favours the fuzzy model
+(E29.3), inverting E23.4's conclusion, which was a fact about the zero-order model only**.
+
+**Corrected along the way:** 0.569 balanced accuracy (E12.1); all pre-E17 ranking numbers; the
+trigram baseline (E20.2); E19.4's mixture gain quoted without budget dependence (E22.4); E22.3's
+fit-cost attribution (E23.1); the recommendation to push corpus size (E23.4, now inverted for
+first-order); E24.3's "all rules are closed-class" (E25.1); a per-condition test set caught by a
+moving control (E26.2); E26.1's dilution mechanism (E27.2); E28's standalone numbers, an
+undersmoothing artefact (E28.3); **E29.6's first grammaticality metric, which could not
+discriminate real text from a unigram**.
+
+**Open.** Global coherence: samples are locally plausible and globally incoherent, and a 2-token
+antecedent cannot carry discourse state. Class count is capped at 3,000 by `max_classes` and
+quality was still improving there. Order-3 context classes untested. GPT-2 untested (blocked, and
+a data-gap comparison anyway). No neural-embedding comparison. Experiment B's real encoder and SST
+paths unrun.
