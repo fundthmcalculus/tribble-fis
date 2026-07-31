@@ -42,6 +42,7 @@ Convention: **WORKED** / **FAILED** / **PARTIAL**, each with a why.
 | E23 | Corpus scale and parallel training | profile overturned the premise; scale went the wrong way |
 | E24 | The OOV fix | correct + 5.1x faster; did NOT improve the model |
 | E25 | Open-class rule quota | FAILED (no effect); found the real bug was `top_k=20` |
+| E26 | Wider context windows (2-32) | FAILED monotonically; spurious long-range rules dilute |
 
 ---
 
@@ -1991,7 +1992,7 @@ load-bearing).
 
 ---
 
-## Standing summary — CURRENT (as of E25)
+## Standing summary (SUPERSEDED — see the final one)
 
 **Best results.** On the 1M-token narrative corpus: perplexity **317.5** against a bigram's
 253.3, optimal mixture weight zero. On the 87K-token children's corpus: 324.8, and mixing with
@@ -2037,3 +2038,128 @@ refuted, and the real bug was a default argument. The recurring error was inferr
 from aggregate symptoms or single traces instead of measuring the intermediate quantity. The
 measurement that worked -- mass on content words before and after each processing step -- was
 cheap and should have come first.
+
+---
+
+## E26 — Wider context windows (2, 4, 8, 16, 32) — **FAILED, monotonically**
+
+E12 ruled out context width on the marginal formulation at 87K tokens. Re-asked on the current
+stack -- joint ranker, 1M tokens, NCE inversion, corrected decoding -- because generation is now
+plausible word-by-word but has no agreement or clause structure, and a 2-token window cannot
+supply either. Rule budget raised (`max_rules=20000`, `beam=6000`) per the instruction not to
+worry about saturating the base.
+
+| window | dims | ppl | 2gram | mix | lambda | rules | order-2 | content% | fit | peak |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 2 | 783 | **355.5** | 286.4 | 285.3 | 0.1 | 2668 | 2608 | 41.1% | 37s | 2.3 GB |
+| 4 | 1305 | 368.1 | 286.4 | 286.0 | 0.1 | 3899 | 3839 | 44.6% | 32s | 3.3 GB |
+| 8 | 2349 | 374.2 | 286.4 | 286.4 | 0.0 | 6060 | 6000 | 48.2% | 60s | 5.2 GB |
+| 16 | 4437 | 384.0 | 286.4 | 286.4 | 0.0 | 6060 | 6000 | 41.1% | 97s | 7.5 GB |
+| 32 | 8613 | 395.2 | 286.4 | 286.4 | 0.0 | 6060 | 6000 | 41.1% | 186s | 12.7 GB |
+
+**Monotonically worse with width**, and the mixture weight falls from 0.1 to 0. Content rate does
+not improve and the samples do not become more grammatical -- window 32 gives
+`the little | could sailed the necessity that so greater from had the wife without my length`.
+This replicates E12's conclusion on a completely different formulation, which is worth more than
+the original finding was.
+
+### E26.1 Why: the search finds far more spurious long-range structure than real
+
+**5,111 of 6,060 rules reference a lag greater than 2**, and they are weak:
+
+```
+IF ctx:prev31:QUANTIFIER AND cand:INFINITIVE_TO  THEN P ~ 0.458  (support=24,  lift=+1.695)
+IF ctx:prev13:=whale     AND cand:DETERMINER     THEN P ~ 0.476  (support=21,  lift=+1.668)
+IF ctx:prev31:=more      AND cand:INFINITIVE_TO  THEN P ~ 0.600  (support=10,  lift=+1.542)
+IF ctx:prev29:DETERMINER AND cand:PREPOSITION    THEN P ~ 0.167  (support=846, lift=+1.582)
+```
+
+Against the window-2 rules, which reach lift +8 to +10 (`IF prev1:DETERMINER AND
+cand:OPEN_NOUN`, lift +8.411). So the distant-lag rules are 4-5x weaker in lift, and "a
+quantifier appeared 31 tokens ago, so expect *to*" on 24 samples is plainly noise.
+
+The damage is not displacement -- `_apply_quota` sorts by |lift|, so the strong rules survive.
+It is **dilution**: `predict` blends rules by firing weight, so 5,111 low-lift rules that fire
+frequently (`prev29:DETERMINER` fires on 846 samples) pull every prediction toward the base rate.
+Widening the window multiplies the pool of candidate pairs -- 32 lags x 261 features is ~2.2M
+possible order-2 rules against ~0.2M at window 2 -- and spurious correlations scale with the
+pool while real ones do not. More context is more opportunity to be wrong.
+
+This is the multiple-comparisons problem in a rule learner. `min_support` and `min_interaction`
+were tuned at window 2 and do not tighten as the search space grows, so the false-discovery rate
+rises with width. A width-aware threshold (Bonferroni-style, or a held-out validation gate on
+each rule) is the obvious remedy and is untested.
+
+### E26.2 Two measurement bugs in my own sweep, both caught by controls
+
+**A moving control.** The first run scored each condition at positions `i >= window`, giving
+every window a *different* test set. It showed non-monotonic perplexity (324 -> 381 -> 318 -> 365)
+which I would have had to explain. The tell was the **bigram column moving** (253.3 / 277.1 /
+240.8 / 265.5) when the same bigram trained on the same data must score identically everywhere.
+Fixed by scoring every condition at `i >= 32`; the bigram is now constant at 286.4 and the fuzzy
+column is cleanly monotonic. **Include a control that cannot legitimately vary, then check that
+it does not.**
+
+**An uncatchable OOM.** window=32 in float64 needed ~22 GB and the OOM killer SIGKILLed the
+process, so the `except MemoryError` handler never ran and the run simply ended with no message.
+Fixed by adding a `dtype` option to `MembershipRuleRegressor` (default float64, so the GEMM
+exactness test at rel=1e-9 still holds) and running the whole sweep in float32 so precision is
+not a variable across rows.
+
+### E26.3 What is left
+
+Width is not the missing ingredient for grammaticality, and neither were corpus scale (E23.4),
+OOV quality (E24.2), or rule budget (E25.1). What the samples still lack -- agreement, clause
+structure -- is *structural* rather than a matter of how much left context is visible, and a
+flat conjunction of lag-indexed memberships has no way to represent "the subject of this clause"
+regardless of window size. The honest next step is not another knob on this architecture.
+
+72 tests pass (1 new: `dtype` defaults to float64 so the exactness guarantee is not silently
+weakened).
+
+---
+
+## Standing summary — CURRENT (as of E26)
+
+**Best results.** 1M-token narrative corpus, window 2: perplexity **317.5** at 20,000 training
+positions against a bigram's 253.3, optimal mixture weight zero. On the 87K-token children's
+corpus: 324.8, and mixing with a bigram beat the bigram alone (253.9 vs 256.3). Generation
+produces real vocabulary at 48.8% content words against 46.2% in real text, but is not
+grammatical. Representation claims hold: coverage 96.7%, exact rollup asserted in CI, L2
+similarity gap +0.278, explainable typo robustness, correct senses for rare words.
+
+**Smallness and speed.** 285 learned parameters reach within 5% of the full 2,520-parameter
+model, against 34,021 stored counts for a bigram. Cold training on 1M tokens is ~1 minute on one
+CPU core. Rule count drives inference cost, not training cost. A `dtype=float32` option halves
+the design matrix when width demands it.
+
+**Honest framing.** This loses to a bigram on the same text and adds nothing to a mixture with
+one at 1M tokens. Its distribution is better calibrated than its samples suggested. Its real
+deliverable so far is that every failure has been *legible* -- each negative below was diagnosed
+by reading rules or intermediate quantities, not inferred from a loss curve.
+
+**Ruled out:** context width (E12, and **replicated far more strongly in E26** -- monotonically
+worse out to 32 tokens), rule order for ranking (E12, E15), Gaussian antecedents (E9/E10),
+symmetric decode similarity (E11), Cython and BLAS threading (E14, E23.3), raw score
+normalisation (E18.2), candidate-side lexicalisation (E19), the linguistic parameter space as a
+feature space (E22), corpus scale as the closing lever (E23.4), thread-based parallelism (E23.3),
+OOV representation quality as the ceiling (E24.2), the open-class rule quota (E25.1).
+
+**Confirmed:** vectorising beat parallelising by 11x (E23.2); the base already contains high-lift
+content-selection rules (E25.1); content/function mass matches real text (E25.2); **the rule
+learner's false-discovery rate rises with the search space and dilutes predictions (E26.1)**.
+
+**Corrected along the way:** the 0.569 balanced accuracy (E12.1); all pre-E17 ranking numbers;
+the trigram baseline (E20.2); E19.4's mixture gain quoted without budget dependence (E22.4);
+E22.3's fit-cost attribution (E23.1); my recommendation to push corpus size (E23.4); E24.3's
+"all rules are closed-class" diagnosis (E25.1); **a per-condition test set in the first window
+sweep, caught by a moving bigram control (E26.2)**.
+
+**Open, and now the central question.** Five hypotheses about the quality ceiling have been
+refuted (scale, OOV quality, rule budget twice, context width). What generation lacks --
+agreement, clause structure -- is structural: a flat conjunction of lag-indexed memberships
+cannot represent "the subject of this clause" at any window size. Candidates: a width-aware
+significance threshold so wide contexts stop diluting (E26.1); rules over *relations* rather
+than lag positions; or accepting that this architecture's contribution is interpretable
+*scoring* rather than generation. hits@1 caps near 0.14. GPT-2 untested (blocked). No
+neural-embedding comparison. Experiment B's real encoder and SST paths unrun.

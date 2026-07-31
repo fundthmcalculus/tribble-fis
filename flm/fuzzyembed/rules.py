@@ -85,7 +85,8 @@ class MembershipRuleRegressor:
                  order_quota: dict[int, float] | None = None,
                  seed_features: set[int] | None = None,
                  reserved_features: set[int] | None = None,
-                 reserved_quota: float = 0.0):
+                 reserved_quota: float = 0.0,
+                 dtype=np.float64):
         if t_norm not in T_NORMS:
             raise ValueError(f"t_norm must be one of {T_NORMS}")
         self.max_rules = max_rules
@@ -121,6 +122,13 @@ class MembershipRuleRegressor:
         # ``_apply_quota`` for the measurement that motivated it (E24.3).
         self.reserved_features = set(reserved_features) if reserved_features else None
         self.reserved_quota = reserved_quota
+        # Working precision for the design matrix. float64 by default because the GEMM
+        # exactness test asserts agreement with per-candidate computation to rel=1e-9, which
+        # float32 accumulation over tens of thousands of rows cannot hold. float32 exists for
+        # wide context windows, where memory -- not time -- is the binding constraint: cost is
+        # ``rows * dims * 2 * itemsize`` (X and Xy both materialised), so a 32-token window at
+        # 8,613 columns needs ~137 KB/row in float64 and half that in float32 (E26).
+        self.dtype = dtype
         self.rules_: list[Rule] = []
         self.default_: float = 0.0
         self.feature_names_: list[str] = []
@@ -154,8 +162,8 @@ class MembershipRuleRegressor:
 
     def fit(self, X: np.ndarray, y: np.ndarray,
             feature_names: list[str] | None = None):
-        X = np.asarray(X, dtype=float)
-        y = np.asarray(y, dtype=float)
+        X = np.asarray(X, dtype=self.dtype)
+        y = np.asarray(y, dtype=self.dtype)
         n_features = X.shape[1]
         self.feature_names_ = (list(feature_names) if feature_names
                                else [f"f{i}" for i in range(n_features)])

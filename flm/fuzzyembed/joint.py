@@ -76,7 +76,8 @@ class JointNextTokenRanker:
     def __init__(self, featuriser, window: int = 2, n_negatives: int = 8,
                  max_rules: int = 2500, max_order: int = 2, seed: int = 42,
                  order_quota: dict[int, float] | None = None, beam: int = 800,
-                 lexeme_side: str = "ctx", open_class_quota: float = 0.0):
+                 lexeme_side: str = "ctx", open_class_quota: float = 0.0,
+                 dtype=np.float64):
         self.f = featuriser
         self.window = window
         self.n_negatives = n_negatives
@@ -115,6 +116,9 @@ class JointNextTokenRanker:
         # that selects a content word -- generation came out as function-word soup.
         # 0.0 keeps the pre-E25 behaviour.
         self.open_class_quota = open_class_quota
+        # Working precision of the design matrix, forwarded to the rule learner. float32
+        # halves the memory a wide context window needs; see MembershipRuleRegressor.
+        self.dtype = dtype
         self.seed = seed
         self.model_: MembershipRuleRegressor | None = None
         self.feature_names_: list[str] = []
@@ -301,7 +305,7 @@ class JointNextTokenRanker:
             # force-seeded or no ctx-x-cand interaction is ever generated.
             seed_features=set(range(self.cand_offset_)),
             reserved_features=self.open_class_features(),
-            reserved_quota=self.open_class_quota,
+            reserved_quota=self.open_class_quota, dtype=self.dtype,
         ).fit(X, y, self.feature_names_)
 
         if verbose:

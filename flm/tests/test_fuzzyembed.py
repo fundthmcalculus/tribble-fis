@@ -784,3 +784,17 @@ def test_top_k_zero_keeps_every_candidate():
     for top_k, expected in ((0, 3), (-1, 3), (2, 2), (99, 3)):
         k = len(p) if top_k <= 0 else min(top_k, len(p))
         assert k == expected, top_k
+
+
+def test_rule_regressor_dtype_defaults_to_float64():
+    """float32 must be opt-in: the GEMM exactness test asserts agreement at rel=1e-9.
+
+    ``dtype`` exists so a wide context window fits in memory (E26.2), but float32
+    accumulation over tens of thousands of rows cannot hold that tolerance, so silently
+    defaulting to it would weaken the guarantee that ``_grow_level``'s two matrix products
+    equal per-candidate computation.
+    """
+    import inspect
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    assert inspect.signature(MembershipRuleRegressor.__init__
+                             ).parameters["dtype"].default is np.float64
