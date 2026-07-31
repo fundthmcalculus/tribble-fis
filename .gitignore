@@ -15,3 +15,5 @@
 /flm/exp_b/results_*.json
 __pycache__/
 *.pyc
+
+/flm/**/__pycache__

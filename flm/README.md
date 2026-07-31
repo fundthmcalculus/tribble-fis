@@ -9,8 +9,12 @@ recover names from a dense model after the fact.
 
 | | Experiment | Status | Doc |
 |---|---|---|---|
-| **A** | **Fuzzy embedding model** — coordinates are membership degrees in named nodes of a curated lexical hierarchy | planned | [`FUZZY_EMBEDDING_PLAN.md`](FUZZY_EMBEDDING_PLAN.md) |
+| **A** | **Fuzzy embedding model** — coordinates are membership degrees in named nodes of a curated lexical hierarchy | **built & measured** (WordNet backend; M0 coverage 96.7%, exact rollup PASS, L2 similarity gap +0.278) | [`FUZZY_EMBEDDING_PLAN.md`](FUZZY_EMBEDDING_PLAN.md) · [`fuzzyembed/`](fuzzyembed/) |
+| **A2** | **Fuzzy sequence model + fuzzy decoder** — next-token supersense prediction, then Zadeh linguistic approximation | built; decoder works, **sequence model barely above chance (bal-acc 0.528)** | [`fuzzyembed/README.md`](fuzzyembed/README.md) |
 | **B** | **FIS head on a frozen neural embedding model** — sentiment analysis, TSK heads vs. linear probe | harness built & smoke-tested; not run on real data | [`FIS_ON_EMBEDDINGS_PLAN.md`](FIS_ON_EMBEDDINGS_PLAN.md) · [`exp_b/`](exp_b/) |
+
+**Experiment A is implemented** in [`fuzzyembed/`](fuzzyembed/) — see that README for
+results, three design corrections found by running it, and honest limitations.
 
 **Run B first.** It is cheap, it reuses existing code, and it is the control that
 determines whether A is worth building — see §5 of its plan for why its *expected
@@ -92,8 +96,12 @@ generation stack, not the classifier head.
 ## Scope discipline
 
 An embedding model plus a classification head is **not a language model.** A fuzzy
-LM needs (1) a fuzzy representation ← Experiment A, (2) a fuzzy *sequence* model ←
-does not exist, (3) a fuzzy *decoder* ← does not exist. In particular,
+LM needs (1) a fuzzy representation ← Experiment A, **built**; (2) a fuzzy *sequence*
+model ← built but barely above chance; (3) a fuzzy *decoder* ← built and working. The
+sequence stage is where it stalls, and the reason is informative rather than a tuning
+problem: next-word prediction is mostly driven by **syntax and function words**, which
+this semantic representation discards by construction. A fuzzy LM needs a fuzzy model
+of syntax beside its fuzzy model of semantics. In particular,
 `MixtureOfGaussiansFuzzySequenceClassifier` in this repo is a confusion-driven
 cascade of specialists, not a temporal sequence model, and is not a seed for (2).
 
