@@ -38,6 +38,7 @@ import pandas as pd
 
 from .corpus import Corpus
 from .embedder import FuzzyEmbedder
+from .syntax import SyntaxTagger
 
 
 @dataclass
@@ -58,33 +59,58 @@ class FuzzySequenceModel:
 
     def __init__(self, embedder: FuzzyEmbedder, level: int = 2, window: int = 2,
                  n_outputs: int = 12, top_n: int = 8,
-                 membership_threshold: float = 0.25, random_state: int = 42):
+                 membership_threshold: float = 0.25, use_syntax: bool = True,
+                 max_rules: int = 24, max_order: int = 2, random_state: int = 42):
         self.emb = embedder
         self.level = level
         self.window = window
         self.n_outputs = n_outputs
         self.top_n = top_n
         self.membership_threshold = membership_threshold
+        self.use_syntax = use_syntax
+        self.max_rules = max_rules
+        self.max_order = max_order
+        # The semantic embedding cannot see function words, which is why the
+        # semantics-only model scored 0.528 balanced accuracy (chance 0.500). Named
+        # syntactic categories supply the missing signal without giving up
+        # interpretability -- see syntax.py.
+        self.tagger = SyntaxTagger(
+            getattr(embedder.senses, "lemma_synsets", None)) if use_syntax else None
         self.random_state = random_state
         self.models_: dict = {}
-        self.output_keys_: list[str] = []
+        self.output_index_: list[int] = []
         self.prior_: np.ndarray | None = None
         self.info_: SequenceInfo | None = None
 
-    def _proba(self, X_df, names: list[str]) -> np.ndarray:
-        """Positive-class probability per output -- the predicted membership degree."""
-        cols = []
-        for name in names:
-            clf = self.models_[name]
-            pos = list(clf.classes_).index(1)
-            cols.append(np.asarray(clf.predict_proba(X_df))[:, pos])
+    def _proba(self, X: np.ndarray, names: list[str]) -> np.ndarray:
+        """Predicted membership degree per output dimension."""
+        cols = [self.models_[name].predict(np.asarray(X)) for name in names]
         return np.clip(np.vstack(cols).T, 0.0, 1.0)
 
     # -- featurisation -----------------------------------------------------
 
     def _token_vector(self, token: str) -> np.ndarray:
-        """Level-``L`` membership vector for a single token."""
-        return self.emb.embed(token, self.level)
+        """Context features for one token: semantic memberships (+) syntax."""
+        sem = self.emb.embed(token, self.level)
+        if self.tagger is None:
+            return sem
+        return np.concatenate([sem, self.tagger.tag(token)])
+
+    def _target_vector(self, token: str) -> np.ndarray:
+        """What we predict about the *next* token: same joint space as the context.
+
+        Predicting the syntactic categories too is the point -- it lets the model
+        say "a noun is due" and lets the decoder emit function words, which a
+        semantics-only target space made impossible.
+        """
+        return self._token_vector(token)
+
+    def _output_names(self) -> list[str]:
+        h = self.emb.h
+        names = [h.name(k) for k in h.level_keys(self.level)]
+        if self.tagger is not None:
+            names += self.tagger.names()
+        return names
 
     def _windows(self, corpus: Corpus, max_windows: int, seed: int
                  ) -> tuple[np.ndarray, np.ndarray]:
@@ -124,43 +150,48 @@ class FuzzySequenceModel:
             np.asarray(Y, dtype=np.float32)[:max_windows]
 
     def feature_names(self) -> list[str]:
-        """Named input features, e.g. ``prev1:noun.animal`` -- these appear in rules."""
-        h = self.emb.h
-        names = []
-        for lag in range(self.window, 0, -1):
-            for key in h.level_keys(self.level):
-                names.append(f"prev{lag}:{h.name(key)}")
-        return names
+        """Named input features, e.g. ``prev1:noun.animal``, ``prev1:DETERMINER``.
+
+        These strings are what appear inside the learned rules, which is the whole
+        point -- both the semantic and the syntactic half stay legible.
+        """
+        base = self._output_names()
+        return [f"prev{lag}:{n}" for lag in range(self.window, 0, -1) for n in base]
 
     # -- fit / predict -----------------------------------------------------
 
     def fit(self, corpus: Corpus, max_windows: int = 4000, test_frac: float = 0.2,
             verbose: bool = True):
-        """Fit one fuzzy classifier per modelled output dimension.
+        """Fit one ``MembershipRuleRegressor`` per modelled output dimension.
 
-        Not ``MimoGaussianPredictor``/``MixtureOfGaussiansFuzzyRegressor``, despite
-        the target being continuous. Those quantile-bin the target via
-        ``partition_output``, and a membership coordinate is mostly zero, so
-        ``pd.qcut`` hits duplicate bin edges and raises. Binarising at
-        ``membership_threshold`` and reading ``predict_proba`` is also the better
-        *semantic* fit: "does the next token belong to supersense S, and to what
-        degree?" is a graded membership question, and a fuzzy classifier's
-        positive-class probability is exactly that degree.
+        Neither TRIBBLE estimator family works on this data, for two separate
+        reasons, both measured:
+
+        * ``MixtureOfGaussiansFuzzyRegressor`` raises -- ``partition_output``
+          quantile-bins the target and a membership coordinate is mostly zero, so
+          ``pd.qcut`` hits duplicate bin edges.
+        * ``MixtureOfGaussiansFuzzyClassifier`` runs but sits at chance (AUC 0.49-0.52
+          where logistic regression on the same features gets 0.66-0.78). The feature
+          matrix is 93% zeros, and fitting a Gaussian membership function per
+          ``(feature, class)`` to a near-binary variable yields near-identical
+          antecedents for both classes; the t-norm product then collapses to 0.5.
+
+        The inputs here are *already* membership degrees, so there is no membership
+        function to fit. ``rules.py`` uses the input values directly as firing
+        strengths, which recovers the signal and reads better besides.
         """
-        from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+        from .rules import MembershipRuleRegressor
 
         X, Y = self._windows(corpus, max_windows, self.random_state)
-        h = self.emb.h
-        keys = h.level_keys(self.level)
+        all_names = self._output_names()
 
         # Predict only the most active output dimensions. The rest are filled from
-        # the corpus prior at predict time: fitting a regressor for a supersense
-        # that fires 3 times in the corpus buys noise, and each output costs a
-        # separate TSK fit.
+        # the corpus prior at predict time: fitting a classifier for a supersense
+        # that fires 3 times in the corpus buys noise, and each output costs a fit.
         activity = Y.sum(axis=0)
         chosen = np.argsort(activity)[::-1][:self.n_outputs]
         chosen = np.array([i for i in chosen if activity[i] > 0])
-        self.output_keys_ = [keys[i] for i in chosen]
+        self.output_index_ = list(chosen)
         self.prior_ = Y.mean(axis=0)
 
         self._out_names_ = None
@@ -169,38 +200,35 @@ class FuzzySequenceModel:
         Ytr, Yte = Y[:-n_test, chosen], Y[-n_test:, chosen]
 
         cols = self.feature_names()
-        out_names = [h.name(k) for k in self.output_keys_]
+        out_names = [all_names[i] for i in chosen]
         if verbose:
             print(f"  windows={len(X)} features={X.shape[1]} "
-                  f"outputs={len(chosen)}/{len(keys)}")
+                  f"outputs={len(chosen)}/{len(all_names)}")
             print(f"  predicting: {', '.join(out_names)}")
 
-        Xtr_df = pd.DataFrame(Xtr, columns=cols)
-        Xte_df = pd.DataFrame(Xte, columns=cols)
         self.models_ = {}
         kept: list[int] = []
         for j, name in enumerate(out_names):
-            label = (Ytr[:, j] >= self.membership_threshold).astype(int)
+            label = (Ytr[:, j] >= self.membership_threshold).astype(float)
             if len(np.unique(label)) < 2:
                 if verbose:
                     print(f"    skipping '{name}': single class at threshold "
                           f"{self.membership_threshold}")
                 continue
-            clf = MixtureOfGaussiansFuzzyClassifier(top_n=self.top_n,
-                                                    random_state=self.random_state)
-            clf.fit(Xtr_df, label)
-            self.models_[name] = clf
+            self.models_[name] = MembershipRuleRegressor(
+                max_rules=self.max_rules, max_order=self.max_order,
+            ).fit(Xtr, label, cols)
             kept.append(j)
         if not self.models_:
             raise RuntimeError("no output dimension had both classes; lower "
                                "membership_threshold or raise max_windows")
 
-        self.output_keys_ = [self.output_keys_[j] for j in kept]
+        self.output_index_ = [self.output_index_[j] for j in kept]
         out_names = [out_names[j] for j in kept]
         Ytr, Yte = Ytr[:, kept], Yte[:, kept]
 
-        tr = self._proba(Xtr_df, out_names)
-        te = self._proba(Xte_df, out_names)
+        tr = self._proba(Xtr, out_names)
+        te = self._proba(Xte, out_names)
         self._out_names_ = out_names
         # Baseline: always predict the training mean of each output. A sequence model
         # that cannot beat this has learned nothing about context.
@@ -243,28 +271,26 @@ class FuzzySequenceModel:
         """Full level-``L`` membership vector for the next token."""
         if not self.models_:
             raise RuntimeError("call fit() first")
-        h = self.emb.h
         ctx = list(context)[-self.window:]
         while len(ctx) < self.window:
             ctx.insert(0, "")
         feats = np.concatenate([self._token_vector(t) for t in ctx])
-        pred = self._proba(pd.DataFrame([feats], columns=self.feature_names()),
-                           self._out_names_)[0]
+        pred = self._proba(feats[None, :], self._out_names_)[0]
 
         out = self.prior_.copy()
-        for key, value in zip(self.output_keys_, pred):
-            out[h.index(key, self.level)] = float(np.clip(value, 0.0, 1.0))
+        for idx, value in zip(self.output_index_, pred):
+            out[idx] = float(np.clip(value, 0.0, 1.0))
         return out
 
-    def explain_next(self, context: list[str], k: int = 6) -> str:
-        h = self.emb.h
+    def explain_next(self, context: list[str], k: int = 8) -> str:
+        names = self._output_names()
         pred = self.predict_next(context)
-        keys = h.level_keys(self.level)
+        modelled = set(self.output_index_)
         order = np.argsort(pred)[::-1][:k]
         lines = [f"context: {' '.join(context)!r}",
-                 f"  predicted next-token supersenses (L{self.level}):"]
+                 f"  predicted next-token dimensions (semantic L{self.level} + syntax):"]
         for i in order:
-            marker = "*" if keys[i] in self.output_keys_ else " "
-            lines.append(f"   {marker} {h.name(keys[i]):<26} {pred[i]:.3f}")
+            marker = "*" if i in modelled else " "
+            lines.append(f"   {marker} {names[i]:<26} {pred[i]:.3f}")
         lines.append("   (* = modelled dimension; others are the corpus prior)")
         return "\n".join(lines)

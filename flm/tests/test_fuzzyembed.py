@@ -255,3 +255,98 @@ def test_widths_decrease_toward_the_root(wn_corpus):
     widths = h.widths()
     assert widths[0] == 1
     assert widths == sorted(widths), f"widths must be non-decreasing: {widths}"
+
+
+# --------------------------------------------------------------------------
+# Syntax tagger
+# --------------------------------------------------------------------------
+
+def test_syntax_is_genuinely_fuzzy():
+    """Closed-class ambiguity is represented, not forced to a single label."""
+    from flm.fuzzyembed.syntax import SyntaxTagger, SYNTAX_CATEGORIES
+    t = SyntaxTagger()
+    idx = {c: i for i, c in enumerate(SYNTAX_CATEGORIES)}
+
+    to = t.tag("to")
+    assert to[idx["PREPOSITION"]] == 1.0
+    assert to[idx["INFINITIVE_TO"]] == 1.0      # both readings live at once
+
+    that = t.tag("that")
+    assert that[idx["DETERMINER"]] == 1.0
+    assert that[idx["CONJUNCTION"]] == 1.0
+
+    her = t.tag("her")
+    assert her[idx["PRONOUN"]] == 1.0 and her[idx["POSSESSIVE"]] == 1.0
+
+    no = t.tag("no")
+    assert no[idx["DETERMINER"]] == 1.0 and no[idx["NEGATOR"]] == 1.0
+
+
+def test_boundary_marker_distinguishes_padding_from_unknown():
+    """An empty (padded) position must not look like an unknown open-class word."""
+    from flm.fuzzyembed.syntax import SyntaxTagger, BOUNDARY, SYNTAX_CATEGORIES
+    t = SyntaxTagger()
+    i = SYNTAX_CATEGORIES.index(BOUNDARY)
+    assert t.tag("")[i] == 1.0
+    assert t.tag("zzzunknownzzz")[i] == 0.0
+    assert t.tag("zzzunknownzzz").sum() == 0.0
+
+
+# --------------------------------------------------------------------------
+# Membership rule learner
+# --------------------------------------------------------------------------
+
+def test_rules_recover_a_planted_conjunction():
+    """The learner must find an interaction that neither conjunct shows alone."""
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    rng = np.random.default_rng(0)
+    n = 600
+    a = (rng.random(n) < 0.4).astype(float)
+    b = (rng.random(n) < 0.4).astype(float)
+    noise = rng.random((n, 5))
+    X = np.column_stack([a, b, noise])
+    y = a * b                                    # pure AND, no marginal signal
+    model = MembershipRuleRegressor(max_rules=8).fit(
+        X, y, ["A", "B", "n0", "n1", "n2", "n3", "n4"])
+
+    top = model.rules_[0]
+    assert set(top.names) == {"A", "B"}, model.render()
+    assert top.consequent > 0.9
+    # And it predicts: firing on both should far exceed firing on neither.
+    both = model.predict(np.array([[1, 1, 0, 0, 0, 0, 0]]))[0]
+    neither = model.predict(np.array([[0, 0, 0, 0, 0, 0, 0]]))[0]
+    assert both > neither + 0.4
+
+
+def test_rules_reject_redundant_conjunctions():
+    """A conjunct that duplicates its parent must not enter the rule base."""
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    rng = np.random.default_rng(1)
+    n = 500
+    a = (rng.random(n) < 0.5).astype(float)
+    X = np.column_stack([a, a.copy(), rng.random(n)])   # col 1 is an alias of col 0
+    y = a
+    model = MembershipRuleRegressor(max_rules=10).fit(X, y, ["A", "A_alias", "noise"])
+    pairs = [r for r in model.rules_ if set(r.names) == {"A", "A_alias"}]
+    assert not pairs, f"kept a redundant alias conjunction: {model.render()}"
+
+
+def test_rules_default_handles_all_quiet_input():
+    """No antecedent firing must degrade to the prior, not divide by zero."""
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    rng = np.random.default_rng(2)
+    X = (rng.random((300, 4)) < 0.3).astype(float)
+    y = X[:, 0]
+    model = MembershipRuleRegressor().fit(X, y)
+    out = model.predict(np.zeros((1, 4)))[0]
+    assert np.isfinite(out)
+    assert out == pytest.approx(model.default_, abs=1e-6)
+
+
+def test_rules_predictions_stay_in_unit_interval():
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    rng = np.random.default_rng(3)
+    X = rng.random((400, 6))
+    y = rng.random(400)
+    p = MembershipRuleRegressor().fit(X, y).predict(X)
+    assert p.min() >= 0.0 and p.max() <= 1.0

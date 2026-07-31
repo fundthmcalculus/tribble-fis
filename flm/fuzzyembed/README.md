@@ -145,11 +145,72 @@ that gap, not to hobble the model.
 | `senses.py` | Stage 2: lexeme → node degrees; SemCor priors, antonyms, context relaxation |
 | `embedder.py` | Stage 3: OWA aggregation, hedges, upward closure, explanations |
 | `similarity.py` | fuzzy Jaccard / Dice, hierarchy-aware variant |
-| `sequence.py` | fuzzy sequence model — next-token supersense prediction |
+| `syntax.py` | **fuzzy syntax** — named closed-class categories + graded open-class markers |
+| `rules.py` | **membership rule learner** — TSK for inputs that are already memberships |
+| `sequence.py` | fuzzy sequence model — next-token prediction over the joint space |
 | `decode.py` | fuzzy decoder — Zadeh linguistic approximation |
 | `run_flm.py` | driver: `--stage coverage|embed|sequence|generate|all` |
 
-## Three design corrections found by running it
+## The rule learner, and why TRIBBLE's estimators do not fit here
+
+Measured on identical features and splits, predicting "does category C come next?":
+
+| target | logreg AUC | FIS/gaussian | FIS/trapezoid | **rules** |
+|---|---|---|---|---|
+| OPEN_NOUN | 0.664 | 0.488 | 0.500 (const) | 0.643 |
+| OPEN_VERB | 0.745 | 0.511 | 0.500 (const) | 0.692 |
+| DETERMINER | 0.742 | 0.515 | 0.500 (const) | **0.747** |
+| PREPOSITION | 0.776 | — | — | **0.784** |
+
+**Why the FIS fails.** The feature matrix is **93% zeros**. TRIBBLE fits a Gaussian per
+`(feature, class)`, which presumes a continuous, unimodal, well-spread variable — true
+of its benchmark data (concrete strength, turbine power, wine chemistry), false of a
+sparse membership vector. Fit a Gaussian to `{0 w.p. .95, 1 w.p. .05}` and both classes
+get the same narrow near-zero curve; the t-norm product then collapses to 0.5. This is a
+finding about TRIBBLE, not just this experiment.
+
+**The insight.** When the inputs are already membership degrees, **there is no membership
+function to fit — the input value *is* the membership degree.** The antecedent-fitting
+layer is redundant. `rules.py` uses the input values directly as firing strengths and
+learns only rule structure and consequents.
+
+**And the rules are linguistically correct**, recovered from data:
+
+```
+IF prev1:DETERMINER                    THEN next[OPEN_NOUN] ~ 0.675   (default 0.364)
+IF prev1:adj.all AND prev2:DETERMINER  THEN next[OPEN_NOUN] ~ 0.788
+IF prev1:POSSESSIVE                    THEN next[OPEN_NOUN] ~ 0.754
+IF prev1:OPEN_VERB                     THEN next[OPEN_NOUN] ~ 0.243
+```
+
+Determiners precede nouns; "the red ___" is a noun; "my ___" is a noun; after a verb a
+noun is less likely. English noun-phrase syntax, readable, at parity with a linear
+model. Interpretability is *better* than the Gaussian version — an antecedent is
+literally "the previous token is a determiner, to degree 0.9", with no fitted centre or
+width to explain.
+
+## Decoder: symmetric similarity was the wrong asymmetry
+
+With `t[OPEN_NOUN]=0.44` the top candidates were `jolly`, `fourth`, `in` — not nouns.
+Symmetric fuzzy Jaccard rewards words whose pattern resembles the *marginal
+distribution*, i.e. bland words with membership spread thinly everywhere, and penalises
+the pure noun the prediction asked for. Replaced with an asymmetric **coverage** score,
+`Σ min(t,w) / Σ w`: how much of *this word's own* mass sits in the predicted categories.
+(`similarity.py` still uses symmetric Jaccard for sentence-to-sentence comparison, where
+the symmetry is correct.)
+
+Pure-category retrieval after the fix — all correct:
+
+```
+OPEN_NOUN   -> mile, chimney, fame, paris, street, hen, city
+OPEN_VERB   -> declare, argued, doubted, remarked, remarking, petted
+OPEN_ADJ    -> alive, headstrong, hateful, harsh, famous, hotter
+DETERMINER  -> those, these, the, another, this, an, no
+PREPOSITION -> from, of, upon, through, in, since, during
+AUXILIARY   -> must, can, were, did, am, shall, are
+```
+
+## Design corrections found by running it
 
 Recorded because each was a wrong idea in the plan, not a coding slip.
 
@@ -176,7 +237,14 @@ Gaussian. Frequency now modulates the FIS output from outside
 related fix: training words are now sampled proportional to log frequency, because
 uniform sampling of a Zipfian vocabulary draws almost only rare words.
 
-**3. Interior nodes must not be dimensions.** Levels were originally derived from
+**3. Closed-class filters must agree across modules.** After the decoder metric fix,
+`OPEN_NOUN` still retrieved `somebody`, `o`, `t`. `SyntaxTagger` read `lemma_synsets`
+directly without the function-word filter `SenseAssigner` applies, so closed-class words
+got a pure `OPEN_NOUN=1.0` and nothing else — and because the coverage metric normalises
+by a word's own mass, those single-coordinate vectors scored a perfect 1.0 and topped
+every retrieval. An inconsistency between two modules, surfaced only by the new metric.
+
+**4. Interior nodes must not be dimensions.** Levels were originally derived from
 every registered node. Since short paths clamp (which is what makes rollup exact),
 every ancestor clamped into all deeper levels as an extra near-always-on coordinate —
 the root worst of all, appearing at every resolution carrying the max of everything

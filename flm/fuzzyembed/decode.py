@@ -51,15 +51,25 @@ class LexemeAtlas:
     """
 
     def __init__(self, embedder: FuzzyEmbedder, level: int,
-                 vocabulary: list[str] | None = None, verbose: bool = False):
+                 vocabulary: list[str] | None = None, verbose: bool = False,
+                 vectorizer=None, names: list[str] | None = None):
+        """``vectorizer``/``names`` let the atlas live in the sequence model's *joint*
+        semantic+syntactic space rather than semantics alone.
+
+        This is what makes function words decodable. With a semantics-only atlas,
+        ``the`` / ``of`` / ``was`` have all-zero vectors and were skipped outright, so
+        generation could never emit them and the output could not be grammatical.
+        """
         self.emb = embedder
         self.level = level
+        self.vectorizer = vectorizer or (lambda w: embedder.embed(w, level))
+        self.names = names
         vocab = vocabulary if vocabulary is not None else embedder.lexicon.vocabulary
         rows, words = [], []
         for w in vocab:
-            v = embedder.embed(w, level)
+            v = self.vectorizer(w)
             if v.sum() <= 0:
-                continue      # function words carry no membership; undecodable
+                continue      # no membership anywhere; nothing to match against
             rows.append(v)
             words.append(w)
         if not rows:
@@ -70,19 +80,41 @@ class LexemeAtlas:
             print(f"  lexeme atlas: {len(words)} decodable words "
                   f"x {self.matrix.shape[1]} dims (L{level})")
 
-    def score(self, target: np.ndarray) -> np.ndarray:
-        """Fuzzy Jaccard of ``target`` against every lexeme. Vectorised."""
+    def score(self, target: np.ndarray, metric: str = "coverage") -> np.ndarray:
+        """Score every lexeme against a predicted membership vector. Vectorised.
+
+        ``metric="coverage"`` (default) is **asymmetric**: how much of this word's own
+        membership mass sits in categories the prediction called for,
+        ``sum_c min(t_c, w_c) / sum_c w_c``.
+
+        ``metric="jaccard"`` is the symmetric fuzzy Jaccard of ``similarity.py``, and
+        it is the *wrong* asymmetry for decoding -- kept only for comparison. The
+        predicted vector is a marginal (a degree per category, spread across many),
+        whereas a lexeme's vector is one specific peaked pattern. Symmetric Jaccard
+        therefore rewards words whose pattern resembles the *marginal distribution*,
+        i.e. bland words with membership spread thinly everywhere, and penalises the
+        pure noun the prediction actually asked for: with ``t[OPEN_NOUN]=0.44``,
+        ``cat`` (mass 1.0 concentrated in OPEN_NOUN) scored below ``jolly`` and
+        ``fourth`` purely for being less spread out. Normalising by the word's own
+        mass removes that bias.
+        """
         t = target[None, :]
+        if metric == "jaccard":
+            num = np.minimum(self.matrix, t).sum(axis=1)
+            den = np.maximum(self.matrix, t).sum(axis=1)
+            return np.where(den > 0, num / np.maximum(den, 1e-12), 0.0)
+        if metric != "coverage":
+            raise ValueError(f"unknown metric {metric!r}")
         num = np.minimum(self.matrix, t).sum(axis=1)
-        den = np.maximum(self.matrix, t).sum(axis=1)
-        return np.where(den > 0, num / np.maximum(den, 1e-12), 0.0)
+        mass = self.matrix.sum(axis=1)
+        return np.where(mass > 0, num / np.maximum(mass, 1e-12), 0.0)
 
 
 class FuzzyDecoder:
     """Turns a predicted membership vector into a word."""
 
     def __init__(self, atlas: LexemeAtlas, hedge: float = 2.0, top_k: int = 10,
-                 seed: int = 0):
+                 seed: int = 0, metric: str = "coverage"):
         """``hedge`` is the concentration exponent -- the temperature analogue.
 
         ``hedge > 1`` concentrates (more decisive, "*very* like the prediction");
@@ -90,13 +122,14 @@ class FuzzyDecoder:
         raw similarity.
         """
         self.atlas = atlas
+        self.metric = metric
         self.hedge = hedge
         self.top_k = top_k
         self.rng = np.random.default_rng(seed)
 
     def decode(self, target: np.ndarray, sample: bool = True,
                exclude: set[str] | None = None) -> DecodeStep:
-        scores = self.atlas.score(target)
+        scores = self.atlas.score(target, metric=self.metric)
         if exclude:
             for i, w in enumerate(self.atlas.words):
                 if w in exclude:
@@ -120,9 +153,12 @@ class FuzzyDecoder:
         else:
             idx = 0
 
-        h = self.atlas.emb.h
-        keys = h.level_keys(self.atlas.level)
-        dims = [(h.name(keys[i]), float(target[i]))
+        if self.atlas.names is not None:
+            labels = self.atlas.names
+        else:
+            h = self.atlas.emb.h
+            labels = [h.name(k) for k in h.level_keys(self.atlas.level)]
+        dims = [(labels[i], float(target[i]))
                 for i in np.argsort(target)[::-1][:4] if target[i] > 0]
         return DecodeStep(cands[idx][0], cands[idx][1], cands, dims)
 

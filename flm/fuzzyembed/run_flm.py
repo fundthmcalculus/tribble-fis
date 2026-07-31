@@ -135,7 +135,11 @@ def stage_generate(args, emb, seq_model):
     print("=" * 72)
     print("FUZZY DECODER -- linguistic approximation")
     print("=" * 72)
-    atlas = LexemeAtlas(emb, seq_model.level, verbose=True)
+    # Atlas in the sequence model's joint semantic+syntactic space, so function
+    # words are decodable (a semantics-only atlas skipped them entirely).
+    atlas = LexemeAtlas(emb, seq_model.level, verbose=True,
+                        vectorizer=seq_model._token_vector,
+                        names=seq_model._output_names())
     print()
     for hedge in (args.hedge, 6.0):
         decoder = FuzzyDecoder(atlas, hedge=hedge, top_k=args.top_k, seed=args.seed)

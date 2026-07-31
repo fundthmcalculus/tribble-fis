@@ -91,6 +91,12 @@ def tokenize(text: str) -> list[list[str]]:
 
 
 def _build(name: str, sentences: list[list[str]]) -> Corpus:
+    # Single characters are dropped: contraction expansion and OCR noise leave stray
+    # "o"/"t"/"m" tokens that carry no meaning but do acquire spurious WordNet senses
+    # (and then dominate decode retrieval, since their membership vector is a single
+    # coordinate).
+    sentences = [[t for t in s if len(t) > 1] for s in sentences]
+    sentences = [s for s in sentences if s]
     counts: dict[str, int] = {}
     for sent in sentences:
         for tok in sent:
