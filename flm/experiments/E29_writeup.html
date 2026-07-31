@@ -1,0 +1,756 @@
+<title>E29 — Word-level consequents beat n-grams</title>
+<style>
+  :root {
+    color-scheme: light;
+    --plane: #f7f7f4;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --rule: #dedcd4;
+    --s1: #2a78d6;
+    --s2: #eb6834;
+    --good: #0ca30c;
+    --bad: #d03b3b;
+    --chip: #eef1f6;
+    --code-bg: #f2f2ee;
+    --display: ui-serif, Georgia, "Times New Roman", serif;
+    --body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --data: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+      --muted: #898781; --grid: #2c2c2a; --rule: #2c2c2a;
+      --s1: #3987e5; --s2: #d95926; --good: #0ca30c; --bad: #d03b3b;
+      --chip: #232322; --code-bg: #202020;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+    --muted: #898781; --grid: #2c2c2a; --rule: #2c2c2a;
+    --s1: #3987e5; --s2: #d95926; --good: #0ca30c; --bad: #d03b3b;
+    --chip: #232322; --code-bg: #202020;
+  }
+
+  body {
+    background: var(--plane);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.62;
+    margin: 0;
+    padding: 0 20px 80px;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; }
+  .measure { max-width: 68ch; }
+
+  header.masthead {
+    border-bottom: 2px solid var(--ink);
+    padding: 56px 0 20px;
+    margin-bottom: 36px;
+  }
+  .eyebrow {
+    font-family: var(--data);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(30px, 5vw, 46px);
+    line-height: 1.08;
+    letter-spacing: -0.012em;
+    text-wrap: balance;
+    margin: 0 0 16px;
+  }
+  .standfirst {
+    font-family: var(--display);
+    font-size: clamp(17px, 2.2vw, 21px);
+    line-height: 1.5;
+    color: var(--ink-2);
+    max-width: 62ch;
+    margin: 0;
+  }
+
+  h2 {
+    font-family: var(--display);
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.008em;
+    text-wrap: balance;
+    margin: 52px 0 6px;
+  }
+  h3 {
+    font-family: var(--body);
+    font-size: 15px;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+    margin: 32px 0 4px;
+  }
+  p { margin: 0 0 16px; }
+  a { color: var(--s1); }
+
+  .expid {
+    font-family: var(--data);
+    font-size: 12px;
+    color: var(--muted);
+    letter-spacing: 0.06em;
+  }
+  .verdict {
+    display: inline-block;
+    font-family: var(--data);
+    font-size: 11px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 3px;
+    border: 1px solid currentColor;
+    vertical-align: 2px;
+    margin-left: 8px;
+    white-space: nowrap;
+  }
+  .verdict.ok { color: var(--good); }
+  .verdict.no { color: var(--bad); }
+  .verdict.mid { color: var(--muted); }
+
+  .keyfigs {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    margin: 0 0 8px;
+  }
+  .keyfig { background: var(--surface); padding: 18px 18px 16px; }
+  .keyfig .n {
+    font-family: var(--display);
+    font-size: 34px;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    display: block;
+    margin-bottom: 7px;
+  }
+  .keyfig .l {
+    font-size: 13px;
+    color: var(--ink-2);
+    line-height: 1.4;
+    display: block;
+  }
+  .keyfig .s {
+    font-family: var(--data);
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    display: block;
+    margin-top: 6px;
+  }
+
+  figure {
+    margin: 30px 0 8px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    padding: 20px 20px 12px;
+  }
+  figcaption {
+    font-size: 13.5px;
+    color: var(--ink-2);
+    line-height: 1.5;
+    margin-top: 12px;
+    max-width: 76ch;
+  }
+  figcaption b { color: var(--ink); font-weight: 620; }
+  .figtitle {
+    font-family: var(--body);
+    font-size: 14px;
+    font-weight: 650;
+    margin: 0 0 2px;
+  }
+  .figsub {
+    font-family: var(--data);
+    font-size: 11.5px;
+    color: var(--muted);
+    letter-spacing: 0.03em;
+    margin: 0 0 14px;
+  }
+  .chartbox { overflow-x: auto; }
+  svg { display: block; max-width: 100%; height: auto; }
+  svg text { font-family: var(--body); fill: var(--muted); }
+  .axlab { font-size: 11px; }
+  .dlab { font-size: 11.5px; font-weight: 650; }
+  .reflab { font-family: var(--data); font-size: 10.5px; }
+  .anno { font-size: 11px; font-style: italic; }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+    margin: 0 0 12px;
+    font-size: 12.5px;
+    color: var(--ink-2);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .swatch { width: 22px; height: 3px; border-radius: 2px; flex: none; }
+  .swatch.dash {
+    height: 0; border-top: 2px dashed var(--muted); border-radius: 0;
+  }
+
+  details {
+    margin-top: 12px;
+    border-top: 1px solid var(--rule);
+    padding-top: 10px;
+  }
+  summary {
+    font-family: var(--data);
+    font-size: 11.5px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  summary:focus-visible { outline: 2px solid var(--s1); outline-offset: 3px; }
+  .tblwrap { overflow-x: auto; margin-top: 12px; }
+  table {
+    border-collapse: collapse;
+    font-family: var(--data);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    width: 100%;
+  }
+  th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 500; letter-spacing: 0.04em; }
+  tr.hl td { color: var(--ink); font-weight: 650; }
+
+  .rules {
+    font-family: var(--data);
+    font-size: 12.5px;
+    line-height: 1.75;
+    background: var(--code-bg);
+    border-left: 3px solid var(--s1);
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 0 0 18px;
+    white-space: pre;
+  }
+  .samples {
+    font-family: var(--data);
+    font-size: 12.5px;
+    line-height: 1.8;
+    background: var(--code-bg);
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 0 0 18px;
+    white-space: pre;
+  }
+  .samples .p { color: var(--muted); }
+
+  ul.tight { margin: 0 0 16px; padding-left: 20px; }
+  ul.tight li { margin-bottom: 8px; }
+
+  .caveat {
+    border-left: 3px solid var(--muted);
+    padding: 2px 0 2px 16px;
+    color: var(--ink-2);
+    font-size: 15px;
+    margin: 0 0 18px;
+  }
+  .caveat b { color: var(--ink); }
+
+  footer {
+    margin-top: 60px;
+    padding-top: 18px;
+    border-top: 1px solid var(--rule);
+    font-family: var(--data);
+    font-size: 11.5px;
+    color: var(--muted);
+    letter-spacing: 0.03em;
+    line-height: 1.8;
+  }
+
+  #tip {
+    position: fixed;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .09s;
+    background: var(--ink);
+    color: var(--plane);
+    font-family: var(--data);
+    font-size: 11.5px;
+    line-height: 1.5;
+    padding: 6px 9px;
+    border-radius: 4px;
+    white-space: pre;
+    z-index: 50;
+    max-width: 260px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #tip { transition: none; }
+  }
+  .hit { fill: transparent; cursor: crosshair; }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">Fuzzy language model · engineering log · experiment E29</p>
+  <h1>Word-level consequents make the interpretable model the best model</h1>
+  <p class="standfirst">Giving each fuzzy rule a <em>word distribution</em> instead of a scalar takes
+  perplexity from 355.5 to 219.9 — past a bigram and a tuned trigram on the same corpus. The
+  interpretable architecture is now also the accurate one.</p>
+</header>
+
+<div class="keyfigs">
+  <div class="keyfig">
+    <span class="n">219.9</span>
+    <span class="l">First-order TSK, standalone perplexity</span>
+    <span class="s">was 355.5 zero-order</span>
+  </div>
+  <div class="keyfig">
+    <span class="n">−23%</span>
+    <span class="l">vs the best n-gram on identical data</span>
+    <span class="s">trigram 284.4 · bigram 286.4</span>
+  </div>
+  <div class="keyfig">
+    <span class="n">201.7</span>
+    <span class="l">Mixed with a trigram, fuzzy weight 0.8</span>
+    <span class="s">bigram gets weight 0 in a 3-way mix</span>
+  </div>
+  <div class="keyfig">
+    <span class="n">1,050</span>
+    <span class="l">Parameters that already beat the old best</span>
+    <span class="s">50 classes → ppl 312.2</span>
+  </div>
+</div>
+<p class="figsub" style="margin-top:10px">1M-token narrative corpus · sentence-level 80/20 split · 1,000 held-out
+positions, each with ≥32 tokens of left context · every model scored on the same positions and
+candidate set</p>
+
+<div class="measure">
+<h2>What changed</h2>
+<p>For ten experiments this model could say <em>“a noun follows”</em> and never <em>“which noun”</em>.
+A zero-order Takagi–Sugeno rule carries a <strong>scalar</strong> consequent, so
+<span class="expid">IF prev1:DETERMINER AND cand:OPEN_NOUN THEN 0.265</span> assigns the same
+0.265 to every noun in the vocabulary. Six hypotheses about the quality ceiling were refuted in a
+row — corpus scale, out-of-vocabulary quality, rule budget, context width, false-discovery
+control, relational context — because none of them touched the shape of the consequent.</p>
+
+<p>The fix replaces the scalar with a distribution over words:</p>
+</div>
+
+<div class="rules">p(w | ctx)  =  Σ<sub>r</sub> ω<sub>r</sub>(ctx) · p<sub>r</sub>(w)  /  Σ<sub>r</sub> ω<sub>r</sub>(ctx)</div>
+
+<div class="measure">
+<p>where <span class="expid">ω<sub>r</sub></span> is a rule's context-side firing strength and
+<span class="expid">p<sub>r</sub>(w)</span> is the word distribution observed when it fires. Each
+rule becomes a soft, <em>named</em>, overlapping context class with its own next-word
+distribution — a <strong>fuzzy class-based language model</strong>, the graded analogue of
+class-based n-grams (Brown, Della Pietra, deSouza, Lai &amp; Mercer, 1992), where classes were a
+hard clustering.</p>
+
+<p>Two structural consequences followed. The noise-contrastive inversion <em>disappears</em>, since
+<span class="expid">p<sub>r</sub>(w)</span> are already distributions — no double-counting of the
+unigram prior. And the constraint that every rule must touch the candidate <em>inverts</em>: correct
+for scalar consequents, because a context-only rule shifts all candidates equally and cannot change
+a ranking; wrong here, because a context-only rule <em>is</em> a class.</p>
+</div>
+
+<h2>The result <span class="expid">E29.3</span><span class="verdict ok">worked</span></h2>
+<div class="measure">
+<p>The earlier attempt estimated these distributions from 20,000 positions and looked like a clear
+failure. Estimating a <em>distribution</em> per class needs far more data than estimating a scalar,
+and the curve only flattened when the corpus ran out.</p>
+</div>
+
+<figure>
+  <p class="figtitle">Perplexity against the data used to estimate class distributions</p>
+  <p class="figsub">lower is better · log scale · 1,000 shared held-out positions</p>
+  <div class="legend">
+    <span><span class="swatch" style="background:var(--s1)"></span>First-order, standalone</span>
+    <span><span class="swatch" style="background:var(--s2)"></span>Mixed with a trigram</span>
+    <span><span class="swatch dash"></span>Reference baselines</span>
+  </div>
+  <div class="chartbox">
+  <svg viewBox="0 0 660 300" role="img" aria-label="Perplexity falls from 601 to 220 as class-estimation data grows from 20,000 to 624,325 positions, crossing the best n-gram baseline near 200,000 positions.">
+    <!-- gridlines -->
+    <g stroke="var(--grid)" stroke-width="1">
+      <line x1="56" y1="27.7" x2="530" y2="27.7"/>
+      <line x1="56" y1="85.8" x2="530" y2="85.8"/>
+      <line x1="56" y1="143.8" x2="530" y2="143.8"/>
+      <line x1="56" y1="201.9" x2="530" y2="201.9"/>
+      <line x1="56" y1="260" x2="530" y2="260"/>
+    </g>
+    <g class="axlab" text-anchor="end">
+      <text x="48" y="31.7">600</text>
+      <text x="48" y="89.8">500</text>
+      <text x="48" y="147.8">400</text>
+      <text x="48" y="205.9">300</text>
+      <text x="48" y="264">200</text>
+    </g>
+    <text class="axlab" x="12" y="14" text-anchor="start">perplexity</text>
+
+    <!-- reference lines -->
+    <line x1="56" y1="169.7" x2="530" y2="169.7" stroke="var(--muted)" stroke-width="2" stroke-dasharray="6 4"/>
+    <text class="reflab" x="536" y="167">zero-order TSK</text>
+    <text class="reflab" x="536" y="179" fill="var(--ink-2)">355.5</text>
+
+    <line x1="56" y1="211" x2="530" y2="211" stroke="var(--muted)" stroke-width="2" stroke-dasharray="6 4"/>
+    <text class="reflab" x="536" y="208">best n-gram</text>
+    <text class="reflab" x="536" y="220" fill="var(--ink-2)">284.4</text>
+
+    <!-- mixture series -->
+    <polyline fill="none" stroke="var(--s2)" stroke-width="2" stroke-linejoin="round"
+      points="56,231.1 207.3,240.1 333.6,245.8 429.1,252.9 530.1,259"/>
+    <!-- standalone series -->
+    <polyline fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"
+      points="56,26.9 207.3,130.6 333.6,199.8 429.1,234.3 530.1,248.4"/>
+
+    <!-- crossover marker -->
+    <circle cx="364.6" cy="211" r="4.5" fill="none" stroke="var(--ink)" stroke-width="1.5"/>
+    <line x1="364.6" y1="206" x2="364.6" y2="180" stroke="var(--ink)" stroke-width="1"/>
+    <text class="anno" x="368" y="176" fill="var(--ink-2)">crosses the best n-gram, ~200K positions</text>
+
+    <!-- markers: mixture -->
+    <g fill="var(--s2)" stroke="var(--surface)" stroke-width="2">
+      <circle cx="56" cy="231.1" r="4.5"/><circle cx="207.3" cy="240.1" r="4.5"/>
+      <circle cx="333.6" cy="245.8" r="4.5"/><circle cx="429.1" cy="252.9" r="4.5"/>
+      <circle cx="530.1" cy="259" r="5.5"/>
+    </g>
+    <!-- markers: standalone -->
+    <g fill="var(--s1)" stroke="var(--surface)" stroke-width="2">
+      <circle cx="56" cy="26.9" r="4.5"/><circle cx="207.3" cy="130.6" r="4.5"/>
+      <circle cx="333.6" cy="199.8" r="4.5"/><circle cx="429.1" cy="234.3" r="4.5"/>
+      <circle cx="530.1" cy="248.4" r="5.5"/>
+    </g>
+
+    <!-- endpoint direct labels -->
+    <text class="dlab" x="56" y="20" fill="var(--s1)" text-anchor="start">601.2</text>
+    <text class="dlab" x="524" y="242" fill="var(--s1)" text-anchor="end">219.9</text>
+    <text class="dlab" x="524" y="274" fill="var(--s2)" text-anchor="end">201.7</text>
+
+    <!-- x axis -->
+    <line x1="56" y1="266" x2="530" y2="266" stroke="var(--grid)" stroke-width="1"/>
+    <g class="axlab" text-anchor="middle">
+      <text x="56" y="281">20K</text>
+      <text x="207.3" y="281">60K</text>
+      <text x="333.6" y="281">150K</text>
+      <text x="429.1" y="281">300K</text>
+      <text x="530.1" y="281">624K</text>
+    </g>
+    <text class="axlab" x="293" y="296" text-anchor="middle">positions used to estimate class distributions</text>
+
+    <!-- hover targets -->
+    <g>
+      <rect class="hit" x="26" y="10" width="120" height="256" data-tip="20,000 positions&#10;standalone 601.2&#10;+trigram  249.8  (λ 0.4)&#10;1,670 classes"/>
+      <rect class="hit" x="146" y="10" width="120" height="256" data-tip="60,000 positions&#10;standalone 422.7&#10;+trigram  234.3  (λ 0.5)&#10;2,944 classes"/>
+      <rect class="hit" x="266" y="10" width="115" height="256" data-tip="150,000 positions&#10;standalone 303.7&#10;+trigram  224.4  (λ 0.6)&#10;3,000 classes"/>
+      <rect class="hit" x="381" y="10" width="99" height="256" data-tip="300,000 positions&#10;standalone 244.2&#10;+trigram  212.2  (λ 0.7)&#10;3,000 classes"/>
+      <rect class="hit" x="480" y="10" width="50" height="256" data-tip="624,325 positions — corpus exhausted&#10;standalone 219.9&#10;+trigram  201.7  (λ 0.8)&#10;3,000 classes"/>
+    </g>
+  </svg>
+  </div>
+  <figcaption><b>The curve had not flattened when the training text ran out.</b> Standalone
+  perplexity falls 601.2 → 219.9 as class estimation goes from 20,000 to 624,325 positions,
+  crossing the best n-gram near 200,000. This inverts an earlier conclusion of mine: corpus scale
+  was measured to make the <em>zero-order</em> model relatively <em>worse</em>, and I generalised
+  that to the architecture. It was a fact about scalar consequents only.</figcaption>
+  <details>
+    <summary>Data table</summary>
+    <div class="tblwrap">
+    <table>
+      <thead><tr><th>Positions</th><th>Classes</th><th>Standalone</th><th>+ bigram</th><th>λ</th><th>+ trigram</th><th>λ</th></tr></thead>
+      <tbody>
+        <tr><td>20,000</td><td>1,670</td><td>601.2</td><td>256.2</td><td>0.4</td><td>249.8</td><td>0.4</td></tr>
+        <tr><td>60,000</td><td>2,944</td><td>422.7</td><td>239.8</td><td>0.5</td><td>234.3</td><td>0.5</td></tr>
+        <tr><td>150,000</td><td>3,000</td><td>303.7</td><td>228.7</td><td>0.6</td><td>224.4</td><td>0.6</td></tr>
+        <tr><td>300,000</td><td>3,000</td><td>244.2</td><td>215.6</td><td>0.8</td><td>212.2</td><td>0.7</td></tr>
+        <tr><td>600,000</td><td>3,000</td><td>221.0</td><td>204.8</td><td>0.8</td><td>202.0</td><td>0.8</td></tr>
+        <tr class="hl"><td>624,325</td><td>3,000</td><td>219.9</td><td>204.5</td><td>0.8</td><td>201.7</td><td>0.8</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </details>
+</figure>
+
+<figure>
+  <p class="figtitle">The fuzzy model's weight in the mixture</p>
+  <p class="figsub">optimal λ when interpolated with a trigram · λ = 1 would mean the n-gram is unused</p>
+  <div class="chartbox">
+  <svg viewBox="0 0 660 150" role="img" aria-label="Optimal mixture weight on the fuzzy model rises from 0.4 to 0.8 as class-estimation data grows.">
+    <g stroke="var(--grid)" stroke-width="1">
+      <line x1="56" y1="28.7" x2="530" y2="28.7"/>
+      <line x1="56" y1="62" x2="530" y2="62"/>
+      <line x1="56" y1="95.3" x2="530" y2="95.3"/>
+    </g>
+    <g class="axlab" text-anchor="end">
+      <text x="48" y="32.7">0.8</text>
+      <text x="48" y="66">0.6</text>
+      <text x="48" y="99.3">0.4</text>
+    </g>
+    <polyline fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"
+      points="56,95.3 207.3,78.7 333.6,62 429.1,45.3 530.1,28.7"/>
+    <g fill="var(--s1)" stroke="var(--surface)" stroke-width="2">
+      <circle cx="56" cy="95.3" r="4.5"/><circle cx="207.3" cy="78.7" r="4.5"/>
+      <circle cx="333.6" cy="62" r="4.5"/><circle cx="429.1" cy="45.3" r="4.5"/>
+      <circle cx="530.1" cy="28.7" r="5.5"/>
+    </g>
+    <text class="dlab" x="524" y="22" fill="var(--s1)" text-anchor="end">0.8</text>
+    <line x1="56" y1="112" x2="530" y2="112" stroke="var(--grid)" stroke-width="1"/>
+    <g class="axlab" text-anchor="middle">
+      <text x="56" y="127">20K</text><text x="207.3" y="127">60K</text>
+      <text x="333.6" y="127">150K</text><text x="429.1" y="127">300K</text>
+      <text x="530.1" y="127">624K</text>
+    </g>
+    <text class="axlab" x="293" y="143" text-anchor="middle">positions used to estimate class distributions</text>
+    <g>
+      <rect class="hit" x="26" y="10" width="120" height="102" data-tip="20,000 positions&#10;λ = 0.4 — a minor correction"/>
+      <rect class="hit" x="146" y="10" width="120" height="102" data-tip="60,000 positions&#10;λ = 0.5"/>
+      <rect class="hit" x="266" y="10" width="115" height="102" data-tip="150,000 positions&#10;λ = 0.6"/>
+      <rect class="hit" x="381" y="10" width="99" height="102" data-tip="300,000 positions&#10;λ = 0.7"/>
+      <rect class="hit" x="480" y="10" width="50" height="102" data-tip="624,325 positions&#10;λ = 0.8 — the dominant partner"/>
+    </g>
+  </svg>
+  </div>
+  <figcaption>The fuzzy model goes from <b>minor correction to dominant partner</b>. At 1M tokens the
+  previous zero-order architecture took weight <b>zero</b> — it contributed nothing. In a three-way
+  mixture at full data the optimum is fuzzy 0.8 / trigram 0.2 / <b>bigram 0.0</b>: the bigram is
+  subsumed.</figcaption>
+</figure>
+
+<div class="measure">
+<h3>The honesty check</h3>
+<p>The gain is measured against a <em>bigram</em>, so it could have evaporated against a stronger
+partner. It does not: 204.5 mixed with a bigram, <strong>201.7 mixed with a trigram</strong> — and
+in the three-way mixture the bigram's optimal weight is exactly zero. This was the test that could
+have deflated the headline, and it did the opposite.</p>
+</div>
+
+<h2>Two hypotheses that failed</h2>
+
+<div class="measure">
+<h3><span class="expid">E29.1</span> Held-out class selection <span class="verdict no">failed</span></h3>
+<p>Class selection scores candidates by information gain measured on the same rows that estimated
+them, which rewards low entropy and so prefers classes that look sharp by accident. Scoring on
+held-out rows should have removed that bias. It did not help, and at low smoothing it destroyed the
+mixture contribution entirely (λ → 0).</p>
+<div class="caveat"><b>My own design was confounded.</b> Holding out 30% of rows also makes the
+minimum-mass floor about 3.3× stricter, so class count fell 1,670 → 397 and the experiment moved
+criterion and threshold together. The clean version rescales the floor.</div>
+
+<h3><span class="expid">E29.2</span> Hierarchical parent backoff <span class="verdict no">failed</span></h3>
+<p>Each class smooths toward the unigram, which throws away the hierarchy the miner just built — a
+conjunction like <span class="expid">prev2:=the AND prev1:QUANTIFIER</span> should fall back on
+<span class="expid">prev1:QUANTIFIER</span>. That is standard practice (Katz backoff, Kneser–Ney), and
+it made things worse everywhere.</p>
+<p><strong>The reason is structural and worth keeping.</strong> In a mixture of experts the parents
+are <em>already in the mixture</em>. Backoff exists for a model that consults one distribution and
+needs a fallback; here averaging over all classes already performs the backoff, so making a child
+resemble its parent adds redundancy and dilutes the one thing the conjunction contributed. Right
+idiom, wrong architecture.</p>
+</div>
+
+<h2>Size <span class="expid">E29.5</span></h2>
+<div class="measure">
+<p>Learned parameters are one word distribution per class, kept sparse at its top 20 words. Quality
+keeps improving with class count, so unlike the zero-order system the smallest and best
+configurations now differ.</p>
+</div>
+
+<figure>
+  <p class="figtitle">Perplexity against rule-base size</p>
+  <p class="figsub">classes retained, ranked by information gain × mass · 300,000 estimation positions · log scale</p>
+  <div class="chartbox">
+  <svg viewBox="0 0 660 250" role="img" aria-label="Standalone perplexity falls from 324.7 with 25 classes to 244.2 with 3000 classes, passing the zero-order best of 355.5 immediately and the best n-gram between 400 and 800 classes.">
+    <g stroke="var(--grid)" stroke-width="1">
+      <line x1="56" y1="44.7" x2="530" y2="44.7"/>
+      <line x1="56" y1="116.5" x2="530" y2="116.5"/>
+      <line x1="56" y1="188.2" x2="530" y2="188.2"/>
+    </g>
+    <g class="axlab" text-anchor="end">
+      <text x="48" y="48.7">350</text>
+      <text x="48" y="120.5">300</text>
+      <text x="48" y="192.2">250</text>
+    </g>
+    <text class="axlab" x="12" y="14">perplexity</text>
+
+    <line x1="56" y1="36.8" x2="530" y2="36.8" stroke="var(--muted)" stroke-width="2" stroke-dasharray="6 4"/>
+    <text class="reflab" x="536" y="34">zero-order</text>
+    <text class="reflab" x="536" y="46" fill="var(--ink-2)">355.5</text>
+    <line x1="56" y1="138.9" x2="530" y2="138.9" stroke="var(--muted)" stroke-width="2" stroke-dasharray="6 4"/>
+    <text class="reflab" x="536" y="136">best n-gram</text>
+    <text class="reflab" x="536" y="148" fill="var(--ink-2)">284.4</text>
+
+    <polyline fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"
+      points="56,81 124.6,99 193.2,110.4 261.9,122.1 330.5,154.1 399.1,181.7 467.8,193.4 530,196.6"/>
+    <g fill="var(--s1)" stroke="var(--surface)" stroke-width="2">
+      <circle cx="56" cy="81" r="4.5"/><circle cx="124.6" cy="99" r="4.5"/>
+      <circle cx="193.2" cy="110.4" r="4.5"/><circle cx="261.9" cy="122.1" r="4.5"/>
+      <circle cx="330.5" cy="154.1" r="4.5"/><circle cx="399.1" cy="181.7" r="4.5"/>
+      <circle cx="467.8" cy="193.4" r="4.5"/><circle cx="530" cy="196.6" r="5.5"/>
+    </g>
+    <text class="dlab" x="56" y="72" fill="var(--s1)" text-anchor="start">324.7</text>
+    <text class="dlab" x="524" y="214" fill="var(--s1)" text-anchor="end">244.2</text>
+
+    <line x1="56" y1="216" x2="530" y2="216" stroke="var(--grid)" stroke-width="1"/>
+    <g class="axlab" text-anchor="middle">
+      <text x="56" y="231">25</text><text x="124.6" y="231">50</text>
+      <text x="193.2" y="231">100</text><text x="261.9" y="231">200</text>
+      <text x="330.5" y="231">400</text><text x="399.1" y="231">800</text>
+      <text x="467.8" y="231">1600</text><text x="530" y="231">3000</text>
+    </g>
+    <text class="axlab" x="293" y="246" text-anchor="middle">named classes retained</text>
+    <g>
+      <rect class="hit" x="36" y="10" width="54" height="206" data-tip="25 classes · ~525 params&#10;standalone 324.7&#10;+bigram   260.9"/>
+      <rect class="hit" x="90" y="10" width="60" height="206" data-tip="50 classes · ~1,050 params&#10;standalone 312.2&#10;+bigram   257.2"/>
+      <rect class="hit" x="150" y="10" width="65" height="206" data-tip="100 classes · ~2,100 params&#10;standalone 304.2&#10;+bigram   253.4"/>
+      <rect class="hit" x="215" y="10" width="66" height="206" data-tip="200 classes · ~4,200 params&#10;standalone 296.1&#10;+bigram   247.3"/>
+      <rect class="hit" x="281" y="10" width="66" height="206" data-tip="400 classes · ~8,400 params&#10;standalone 273.8&#10;+bigram   240.9"/>
+      <rect class="hit" x="347" y="10" width="66" height="206" data-tip="800 classes · ~16,800 params&#10;standalone 254.5&#10;+bigram   228.6"/>
+      <rect class="hit" x="413" y="10" width="66" height="206" data-tip="1,600 classes · ~33,600 params&#10;standalone 246.4&#10;+bigram   218.0"/>
+      <rect class="hit" x="479" y="10" width="51" height="206" data-tip="3,000 classes · ~63,000 params&#10;standalone 244.2&#10;+bigram   215.6"/>
+    </g>
+  </svg>
+  </div>
+  <figcaption><b>50 classes — about 1,050 parameters — already beat the zero-order model's best of
+  355.5</b>, which used eight times as many. The best n-gram is passed between 400 and 800 classes.
+  Class count was still capped at 3,000 by configuration when quality was improving, so the right
+  edge of this curve is a limit I imposed, not one the method hit.</figcaption>
+</figure>
+
+<h2>Generation <span class="expid">E29.6</span><span class="verdict mid">metric rebuilt</span></h2>
+<div class="measure">
+<p>Every claim about generation so far had been eyeballed. My first metric — the share of adjacent
+category pairs the corpus produces — scored real text, the fuzzy model, and a bigram all at
+<strong>100.0%</strong>: with ~17 categories nearly every pair occurs somewhere, so it discriminated
+nothing. Replaced with category-sequence perplexity under a category bigram, which is graded and
+cannot be saturated.</p>
+</div>
+
+<figure>
+  <p class="figtitle">Syntactic plausibility of generated text</p>
+  <p class="figsub">category-sequence perplexity · lower is more plausible · real held-out text is the target</p>
+  <div class="chartbox">
+  <svg viewBox="0 0 660 190" role="img" aria-label="Category-sequence perplexity: first-order fuzzy 10.10, bigram 12.84, unigram 14.76, against real held-out text at 8.18.">
+    <line x1="298.3" y1="10" x2="298.3" y2="150" stroke="var(--muted)" stroke-width="2" stroke-dasharray="6 4"/>
+    <text class="reflab" x="298.3" y="166" text-anchor="middle" fill="var(--ink-2)">real text 8.18</text>
+
+    <g>
+      <rect x="56" y="20" width="299.3" height="28" rx="4" fill="var(--s1)"/>
+      <rect x="56" y="62" width="380.4" height="28" rx="4" fill="var(--s1)"/>
+      <rect x="56" y="104" width="437.3" height="28" rx="4" fill="var(--s1)"/>
+    </g>
+    <!-- square off the baseline ends -->
+    <g fill="var(--s1)">
+      <rect x="56" y="20" width="6" height="28"/>
+      <rect x="56" y="62" width="6" height="28"/>
+      <rect x="56" y="104" width="6" height="28"/>
+    </g>
+
+    <g class="axlab" text-anchor="end" font-size="12">
+      <text x="48" y="39" fill="var(--ink)">fuzzy</text>
+      <text x="48" y="81">bigram</text>
+      <text x="48" y="123">unigram</text>
+    </g>
+    <g class="dlab" fill="var(--ink)">
+      <text x="363" y="39">10.10</text>
+      <text x="444" y="81">12.84</text>
+      <text x="501" y="123">14.76</text>
+    </g>
+    <line x1="56" y1="150" x2="530" y2="150" stroke="var(--grid)" stroke-width="1"/>
+    <text class="axlab" x="293" y="184" text-anchor="middle">category-sequence perplexity</text>
+    <g>
+      <rect class="hit" x="56" y="16" width="474" height="36" data-tip="first-order fuzzy&#10;category ppl 10.10&#10;~30% of the way from bigram to real text"/>
+      <rect class="hit" x="56" y="58" width="474" height="36" data-tip="bigram, same training data&#10;category ppl 12.84"/>
+      <rect class="hit" x="56" y="100" width="474" height="36" data-tip="unigram floor&#10;category ppl 14.76"/>
+    </g>
+  </svg>
+  </div>
+  <figcaption>Generation is <b>measurably more syntactically plausible than a bigram's</b> and still
+  clearly short of real text — roughly 30% of the way from bigram to real on this scale. Text is
+  locally plausible and globally incoherent, which a two-token antecedent cannot fix.</figcaption>
+</figure>
+
+<div class="samples"><span class="p">he did    | </span>not possession of marrying you could hardly very voice and certainly man his seems
+<span class="p">the little| </span>great perceive of vanity it is returned for an it may now be kept
+<span class="p">there was | </span>time grow of asking that is hard do not to leave me for myself</div>
+
+<h2>What the model is made of</h2>
+<div class="measure">
+<p>This is the part the project was actually about. Each class is a named conjunction with a
+readable word distribution and a measured information gain in nats — not a post-hoc explanation of
+a dense model, but the model itself.</p>
+</div>
+
+<div class="rules">IF prev2:=he AND prev1:=did       →  not(0.701)  so(0.045)  it(0.033)     4.37 nats
+IF prev2:PRONOUN AND prev1:=did   →  not(0.674)  it(0.032)  so(0.029)     4.03 nats
+IF prev1:=did                     →  not(0.561)  you(0.053) it(0.033)     3.42 nats
+IF prev1:=little                  →  jackal(0.035) boy(0.033) girl(0.025) 0.52 nats
+IF prev2:=the                     →  of(0.190)   and(0.074) was(0.026)    0.70 nats</div>
+
+<div class="measure">
+<p>That <span class="expid">little</span> class is a bug resolving itself with data. At 20,000
+positions it predicted <em>jackal</em> at 0.105 — top of the distribution after “the little” — off a
+handful of observations, because information gain rewards low entropy and so favours classes that
+look sharp by accident. At full data <em>jackal</em> sits at 0.035 among <em>boy</em> and
+<em>girl</em>, where it belongs: Bryant's stories genuinely do contain “the little jackal” often.</p>
+
+<h2>Where it stands</h2>
+<ul class="tight">
+  <li><strong>Beats n-grams standalone</strong>, 219.9 against 284.4, on the same corpus, split, and
+  held-out positions — the first configuration in this project to win outright rather than
+  contribute to a mixture.</li>
+  <li><strong>Interpretability is not being paid for with quality.</strong> The named-class model is
+  now also the best-performing one.</li>
+  <li><strong>Trains on a laptop.</strong> About 16 minutes on one CPU core at full data, three
+  minutes at 300,000 positions, no GPU. 80 tests pass.</li>
+  <li><strong>Global coherence is the open problem.</strong> Samples are locally plausible and
+  globally incoherent, and a two-token antecedent cannot carry discourse state.</li>
+  <li><strong>The class cap was still binding.</strong> Quality was improving at 3,000 classes, and
+  order-3 context classes are untested.</li>
+</ul>
+
+<div class="caveat">Not tested here, and worth naming: GPT-2 (unreachable in this environment, and a
+40GB-vs-1M-token comparison measures the data gap rather than the method), any neural-embedding
+comparison, and the sentiment-analysis arm of the project.</div>
+</div>
+
+<footer>
+  Protocol: 1,014,404-token narrative corpus (Gutenberg prose) · sentence-level 80/20 split, seed 0 ·
+  3,000-word candidate vocabulary · 1,000 held-out positions with ≥32 tokens left context ·
+  α = 0.5, min mass 20, order-2 classes, unigram backoff · n-gram baselines tuned on the same data<br>
+  Full record with every refuted hypothesis: <span style="color:var(--ink-2)">flm/LOG.md</span> E28–E29 ·
+  code: <span style="color:var(--ink-2)">flm/fuzzyembed/firstorder.py</span>,
+  <span style="color:var(--ink-2)">flm/experiments/</span>
+</footer>
+
+</div>
+<div id="tip" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  var tip = document.getElementById('tip');
+  function show(e, text) {
+    tip.textContent = text;
+    tip.style.opacity = '1';
+    var r = tip.getBoundingClientRect();
+    var x = e.clientX + 14, y = e.clientY + 14;
+    if (x + r.width > window.innerWidth - 8) x = e.clientX - r.width - 14;
+    if (y + r.height > window.innerHeight - 8) y = e.clientY - r.height - 14;
+    tip.style.left = x + 'px';
+    tip.style.top = y + 'px';
+  }
+  function hide() { tip.style.opacity = '0'; }
+  document.querySelectorAll('.hit').forEach(function (el) {
+    var t = el.getAttribute('data-tip');
+    el.addEventListener('mousemove', function (e) { show(e, t); });
+    el.addEventListener('mouseleave', hide);
+  });
+  document.addEventListener('scroll', hide, { passive: true });
+})();
+</script>

@@ -1,0 +1,108 @@
+{
+ "bigram": 286.35630928438184,
+ "trigram": 284.36000875281337,
+ "zero_order": 355.52601621303296,
+ "alpha": 0.5,
+ "backoff": "unigram",
+ "n_eval": 1000,
+ "scaling": [
+  {
+   "positions": 20000,
+   "classes": 1670,
+   "alone": 601.1592634110613,
+   "mix_bigram": 256.20611431346794,
+   "lam_bigram": 0.4,
+   "mix_trigram": 249.8444663872502,
+   "lam_trigram": 0.4,
+   "fit_s": 10.2
+  },
+  {
+   "positions": 60000,
+   "classes": 2944,
+   "alone": 422.65468260328566,
+   "mix_bigram": 239.8356553988961,
+   "lam_bigram": 0.5,
+   "mix_trigram": 234.30294279188846,
+   "lam_trigram": 0.5,
+   "fit_s": 28.3
+  },
+  {
+   "positions": 150000,
+   "classes": 3000,
+   "alone": 303.73722861940644,
+   "mix_bigram": 228.68266823817643,
+   "lam_bigram": 0.6,
+   "mix_trigram": 224.3956220069338,
+   "lam_trigram": 0.6,
+   "fit_s": 72.5
+  },
+  {
+   "positions": 300000,
+   "classes": 3000,
+   "alone": 244.18622625286582,
+   "mix_bigram": 215.6105425490911,
+   "lam_bigram": 0.8,
+   "mix_trigram": 212.2027574226092,
+   "lam_trigram": 0.7,
+   "fit_s": 179.7
+  }
+ ],
+ "frontier": [
+  {
+   "classes": 25,
+   "params": 525,
+   "alone": 324.7452549779132,
+   "mix_bigram": 260.8749452678895,
+   "lam": 0.5
+  },
+  {
+   "classes": 50,
+   "params": 1050,
+   "alone": 312.2244323676785,
+   "mix_bigram": 257.1695522972957,
+   "lam": 0.5
+  },
+  {
+   "classes": 100,
+   "params": 2100,
+   "alone": 304.2267393744707,
+   "mix_bigram": 253.41671848726585,
+   "lam": 0.6
+  },
+  {
+   "classes": 200,
+   "params": 4200,
+   "alone": 296.13351424267734,
+   "mix_bigram": 247.28925827832882,
+   "lam": 0.6
+  },
+  {
+   "classes": 400,
+   "params": 8400,
+   "alone": 273.84843729159394,
+   "mix_bigram": 240.86960923104309,
+   "lam": 0.6
+  },
+  {
+   "classes": 800,
+   "params": 16800,
+   "alone": 254.49432190439566,
+   "mix_bigram": 228.60459558648864,
+   "lam": 0.7
+  },
+  {
+   "classes": 1600,
+   "params": 33600,
+   "alone": 246.41312358420245,
+   "mix_bigram": 217.97625506424876,
+   "lam": 0.7
+  },
+  {
+   "classes": 3000,
+   "params": 63000,
+   "alone": 244.18622625286582,
+   "mix_bigram": 215.6105425490911,
+   "lam": 0.8
+  }
+ ]
+}

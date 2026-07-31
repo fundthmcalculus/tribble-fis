@@ -2696,6 +2696,16 @@ of real text. "Not grammatical" now has a number, and the fuzzy model sits about
 from bigram to real on this scale. Samples remain locally plausible and globally incoherent:
 ``he did | not possession of marrying you could hardly very voice and certainly man his seems``.
 
+### E29.8 One inconsistency in the E29.3 table, found while plotting
+
+The scaling table above was assembled from two runs with **different `backoff` settings**: 60K/150K
+/300K came from the parent-backoff config (it was `best_mixed` in that script) and 20K/600K/624K
+from unigram backoff. The two agree by 300K (244.6 vs 244.2) but differ a lot at 20K (735.2 vs
+601.2), so plotting them as one curve would have been misleading. `experiments/scaling_curve.py`
+refits the whole curve under one configuration; the corrected points are 60K **422.7** (was 456.6)
+and 150K **303.7** (was 308.2), and `experiments/e29_curve.json` is the consistent series the
+write-up plots. The conclusion is unchanged and slightly stronger.
+
 ### E29.7 What the classes look like at full data
 
 ```
