@@ -43,6 +43,7 @@ Convention: **WORKED** / **FAILED** / **PARTIAL**, each with a why.
 | E24 | The OOV fix | correct + 5.1x faster; did NOT improve the model |
 | E25 | Open-class rule quota | FAILED (no effect); found the real bug was `top_k=20` |
 | E26 | Wider context windows (2-32) | FAILED monotonically; spurious long-range rules dilute |
+| E27 | Significance gating and relational slots | both FAILED; long-range rules are real but redundant |
 
 ---
 
@@ -2119,7 +2120,7 @@ weakened).
 
 ---
 
-## Standing summary — CURRENT (as of E26)
+## Standing summary (SUPERSEDED — see the final one)
 
 **Best results.** 1M-token narrative corpus, window 2: perplexity **317.5** at 20,000 training
 positions against a bigram's 253.3, optimal mixture weight zero. On the 87K-token children's
@@ -2162,4 +2163,196 @@ cannot represent "the subject of this clause" at any window size. Candidates: a 
 significance threshold so wide contexts stop diluting (E26.1); rules over *relations* rather
 than lag positions; or accepting that this architecture's contribution is interpretable
 *scoring* rather than generation. hits@1 caps near 0.14. GPT-2 untested (blocked). No
+neural-embedding comparison. Experiment B's real encoder and SST paths unrun.
+
+---
+
+## E27 — Both candidate fixes for E26 — **both FAILED, and they refuted E26.1's mechanism**
+
+Two options from E26.3, planned and evaluated on the E26 protocol (1M-token corpus, same split,
+TRAINPOS=6000, positions >= 32, float32, bigram control constant at 286.4).
+
+**Option A -- width-aware false-discovery control.** Two gates, because they test the same claim
+with and without a distributional assumption:
+* **A1 analytic (Bonferroni).** |lift| is already a z-statistic up to a constant: under the null
+  a rule's consequent is a mean of `support` draws with SE = sqrt(p(1-p)/support), so
+  `z = (consequent - default)/SE = lift / sqrt(p(1-p))`. Gate on `alpha / m` with `m` the
+  candidates *actually tested per level*, so the threshold tightens automatically with width --
+  the width-awareness E26.1 said was missing. Costs nothing to compute.
+* **A2 empirical (held-out replication).** Mine on 70% of rows, then require each rule's effect
+  to reproduce in *direction* on the held-out 30%. No distributional assumption, and the survival
+  rate is a **direct measurement of the false-discovery rate** rather than an estimate.
+
+**Option B -- relational context slots** (`fuzzyembed/relations.py`). Replace lag-indexed slots
+with 8 functionally-defined ones -- nearest preceding verb, subject, head noun, preposition,
+determiner, sentence start, plus lags 1 and 2 which E26 showed do carry signal. Reach is
+unbounded; dimension is fixed at `n_slots * base`. Not a parse: no parser is installable here
+(no spaCy/stanza/benepar, and nltk ships no tagger data), so slots are filled by scanning back
+for the nearest token whose fuzzy syntactic category matches -- a shallow approximation, stated
+as such in the module docstring.
+
+### E27.1 Results
+
+| condition | dims | ppl | mix | lam | rules | gated | repl% | far% | fit |
+|---|---|---|---|---|---|---|---|---|---|
+| A0 lag w2 (E26 baseline) | 783 | **355.5** | 285.3 | 0.1 | 2668 | — | — | 0% | 29s |
+| A0 lag w32 (E26 baseline) | 8613 | 395.1 | 286.4 | 0.0 | 6060 | — | — | 84% | 195s |
+| A1 lag w2 + signif | 783 | 371.5 | 285.9 | 0.1 | **81** | 2587 | — | 0% | 23s |
+| A1 lag w8 + signif | 2349 | 371.6 | 285.1 | 0.1 | **72** | 5988 | — | 1% | 52s |
+| A1 lag w32 + signif | 8613 | 377.1 | 285.2 | 0.1 | **50** | 6010 | — | 0% | 214s |
+| A2 lag w8 + holdout | 2349 | 371.7 | 286.2 | 0.1 | 4306 | — | **71%** | 63% | 55s |
+| A2 lag w32 + holdout | 8613 | 394.5 | 286.4 | 0.0 | 4794 | — | **79%** | 83% | 179s |
+| B1 relational | 2349 | 374.8 | 286.4 | 0.0 | 5629 | — | — | 53% | 42s |
+| B2 relational + signif | 2349 | 374.0 | 286.2 | 0.1 | 80 | 5549 | — | 11% | 36s |
+| B3 relational + holdout | 2349 | 373.5 | 286.4 | 0.0 | 4081 | — | **72%** | 52% | 39s |
+
+**Neither option beats plain window-2 (355.5).** Every variant lands in 371-395.
+
+### E27.2 The important result: E26.1's mechanism was wrong
+
+E26.1 claimed the distant-lag rules were **spurious** -- false discoveries from a search space
+grown to ~2.2M candidate pairs. The holdout gate tests that directly, and refutes it:
+
+**79% of mined rules replicate on held-out rows at window 32, versus 71% at window 8.**
+
+If wide windows were mining noise, replication should be *low* at window 32 and *fall* with
+width. It is high and it *rises*. And `far%` stays at 83% after filtering, so the long-lag rules
+are among those that reproduce. They are **statistically real and predictively useless**.
+
+That makes sense in hindsight and I should have predicted it: long-range lexical co-occurrence in
+a novel is genuinely present -- `IF prev13:=whale AND cand:DETERMINER` is a real regularity in
+Moby-Dick, a topic/register effect. It is just not *next-token* information beyond what adjacency
+already supplies. The problem is **redundancy, not overfitting**, and no amount of significance
+control can fix redundancy. Both of Option A's gates were aimed at the wrong target, which is why
+the analytic one succeeded mechanically (`far%` 84% -> 0-1%, exactly as designed) and still lost
+perplexity: it removed rules that were real, and their removal cost more than their dilution did.
+
+This is the sixth refuted hypothesis about the ceiling, and the second time a diagnosis of mine
+was refuted by the experiment built to act on it (E24.3 -> E25.1, now E26.1 -> E27.2).
+
+### E27.3 Option B: the structure is learnable, and it does not help
+
+Relational slots do what they were designed to do. They reach window-32 distances at
+window-8 dimension (2,349 vs 8,613 columns) and score 374.8 against lag-32's 395.1 -- **5%
+better at 3.7x fewer features**. And the grammar they learn is real:
+
+```
+IF ctx:verb:AUXILIARY  AND cand:NEGATOR           THEN 0.304  (support=237,  lift=+2.949)
+IF ctx:verb:=did       AND cand:NEGATOR           THEN 0.727  (support=11,   lift=+2.040)
+IF ctx:verb:OPEN_VERB  AND cand:NEGATOR           THEN 0.029  (support=554,  lift=-1.949)
+IF ctx:det:=the        AND cand:OPEN_NOUN         THEN 0.144  (support=2988, lift=+1.737)
+IF ctx:prep:=of        AND cand:noun.phenomenon   THEN 0.397  (support=35,   lift=+1.678)
+```
+
+Those are correct English generalisations at unbounded distance -- "after an auxiliary expect
+*not*", and the *negative* rule "after a main verb do **not** expect *not*", which is the
+do-support constraint stated as a fuzzy rule. The representation can express structure. It just
+does not improve next-token prediction, because adjacency already implies most of it: if `did` is
+the governing verb, `did` is usually also `prev1`.
+
+The heuristic's limits are visible where predicted:
+
+```
+after 'the little rabbit that lived in the old wood was very happy'
+    verb='was', subj='wood', noun='wood', det='the'
+```
+
+`subj` should be `rabbit`; `wood` is inside the relative clause. So a real parser would help the
+slot filling -- but since exact slots at window 2 already beat approximate slots with unbounded
+reach, a parser would be improving the input to a mechanism that is not the bottleneck.
+
+### E27.4 One genuine win, in the other direction
+
+The significance gate is a **model-compression** tool even though it is not a quality fix:
+
+| | rules | learned params | ppl |
+|---|---|---|---|
+| lag w2, ungated | 2668 | ~8,000 | 355.5 |
+| lag w2, gated | **81** | **~240** | 371.5 |
+| lag w32, gated | **50** | **~150** | 377.1 |
+
+**33x fewer parameters for 4.5% worse perplexity**, and it also makes perplexity nearly
+width-independent (371.5 / 371.6 / 377.1 across windows 2, 8, 32) where ungated it degraded
+monotonically. It also restores a non-zero mixture weight at every width (lambda=0.1 where
+ungated window-32 was 0.0). Consistent with E22.3, where 285 parameters reached within 5% of
+2,520. This architecture is extraordinarily compressible, and that -- not perplexity -- is where
+its numbers are competitive.
+
+### E27.5 Where this leaves the project
+
+Six refuted ceiling hypotheses: corpus scale (E23.4), OOV quality (E24.2), rule budget (E25.1),
+context width (E26), false-discovery control and relational structure (both here). The evidence
+now points somewhere fairly specific:
+
+* Long-range context is **real but redundant** for next-token prediction (E27.2).
+* The rule base **already contains** the right categorical grammar, at both adjacency (E25.1) and
+  unbounded distance (E27.3).
+* The distribution's content/function split **already matches real text** (E25.2).
+
+So the missing ingredient is not more context, more data, better features, or better rule
+selection. What generation lacks is *within-category choice* -- which noun, not that a noun --
+and a zero-order TSK rule cannot express it, because its consequent is a constant shared by every
+word matching the antecedent. That is an architectural limit, not a tuning one: the model is a
+well-calibrated categorical predictor, and categorical prediction has a perplexity floor set by
+category size.
+
+The honest options are (a) accept interpretable *scoring* as the contribution and stop pursuing
+generation, or (b) give rules word-level consequents -- a first-order TSK system where the
+consequent is a function over the candidate rather than a scalar, which is a different model.
+Neither is another knob on this one.
+
+77 tests pass (6 new, including one that started out asserting the wrong thing: it expected a
+12-row rule to be rejected outright, when at m=2 that rule genuinely is significant -- the gate's
+property is width-awareness, not absolute strictness, and the test now checks that the same rule
+survives a narrow search and fails a wide one).
+
+---
+
+## Standing summary — CURRENT (as of E27)
+
+**Best results.** 1M-token narrative corpus, window 2, 20,000 training positions: perplexity
+**317.5** against a bigram's 253.3, optimal mixture weight zero. On the 87K-token children's
+corpus: 324.8, and mixing with a bigram beat the bigram alone (253.9 vs 256.3). Generation
+produces real vocabulary at 48.8% content words against 46.2% in real text, and is not
+grammatical. Representation claims hold: coverage 96.7%, exact rollup asserted in CI, L2
+similarity gap +0.278, explainable typo robustness, correct senses for rare words.
+
+**Smallness -- the strongest numbers in the project.** With the E27 significance gate: **81 rules,
+~240 learned parameters, ppl 371.5**, against 2,668 rules for 355.5 -- 33x fewer parameters for
+4.5% worse perplexity, and perplexity becomes width-independent. A bigram needs 34,021 stored
+counts for 253.3. Cold training on 1M tokens is ~1 minute on one CPU core, no GPU.
+
+**Honest framing.** This loses to a bigram on the same text and adds nothing to a mixture with
+one at 1M tokens. Its competitive axis is parameter count, not quality. Its distinctive
+deliverable is that every failure has been *legible*: each negative below was diagnosed by
+reading rules or measuring an intermediate quantity, and two of my own diagnoses were then
+refuted by the experiments built to act on them.
+
+**Ruled out:** context width (E12, E26 -- monotonic to 32 tokens), rule order (E12, E15), Gaussian
+antecedents (E9/E10), symmetric decode similarity (E11), Cython and BLAS threading (E14, E23.3),
+raw score normalisation (E18.2), candidate-side lexicalisation (E19), the linguistic parameter
+space (E22), corpus scale as the closing lever (E23.4), thread parallelism (E23.3), OOV quality
+as the ceiling (E24.2), open-class rule quota (E25.1), **width-aware false-discovery control and
+relational context slots (E27)**.
+
+**Confirmed:** vectorising beat parallelising by 11x (E23.2); the base already holds the right
+categorical grammar at adjacency (E25.1) and at unbounded distance (E27.3); content/function mass
+matches real text (E25.2); **long-range context is statistically real -- 79% of rules replicate on
+held-out rows -- and predictively redundant (E27.2)**.
+
+**Corrected along the way:** 0.569 balanced accuracy (E12.1); all pre-E17 ranking numbers; the
+trigram baseline (E20.2); E19.4's mixture gain quoted without budget dependence (E22.4); E22.3's
+fit-cost attribution (E23.1); my recommendation to push corpus size (E23.4); E24.3's "all rules
+are closed-class" (E25.1); a per-condition test set caught by a moving control (E26.2);
+**E26.1's dilution/false-discovery mechanism (E27.2)**.
+
+**The diagnosis, now specific.** Six refuted ceiling hypotheses converge on one limit: the model
+is a **well-calibrated categorical predictor**, and a zero-order TSK rule's consequent is a
+scalar shared by every word matching its antecedent. It can say "a noun follows" but never "which
+noun", so its perplexity floor is set by category size. That is architectural. The two honest
+paths: accept interpretable *scoring* as the contribution, or move to word-level consequents
+(first-order TSK, consequent a function over the candidate) -- a different model, not a knob on
+this one.
+
+**Open:** hits@1 caps near 0.14. GPT-2 untested (blocked, and a data-gap comparison anyway). No
 neural-embedding comparison. Experiment B's real encoder and SST paths unrun.

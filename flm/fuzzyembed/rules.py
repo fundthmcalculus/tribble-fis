@@ -86,7 +86,8 @@ class MembershipRuleRegressor:
                  seed_features: set[int] | None = None,
                  reserved_features: set[int] | None = None,
                  reserved_quota: float = 0.0,
-                 dtype=np.float64):
+                 dtype=np.float64, significance: float | None = None,
+                 holdout: float = 0.0, holdout_seed: int = 0):
         if t_norm not in T_NORMS:
             raise ValueError(f"t_norm must be one of {T_NORMS}")
         self.max_rules = max_rules
@@ -129,6 +130,34 @@ class MembershipRuleRegressor:
         # ``rows * dims * 2 * itemsize`` (X and Xy both materialised), so a 32-token window at
         # 8,613 columns needs ~137 KB/row in float64 and half that in float32 (E26).
         self.dtype = dtype
+        # -- width-aware false-discovery control (E27) ------------------------------
+        # E26.1 found the failure mode a wider context creates: the order-2 candidate pool
+        # grows from ~0.2M pairs at window 2 to ~2.2M at window 32, spurious correlations
+        # scale with the pool while real ones do not, and `min_support`/`min_interaction`
+        # were tuned at window 2 and never tighten. 5,111 of 6,060 rules referenced a lag > 2
+        # at weak lift, and `predict`'s firing-weighted blend dragged every prediction toward
+        # the base rate.
+        #
+        # `significance` is a Bonferroni-corrected gate, and it costs nothing to compute
+        # because **|lift| is already a z-statistic up to a constant**. Under the null that a
+        # rule is irrelevant, its consequent is a mean of `support` draws with
+        # SE = sqrt(p(1-p)/support), so
+        #
+        #     z = (consequent - default) / SE = lift / sqrt(p(1-p))
+        #
+        # Setting alpha/m with m = candidates *actually tested at that level* makes the
+        # threshold tighten automatically as the search space grows -- which is exactly the
+        # width-awareness E26.1 said was missing.
+        self.significance = significance
+        # `holdout` is the empirical alternative: mine on part of the rows, then require each
+        # rule's effect to reproduce on rows never used to find it. Makes no distributional
+        # assumption, and the survival rate is a direct measurement of the false-discovery
+        # rate rather than an estimate of it.
+        self.holdout = holdout
+        self.holdout_seed = holdout_seed
+        self.n_tested_: int = 0
+        self.n_gated_: int = 0
+        self.replication_: dict[str, float] = {}
         self.rules_: list[Rule] = []
         self.default_: float = 0.0
         self.feature_names_: list[str] = []
@@ -158,6 +187,55 @@ class MembershipRuleRegressor:
             return 0.0, 0.0
         return float((fire * y).sum() / s), float(s)
 
+    # -- significance ------------------------------------------------------
+
+    def _z_critical(self, n_tested: int) -> float:
+        """Bonferroni-corrected two-sided z threshold for ``n_tested`` comparisons."""
+        from statistics import NormalDist
+        alpha = self.significance / max(n_tested, 1)
+        # Guard the tail: alpha/m underflows for very large m, and inv_cdf(1.0) is inf.
+        q = min(1.0 - alpha / 2.0, 1.0 - 1e-15)
+        return float(NormalDist().inv_cdf(q))
+
+    def _z_of(self, consequent: float, support: float) -> float:
+        """|z| for a rule, from quantities already computed. See ``significance``."""
+        p = self.default_
+        var = max(p * (1.0 - p), 1e-12)
+        return abs(consequent - p) * np.sqrt(max(support, 0.0)) / np.sqrt(var)
+
+    def _replicates(self, X, y, rules: list[Rule]) -> list[Rule]:
+        """Keep rules whose effect reproduces on rows never used to mine them.
+
+        Direction *and* magnitude must survive: a rule found because 24 of 54,000 rows
+        happened to line up will not reproduce its sign on a disjoint sample, whereas
+        ``IF prev1:DETERMINER AND cand:OPEN_NOUN`` will. Requiring only |z| again on the
+        holdout would re-test the same statistic on less data; requiring the *sign* of the
+        deviation to agree is the part that actually discriminates.
+        """
+        n = X.shape[0]
+        rng = np.random.default_rng(self.holdout_seed)
+        mask = rng.random(n) < self.holdout
+        if mask.sum() < 50 or (~mask).sum() < 50:
+            return rules
+        Xv, yv = X[mask], y[mask]
+        default_v = float(yv.mean())
+        kept = []
+        for rule in rules:
+            fire = self._fire(Xv, rule.features)
+            sup = float(fire.sum())
+            if sup <= 0:
+                continue
+            cons = float((fire * yv).sum() / sup)
+            same_sign = ((cons - default_v) * (rule.consequent - self.default_)) > 0
+            if same_sign and sup >= max(self.min_support * self.holdout, 3.0):
+                kept.append(rule)
+        self.replication_ = {
+            "tested": float(len(rules)),
+            "replicated": float(len(kept)),
+            "rate": len(kept) / max(len(rules), 1),
+        }
+        return kept
+
     # -- fit ---------------------------------------------------------------
 
     def fit(self, X: np.ndarray, y: np.ndarray,
@@ -183,6 +261,14 @@ class MembershipRuleRegressor:
 
         singles.sort(key=lambda r: -abs(r.lift))
         candidates = [r for r in singles if self._admissible(r.features)]
+        # Order-1 tests one hypothesis per feature.
+        self.n_tested_ = n_features
+        if self.significance is not None:
+            zc = self._z_critical(n_features)
+            before = len(candidates)
+            candidates = [r for r in candidates
+                          if self._z_of(r.consequent, r.support) >= zc]
+            self.n_gated_ += before - len(candidates)
 
         # Higher orders by level-wise growth (Apriori-style): extend each surviving
         # order-(k-1) rule by one strong single. A beam bounds the cost, which would
@@ -208,11 +294,24 @@ class MembershipRuleRegressor:
         for _order in range(2, self.max_order + 1):
             if not frontier_rules:
                 break
+            # Every (frontier rule x seed) cell is one hypothesis tested, so this is the
+            # multiplicity that has to be corrected for -- and it is what grows with the
+            # context window (E26.1).
+            self.n_tested_ += len(frontier_rules) * len(seeds)
             frontier_rules, frontier_fire = self._grow_level(
                 X, y, Xy, frontier_rules, frontier_fire, seeds, seed_cols,
                 seed_gain)
-            candidates.extend(r for r in frontier_rules
-                              if self._admissible(r.features))
+            grown = [r for r in frontier_rules if self._admissible(r.features)]
+            if self.significance is not None:
+                zc = self._z_critical(self.n_tested_)
+                before = len(grown)
+                grown = [r for r in grown
+                         if self._z_of(r.consequent, r.support) >= zc]
+                self.n_gated_ += before - len(grown)
+            candidates.extend(grown)
+
+        if self.holdout > 0:
+            candidates = self._replicates(X, y, candidates)
 
         candidates.sort(key=lambda r: -abs(r.lift))
         self.rules_ = self._apply_quota(candidates)

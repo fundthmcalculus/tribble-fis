@@ -127,11 +127,14 @@ class FuzzyGenerator:
     # -- scoring -----------------------------------------------------------
 
     def _context_features(self, tokens: list[str]) -> np.ndarray:
-        parts = []
-        for lag in range(self.window, 0, -1):
-            j = len(tokens) - lag
-            parts.append(self.f._token_vector(tokens[j] if j >= 0 else ""))
-        return np.concatenate(parts)
+        """Delegate to the ranker so an alternative context model cannot drift.
+
+        This used to re-implement the lag loop. Any ranker that redefines what a context
+        slot is (relational slots, E27) would then have been featurised one way during
+        training and another during generation -- a silent mismatch that produces plausible
+        output and meaningless scores.
+        """
+        return self.r._context_vector(tokens, len(tokens))
 
     def score_all(self, tokens: list[str]) -> np.ndarray:
         """Joint score for every decodable vocabulary word. One step of generation."""

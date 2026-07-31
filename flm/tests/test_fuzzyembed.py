@@ -798,3 +798,119 @@ def test_rule_regressor_dtype_defaults_to_float64():
     from flm.fuzzyembed.rules import MembershipRuleRegressor
     assert inspect.signature(MembershipRuleRegressor.__init__
                              ).parameters["dtype"].default is np.float64
+
+
+def test_significance_threshold_tightens_with_the_search_space():
+    """The whole point of the gate is that it is *width-aware* (E27, option A)."""
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    m = MembershipRuleRegressor(significance=0.05)
+    z_small, z_big = m._z_critical(100), m._z_critical(2_200_000)
+    assert z_big > z_small > 0
+    # Bonferroni on ~2.2M order-2 candidates (window 32) is a demanding threshold.
+    assert z_big > 5.0
+    # Must not blow up when alpha/m underflows.
+    assert np.isfinite(m._z_critical(10 ** 18))
+
+
+def test_significance_gate_is_width_aware_not_absolute():
+    """The SAME tiny-support rule must survive a narrow search and fail a wide one.
+
+    This is the property that matters, and the first version of this test asserted the wrong
+    thing: it expected a 12-row all-positive rule to be rejected outright. With only two
+    hypotheses tested that rule *is* significant, and correctly so -- Bonferroni has nothing
+    to correct for. The failure mode E26.1 described is specifically multiplicity, so the
+    gate's job is to reject the rule once the search space is large, not always.
+    """
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    rng = np.random.default_rng(31)
+    n = 4000
+
+    def data(n_noise):
+        real = (rng.random(n) < 0.5).astype(float)
+        y = np.where(real > 0, 0.8, 0.2)
+        spurious = np.zeros(n)
+        spurious[:12] = 1.0               # fires on 12 rows, all positive by luck
+        y[:12] = 1.0
+        cols = [real, spurious] + [(rng.random(n) < 0.5).astype(float)
+                                   for _ in range(n_noise)]
+        names = ["real", "spurious"] + [f"noise{i}" for i in range(n_noise)]
+        return np.column_stack(cols), y, names
+
+    X, y, names = data(0)
+    narrow = MembershipRuleRegressor(max_rules=99, max_order=1, min_support=5.0,
+                                     significance=0.05).fit(X, y, names)
+    X, y, names = data(4000)
+    wide = MembershipRuleRegressor(max_rules=99, max_order=1, min_support=5.0,
+                                   significance=0.05).fit(X, y, names)
+
+    assert wide._z_critical(wide.n_tested_) > narrow._z_critical(narrow.n_tested_)
+    kept_narrow = {nm for rr in narrow.rules_ for nm in rr.names}
+    kept_wide = {nm for rr in wide.rules_ for nm in rr.names}
+    assert "real" in kept_narrow and "real" in kept_wide, "genuine effect must survive both"
+    assert "spurious" in kept_narrow, "at m=2 this rule really is significant"
+    assert "spurious" not in kept_wide, "wide search must reject it"
+
+
+def test_holdout_gate_reports_a_replication_rate():
+    """The holdout gate must *measure* reproducibility, not just filter."""
+    from flm.fuzzyembed.rules import MembershipRuleRegressor
+    rng = np.random.default_rng(37)
+    n = 3000
+    X = (rng.random((n, 8)) < 0.4).astype(float)
+    y = np.clip(0.7 * X[:, 0] + 0.2, 0, 1)
+    m = MembershipRuleRegressor(max_rules=40, max_order=2, min_support=5.0,
+                                holdout=0.3).fit(X, y)
+    assert 0.0 <= m.replication_["rate"] <= 1.0
+    assert m.replication_["tested"] >= m.replication_["replicated"]
+    # The genuine driver must reproduce.
+    assert any(rr.features == (0,) for rr in m.rules_)
+
+
+def test_relational_slots_reach_past_the_lag_window():
+    """Option B's premise: unbounded reach at fixed dimension."""
+    from flm.fuzzyembed.relations import SLOTS, RelationalNextTokenRanker
+
+    class F:
+        lexemes: list[str] = []
+
+        def _output_names(self):
+            return ["A", "B"]
+
+        def _token_vector(self, token):
+            return np.zeros(2, dtype=np.float32)
+
+    r = RelationalNextTokenRanker(F(), lookback=64)
+    assert r.n_slots() == len(SLOTS)
+    # Dimension depends on slot count, never on how far back a filler sits.
+    assert len(r._names()) == (len(SLOTS) + 1) * 2
+    sent = "the dog that we saw yesterday near the river was very happy".split()
+    filled = dict(zip(SLOTS, r.slot_tokens(sent, len(sent))))
+    assert filled["adj1"] == "happy"
+    # `the` is 3 tokens back here, well outside a 2-token lag window.
+    assert filled["det"] == "the"
+    assert filled["start"] == "the"
+
+
+def test_generator_context_matches_the_ranker_slot_definition():
+    """The generator must not re-implement slot filling (it used to, E27).
+
+    A ranker with relational slots featurised one way in training and another in generation
+    would produce plausible text from meaningless scores -- a silent failure.
+    """
+    from flm.fuzzyembed.relations import RelationalNextTokenRanker
+
+    class F:
+        lexemes: list[str] = []
+
+        def _output_names(self):
+            return ["A", "B"]
+
+        def _token_vector(self, token):
+            v = np.zeros(2, dtype=np.float32)
+            if token:
+                v[0] = 1.0
+            return v
+
+    r = RelationalNextTokenRanker(F(), lookback=64)
+    toks = "the dog was very happy".split()
+    assert r._context_vector(toks, len(toks)).shape[0] == r.n_slots() * 2

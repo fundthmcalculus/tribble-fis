@@ -77,7 +77,8 @@ class JointNextTokenRanker:
                  max_rules: int = 2500, max_order: int = 2, seed: int = 42,
                  order_quota: dict[int, float] | None = None, beam: int = 800,
                  lexeme_side: str = "ctx", open_class_quota: float = 0.0,
-                 dtype=np.float64):
+                 dtype=np.float64, significance: float | None = None,
+                 holdout: float = 0.0):
         self.f = featuriser
         self.window = window
         self.n_negatives = n_negatives
@@ -119,6 +120,12 @@ class JointNextTokenRanker:
         # Working precision of the design matrix, forwarded to the rule learner. float32
         # halves the memory a wide context window needs; see MembershipRuleRegressor.
         self.dtype = dtype
+        # Width-aware false-discovery control, forwarded to the rule learner (E27).
+        # `significance` is an alpha for a Bonferroni gate whose threshold tightens as the
+        # candidate pool grows; `holdout` is the fraction of rows reserved to test whether
+        # each mined rule reproduces. Both default to off, i.e. pre-E27 behaviour.
+        self.significance = significance
+        self.holdout = holdout
         self.seed = seed
         self.model_: MembershipRuleRegressor | None = None
         self.feature_names_: list[str] = []
@@ -128,8 +135,7 @@ class JointNextTokenRanker:
 
     def _names(self) -> list[str]:
         base = self.f._output_names()
-        ctx = [f"ctx:prev{lag}:{n}"
-               for lag in range(self.window, 0, -1) for n in base]
+        ctx = [f"ctx:{slot}:{n}" for slot in self.slot_names() for n in base]
         self.cand_offset_ = len(ctx)
         return ctx + [f"cand:{n}" for n in base]
 
@@ -142,13 +148,31 @@ class JointNextTokenRanker:
             v[-n_lex:] = 0.0
         return v
 
+    # Slot filling is factored into these two methods, and *only* these two, so a
+    # subclass can redefine what a context slot means without the ranker, the evaluator,
+    # and the generator drifting apart. They previously each carried their own copy of the
+    # lag loop, which is exactly the kind of duplication that makes an alternative context
+    # model silently wrong in one of the three paths.
+
+    def n_slots(self) -> int:
+        return self.window
+
+    def slot_tokens(self, tokens: list[str], i: int) -> list[str]:
+        """The tokens filling each context slot for a prediction at position ``i``.
+
+        Lag-indexed by default: slot k is the token k+1 positions back, or "" past the
+        start of the sentence.
+        """
+        return [tokens[i - lag] if i - lag >= 0 else ""
+                for lag in range(self.window, 0, -1)]
+
+    def slot_names(self) -> list[str]:
+        return [f"prev{lag}" for lag in range(self.window, 0, -1)]
+
     def _context_vector(self, tokens: list[str], i: int) -> np.ndarray:
-        """Window ending just before position ``i``, padded with the boundary token."""
-        parts = []
-        for lag in range(self.window, 0, -1):
-            j = i - lag
-            parts.append(self.f._token_vector(tokens[j] if j >= 0 else ""))
-        return np.concatenate(parts)
+        """Context slots for position ``i``, padded with the boundary token."""
+        return np.concatenate([self.f._token_vector(t)
+                               for t in self.slot_tokens(tokens, i)])
 
     # -- data --------------------------------------------------------------
 
@@ -221,8 +245,8 @@ class JointNextTokenRanker:
                 ti = vocab_id[true_tok]
                 if not decodable[ti]:
                     continue     # undecodable target; nothing to rank toward
-                slots = [ctx_id[sent[i - lag]] if i - lag >= 0 else boundary
-                         for lag in range(self.window, 0, -1)]
+                slots = [ctx_id.get(t, boundary) if t else boundary
+                         for t in self.slot_tokens(sent, i)]
                 ctx_ids.append(slots); cand_ids.append(ti); y.append(1.0)
                 # Same draw, same order, same size as before, so ids match exactly.
                 negs = rng.choice(len(vocab), size=self.n_negatives, p=p)
@@ -236,7 +260,7 @@ class JointNextTokenRanker:
             raise RuntimeError("no training pairs; check vocabulary coverage")
 
         C = np.asarray(ctx_ids, dtype=np.intp)
-        blocks = [ctx_table[C[:, k]] for k in range(self.window)]
+        blocks = [ctx_table[C[:, k]] for k in range(self.n_slots())]
         blocks.append(cand_table[np.asarray(cand_ids, dtype=np.intp)])
         return np.hstack(blocks), np.asarray(y, dtype=np.float32)
 
@@ -306,6 +330,7 @@ class JointNextTokenRanker:
             seed_features=set(range(self.cand_offset_)),
             reserved_features=self.open_class_features(),
             reserved_quota=self.open_class_quota, dtype=self.dtype,
+            significance=self.significance, holdout=self.holdout,
         ).fit(X, y, self.feature_names_)
 
         if verbose:
