@@ -11,3 +11,7 @@
 /gaussian_mixture/Concrete_Data.csv
 /double_pendulum_with_training.gif
 /double_pendulum_comparison.gif
+/flm/exp_b/cache
+/flm/exp_b/results_*.json
+__pycache__/
+*.pyc

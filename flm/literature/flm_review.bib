@@ -1,0 +1,385 @@
+% FLM literature review -- BibTeX
+%
+% WARNING: none of these entries was verified against a galley, DOI resolver, or
+% publisher page. Session egress was allowlisted and excluded arXiv, ACL Anthology,
+% Springer, IEEE, and Wikipedia. Fields marked with a trailing "% VERIFY" comment are
+% the ones most likely to be wrong. Treat this file as a starting skeleton, not a
+% citable bibliography. See SOURCES.md for the verification-debt list.
+
+% ---------------------------------------------------------------------------
+% A. Foundational fuzzy semantics / computing with words
+% ---------------------------------------------------------------------------
+
+@article{zadeh1975linguistic,
+  author  = {Zadeh, Lotfi A.},
+  title   = {The Concept of a Linguistic Variable and its Application to Approximate Reasoning---I},
+  journal = {Information Sciences},
+  volume  = {8},                                  % VERIFY
+  number  = {3},                                  % VERIFY
+  pages   = {199--249},                           % VERIFY
+  year    = {1975},
+  note    = {Source of the hedge calculus: concentration (very, $\mu^2$), dilation
+             (somewhat, $\mu^{0.5}$).}
+}
+
+@article{zadeh1978pruf,
+  author  = {Zadeh, Lotfi A.},
+  title   = {{PRUF}---a Meaning Representation Language for Natural Languages},
+  journal = {International Journal of Man-Machine Studies},
+  volume  = {10},                                 % VERIFY
+  number  = {4},                                  % VERIFY
+  pages   = {395--460},                           % VERIFY
+  year    = {1978}
+}
+
+@article{zadeh1996cww,
+  author  = {Zadeh, Lotfi A.},
+  title   = {Fuzzy Logic = Computing with Words},
+  journal = {IEEE Transactions on Fuzzy Systems},
+  volume  = {4},                                  % VERIFY
+  number  = {2},                                  % VERIFY
+  pages   = {103--111},                           % VERIFY
+  year    = {1996},
+  url     = {https://www.semanticscholar.org/paper/f26cbe40db22c9b99fe95d368c3aff94beaef488}
+}
+
+@article{wu2012eia,
+  author  = {Wu, Dongrui and Mendel, Jerry M. and Coupland, Simon},
+  title   = {Enhanced Interval Approach for Encoding Words into Interval Type-2 Fuzzy
+             Sets and Its Convergence Analysis},
+  journal = {IEEE Transactions on Fuzzy Systems},
+  volume  = {20},                                 % VERIFY
+  number  = {3},                                  % VERIFY
+  year    = {2012},
+  url     = {https://ieeexplore.ieee.org/document/6086759/},
+  note    = {How to elicit membership-function widths for linguistic terms from survey
+             data; ~30 data intervals is the cost/accuracy compromise.}
+}
+
+@article{mendel2018percom,
+  author  = {Mendel, Jerry M.},
+  title   = {The Perceptual Computer: The Past, Up to the Present, and Into the Future},
+  journal = {Informatik Spektrum},
+  year    = {2018},
+  doi     = {10.1007/s00287-018-1088-z}
+}
+
+% ---------------------------------------------------------------------------
+% B. Fuzzy text representations -- closest prior art to Experiment A
+% ---------------------------------------------------------------------------
+
+@misc{semanticfusion2025,
+  title        = {Semantic Fusion with Fuzzy-Membership Features for Controllable
+                  Language Modelling},
+  year         = {2025},                          % VERIFY
+  eprint       = {2509.13357},
+  archivePrefix= {arXiv},
+  url          = {https://arxiv.org/html/2509.13357},
+  note         = {AUTHORS NOT CONFIRMED. Nearest published relative of the fuzzy
+                  embedding proposal: per-token vectors of graded memberships from
+                  differentiable membership functions, assembled into a sentence-level
+                  semantic matrix fused into an LM. READ IN FULL BEFORE CLAIMING NOVELTY.}
+}
+
+@inproceedings{sfbow2021,
+  title     = {Static Fuzzy Bag-of-Words: A Lightweight and Fast Sentence Embedding
+               Algorithm},
+  booktitle = {Proc. International Conference on Natural Language and Speech Processing
+               (ICNLSP)},
+  year      = {2021},
+  url       = {https://aclanthology.org/2021.icnlsp-1.9.pdf},
+  note      = {AUTHORS NOT CONFIRMED. See also arXiv:2304.03098. Prior art for
+               "embedding coordinates are membership degrees".}
+}
+
+@article{zhao2018fbow,
+  author  = {Zhao, Rui and Mao, Kezhi},                    % VERIFY -- from memory
+  title   = {Fuzzy Bag-of-Words Model for Document Representation},
+  journal = {IEEE Transactions on Fuzzy Systems},
+  year    = {2018},                               % VERIFY
+  note    = {Original FBoW. ATTRIBUTION UNVERIFIED -- confirm before citing.}
+}
+
+@misc{fuzzyclustering_embeddings2019,
+  title        = {Analysis of Word Embeddings Using Fuzzy Clustering},
+  year         = {2019},
+  eprint       = {1907.07672},
+  archivePrefix= {arXiv},
+  url          = {https://arxiv.org/abs/1907.07672}
+}
+
+% ---------------------------------------------------------------------------
+% C. Interpretable-by-dimension embeddings & SAE critique
+% ---------------------------------------------------------------------------
+
+@inproceedings{subramanian2018spine,
+  author    = {Subramanian, Anant and Pruthi, Danish and Jhamtani, Harsh and
+               Berg-Kirkpatrick, Taylor and Hovy, Eduard},                  % VERIFY
+  title     = {{SPINE}: {SP}arse {I}nterpretable {N}eural {E}mbeddings},
+  booktitle = {Proc. AAAI Conference on Artificial Intelligence},
+  year      = {2018},
+  eprint    = {1711.08792},
+  url       = {https://www.cs.cmu.edu/~hovy/papers/18AAAI-SPINE.pdf},
+  note      = {Borrow the word-intrusion interpretability protocol from here.}
+}
+
+@inproceedings{murphy2012nnse,
+  author    = {Murphy, Brian and Talukdar, Partha P. and Mitchell, Tom M.},  % VERIFY
+  title     = {Learning Effective and Interpretable Semantic Models Using Non-Negative
+               Sparse Embedding},
+  booktitle = {Proc. COLING},
+  year      = {2012}                              % VERIFY
+}
+
+@misc{falsifying_sae2025,
+  title  = {Revising and Falsifying Sparse Autoencoder Feature Explanations},
+  year   = {2025},                                % VERIFY
+  url    = {https://openreview.net/forum?id=OJAW2mHVND},
+  note   = {AUTHORS NOT CONFIRMED. Key citation for the "SAE features arrive unnamed and
+            the naming is unreliable" argument.}
+}
+
+@misc{eval_sae_monosemantic2025,
+  title        = {Evaluating Sparse Autoencoders for Monosemantic Representation},
+  year         = {2025},
+  eprint       = {2508.15094},
+  archivePrefix= {arXiv},
+  url          = {https://arxiv.org/pdf/2508.15094}
+}
+
+% ---------------------------------------------------------------------------
+% D. Multi-resolution / nested embeddings
+% ---------------------------------------------------------------------------
+
+@inproceedings{kusupati2022mrl,
+  author    = {Kusupati, Aditya and Bhatt, Gantavya and Rege, Aniket and Wallingford, Matthew
+               and Sinha, Aditya and Ramanujan, Vivek and Howard-Snyder, William and
+               Chen, Kaifeng and Kakade, Sham and Jain, Prateek and Farhadi, Ali},  % VERIFY
+  title     = {Matryoshka Representation Learning},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2022},
+  url       = {https://proceedings.neurips.cc/paper_files/paper/2022/file/c32319f4868da7613d78af9993100e42-Paper-Conference.pdf},
+  note      = {The incumbent for variable-dimension embeddings. Nested prefixes, O(log d)
+               supervision points, no extra forward passes -- but semantically opaque
+               truncation, which is the gap this project targets.}
+}
+
+% ---------------------------------------------------------------------------
+% E. Hierarchy scaffolds
+% ---------------------------------------------------------------------------
+
+@misc{openrogets,
+  title        = {Open Roget's Thesaurus},
+  howpublished = {\url{https://sites.google.com/site/openrogets/}},
+  note         = {CC BY-SA 4.0, downloadable tarball. Reciprocal licence -- see
+                  licensing risk in the review. MAINTAINER NOT CONFIRMED (likely
+                  A. Kennedy / S. Szpakowicz, U. Ottawa).}
+}
+
+@mastersthesis{jarmasz2003rogets,
+  author = {Jarmasz, Mario},
+  title  = {Roget's Thesaurus as a Lexical Resource for Natural Language Processing},
+  school = {University of Ottawa},
+  year   = {2003},
+  eprint = {1204.0140},
+  url    = {https://arxiv.org/pdf/1204.0140},
+  note   = {Primary source for the Class/Section/Sub-Section/Head-Group/Head structure.
+            RE-DERIVE the level cardinalities from the data dump rather than trusting
+            secondary reports of 6/39/79/596/990.}
+}
+
+@inproceedings{jarmasz2003similarity,
+  author    = {Jarmasz, Mario and Szpakowicz, Stan},
+  title     = {Roget's Thesaurus and Semantic Similarity},
+  booktitle = {Proc. Recent Advances in Natural Language Processing (RANLP)},
+  year      = {2003},
+  eprint    = {1204.0245},
+  url       = {https://arxiv.org/pdf/1204.0245},
+  note      = {Roget-distance similarity measure; the sense-prior source for stage 2 of
+               the fuzzy embedding pipeline.}
+}
+
+@inproceedings{ponzetto2007taxonomy,
+  author    = {Ponzetto, Simone Paolo and Strube, Michael},
+  title     = {Deriving a Large Scale Taxonomy from Wikipedia},
+  booktitle = {Proc. AAAI},
+  year      = {2007},
+  url       = {https://www.researchgate.net/publication/200773229},
+  note      = {Category cleaning -> category-pair hypernymy classification -> taxonomy
+               graph construction. The recipe for the Wikipedia graft.}
+}
+
+@inproceedings{ponzetto2008wikitaxonomy,
+  author    = {Ponzetto, Simone Paolo and Strube, Michael},
+  title     = {{WikiTaxonomy}: A Large Scale Knowledge Resource},
+  booktitle = {Proc. ECAI},
+  year      = {2008},                             % VERIFY
+  url       = {https://www.researchgate.net/publication/220836746}
+}
+
+@misc{wiki_first_link_network2016,
+  title        = {Connecting Every Bit of Knowledge: The Structure of Wikipedia's
+                  First Link Network},
+  year         = {2016},
+  eprint       = {1605.00309},
+  archivePrefix= {arXiv},
+  url          = {https://arxiv.org/pdf/1605.00309},
+  note         = {AUTHORS NOT CONFIRMED. Source for the degenerate-root-mass argument:
+                  Philosophy directs paths two orders of magnitude more than any other
+                  article. Studied, then rejected as an embedding scaffold.}
+}
+
+% ---------------------------------------------------------------------------
+% F. Hierarchy-aware geometry (crisp special cases of fuzzy subsumption)
+% ---------------------------------------------------------------------------
+
+@inproceedings{nickel2017poincare,
+  author    = {Nickel, Maximilian and Kiela, Douwe},
+  title     = {Poincar\'e Embeddings for Learning Hierarchical Representations},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2017}
+}
+
+@inproceedings{ganea2018cones,
+  author    = {Ganea, Octavian-Eugen and B\'ecigneul, Gary and Hofmann, Thomas},
+  title     = {Hyperbolic Entailment Cones for Learning Hierarchical Embeddings},
+  booktitle = {Proc. International Conference on Machine Learning (ICML)},
+  year      = {2018},
+  eprint    = {1804.01882},
+  url       = {http://proceedings.mlr.press/v80/ganea18a/ganea18a.pdf}
+}
+
+% ---------------------------------------------------------------------------
+% G. Misspelling / character-noise robustness
+% ---------------------------------------------------------------------------
+
+@inproceedings{edizel2019moe,
+  author    = {Edizel, Bora and Piktus, Aleksandra and Bojanowski, Piotr and
+               Ferreira, Rui and Petroni, Fabio and Grave, Edouard},        % VERIFY
+  title     = {Misspelling Oblivious Word Embeddings},
+  booktitle = {Proc. NAACL-HLT},
+  year      = {2019},
+  url       = {https://aclanthology.org/N19-1326/},
+  note      = {fastText loss augmented to pull misspelling subwords toward the correct
+               term's embedding; released a public misspelling dataset -- reuse it as
+               training data for the fuzzy lexical-access FIS.}
+}
+
+@inproceedings{wang2021advglue,
+  author    = {Wang, Boxin and Xu, Chejian and Wang, Shuohang and Gan, Zhe and
+               Cheng, Yu and Gao, Jianfeng and Awadallah, Ahmed Hassan and Li, Bo}, % VERIFY
+  title     = {Adversarial {GLUE}: A Multi-Task Benchmark for Robustness Evaluation of
+               Language Models},
+  booktitle = {NeurIPS Datasets and Benchmarks Track},
+  year      = {2021},
+  eprint    = {2111.02840},
+  url       = {https://arxiv.org/pdf/2111.02840},
+  note      = {Take perturbation generators from here rather than hand-rolling them.}
+}
+
+@misc{multilingual_typo2025,
+  title        = {Evaluating Robustness of Large Language Models Against Multilingual
+                  Typographical Errors},
+  year         = {2025},
+  eprint       = {2510.09536},
+  archivePrefix= {arXiv},
+  url          = {https://arxiv.org/html/2510.09536v1}
+}
+
+% ---------------------------------------------------------------------------
+% H. FIS heads on neural embeddings -- Experiment B's prior art
+% ---------------------------------------------------------------------------
+
+@misc{ffp2023transformer,
+  title        = {Fuzzy Fingerprinting Transformer Language-Models for Emotion
+                  Recognition in Conversations},
+  year         = {2023},
+  eprint       = {2309.04292},
+  archivePrefix= {arXiv},
+  url          = {https://arxiv.org/abs/2309.04292},
+  note         = {AUTHORS NOT CONFIRMED (Batista et al. is referenced in the line).
+                  THE prior art for Experiment B: RoBERTa embeddings -> fuzzified,
+                  ranked class prototypes -> fuzzy-similarity match. Cite as prior art
+                  and include as a baseline.}
+}
+
+@incollection{ffp2023largemodels,
+  title     = {Fuzzy Fingerprinting Large Pre-trained Models},
+  booktitle = {Fuzzy Logic and Technology, and Aggregation Operators (EUSFLAT/AGOP)},
+  publisher = {Springer},
+  year      = {2023},
+  doi       = {10.1007/978-3-031-39965-7_20}
+}
+
+@misc{ffp2026validity,
+  title        = {Fuzzy Fingerprinting Encoder Pre-trained Language Models for Emotion
+                  Recognition in Conversations: Human Assessment and Validity Study},
+  year         = {2026},                          % VERIFY
+  eprint       = {2605.02665},
+  archivePrefix= {arXiv},
+  url          = {https://arxiv.org/html/2605.02665v1}
+}
+
+% ---------------------------------------------------------------------------
+% I. Fuzzy sentiment analysis
+% ---------------------------------------------------------------------------
+
+@article{fuzzy_ensemble_sentiment2022,
+  title   = {The Scalable Fuzzy Inference-Based Ensemble Method for Sentiment Analysis},
+  year    = {2022},
+  url     = {https://pmc.ncbi.nlm.nih.gov/articles/PMC9534613/},
+  note    = {AUTHORS NOT CONFIRMED. TSK ensembles reduce rule count while improving
+             interpretability.}
+}
+
+@inproceedings{frbs_sentiment2016,
+  title     = {Fuzzy Rule Based Systems for Interpretable Sentiment Analysis},
+  booktitle = {IEEE conference proceedings},                % VERIFY venue
+  year      = {2016},
+  url       = {https://ieeexplore.ieee.org/document/7974497/}
+}
+
+@article{fdibd2025,
+  title   = {A Hybrid Approach for Sentiment Analysis Using Fuzzy Logic and {DistilBERT}
+             to Address Ambiguity and Long Range Dependencies},
+  journal = {Discover Applied Sciences},
+  year    = {2025},
+  doi     = {10.1007/s42452-025-08015-9}
+}
+
+% ---------------------------------------------------------------------------
+% J. Datasets & models
+% ---------------------------------------------------------------------------
+
+@inproceedings{socher2013sst,
+  author    = {Socher, Richard and Perelygin, Alex and Wu, Jean and Chuang, Jason and
+               Manning, Christopher D. and Ng, Andrew Y. and Potts, Christopher},
+  title     = {Recursive Deep Models for Semantic Compositionality Over a Sentiment
+               Treebank},
+  booktitle = {Proc. EMNLP},
+  year      = {2013},
+  url       = {https://zenodo.org/records/5256915},
+  note      = {11,855 sentences, 215,154 uniquely labeled phrases, 25-level annotation
+               slider, every parse-tree node labeled by >=3 annotators. The continuous
+               scores -- not SST-5 -- are the target that suits a fuzzy regressor, and
+               the phrase-level labels make hedge composition falsifiable.}
+}
+
+@misc{embeddinggemma2025,
+  title        = {{EmbeddingGemma}: The Best-in-Class Open Model for On-Device Embeddings},
+  howpublished = {Google Developers Blog},
+  year         = {2025},                          % VERIFY
+  url          = {https://developers.googleblog.com/en/introducing-embeddinggemma/},
+  note         = {300M params, 768-d output, MRL-truncatable to 512/256/128, ~622MB,
+                  2K context. Experiment B's primary encoder.}
+}
+
+% ---------------------------------------------------------------------------
+% Cross-references into this repository's existing hFIS bibliography
+% ---------------------------------------------------------------------------
+% Reused rather than duplicated here -- see ../../tribble-tree/hfis_review.bib for:
+%   takagi1985fuzzy, jang1993anfis, jordan1994hme, ruspini1969clustering,
+%   janikow1998fuzzy, yuan1995induction, guillaume2004hfp, magdalena2018hfs,
+%   alonso2021explainable, wu2020functional, zhang2023tskfusion.
+% The HME entry (jordan1994hme) and the Ruspini entry (ruspini1969clustering) are the
+% two that the fuzzy embedding plan leans on most directly.
