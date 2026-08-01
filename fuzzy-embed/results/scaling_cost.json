@@ -1,0 +1,217 @@
+[
+  {
+    "label": "R=1 control (d_in=81)",
+    "config": {
+      "d_in": 81,
+      "d_out": 256,
+      "n_rules": 1
+    },
+    "params": 2524121,
+    "gpu": {
+      "sent_per_s": 702760.9445870272,
+      "ms_per_batch": 0.7285550000233343,
+      "peak_mem_mb": 30.08256
+    },
+    "cpu": {
+      "sent_per_s": 692640.6931395355,
+      "ms_per_batch": 0.7391999994676249,
+      "peak_mem_mb": null
+    }
+  },
+  {
+    "label": "R=32 dense (current)",
+    "config": {
+      "d_in": 64,
+      "d_out": 256,
+      "n_rules": 32
+    },
+    "params": 2520635,
+    "gpu": {
+      "sent_per_s": 319186.07548626856,
+      "ms_per_batch": 1.604080000106478,
+      "peak_mem_mb": 39.54944
+    },
+    "cpu": {
+      "sent_per_s": 188679.24535466466,
+      "ms_per_batch": 2.7135999989695847,
+      "peak_mem_mb": null
+    }
+  },
+  {
+    "label": "R=64 dense",
+    "config": {
+      "d_in": 64,
+      "d_out": 256,
+      "n_rules": 64
+    },
+    "params": 3057211,
+    "gpu": {
+      "sent_per_s": 361014.6485698851,
+      "ms_per_batch": 1.4182250000885688,
+      "peak_mem_mb": 56.572416
+    },
+    "cpu": {
+      "sent_per_s": 141466.4247599624,
+      "ms_per_batch": 3.6192333330594315,
+      "peak_mem_mb": null
+    }
+  },
+  {
+    "label": "R=128 dense",
+    "config": {
+      "d_in": 64,
+      "d_out": 256,
+      "n_rules": 128
+    },
+    "params": 4130363,
+    "gpu": {
+      "sent_per_s": 314591.0009983507,
+      "ms_per_batch": 1.6275099998892983,
+      "peak_mem_mb": 89.388032
+    },
+    "cpu": {
+      "sent_per_s": 69763.95618588722,
+      "ms_per_batch": 7.3390333345741965,
+      "peak_mem_mb": null
+    }
+  },
+  {
+    "label": "R=512 dense",
+    "config": {
+      "d_in": 64,
+      "d_out": 256,
+      "n_rules": 512
+    },
+    "params": 10569275,
+    "gpu": {
+      "sent_per_s": 116197.13115224049,
+      "ms_per_batch": 4.406305000156863,
+      "peak_mem_mb": 292.223488
+    },
+    "cpu": {
+      "sent_per_s": 13448.556644077064,
+      "ms_per_batch": 38.07100000024851,
+      "peak_mem_mb": null
+    }
+  },
+  {
+    "label": "R=64 rank32",
+    "config": {
+      "d_in": 64,
+      "d_out": 256,
+      "n_rules": 64,
+      "consequent_rank": 32
+    },
+    "params": 2147899,
+    "gpu": {
+      "sent_per_s": 391960.222200183,
+      "ms_per_batch": 1.3062549998721806,
+      "peak_mem_mb": 48.282112
+    },
+    "cpu": {
+      "sent_per_s": 203309.06693732215,
+      "ms_per_batch": 2.518333332166852,
+      "peak_mem_mb": null
+    }
+  },
+  {
+    "label": "R=128 rank32",
+    "config": {
+      "d_in": 64,
+      "d_out": 256,
+      "n_rules": 128,
+      "consequent_rank": 32
+    },
+    "params": 2303547,
+    "gpu": {
+      "sent_per_s": 565483.4220701691,
+      "ms_per_batch": 0.9054199999809498,
+      "peak_mem_mb": 73.888768
+    },
+    "cpu": {
+      "sent_per_s": 105462.63491525836,
+      "ms_per_batch": 4.854800000127095,
+      "peak_mem_mb": null
+    }
+  },
+  {
+    "label": "R=512 rank32",
+    "config": {
+      "d_in": 64,
+      "d_out": 256,
+      "n_rules": 512,
+      "consequent_rank": 32
+    },
+    "params": 3237435,
+    "gpu": {
+      "sent_per_s": 113745.17082402263,
+      "ms_per_batch": 4.501290000189329,
+      "peak_mem_mb": 233.521152
+    },
+    "cpu": {
+      "sent_per_s": 22514.07129617678,
+      "ms_per_batch": 22.741333331699327,
+      "peak_mem_mb": null
+    }
+  },
+  {
+    "label": "R=128 rank32 d_out=512",
+    "config": {
+      "d_in": 64,
+      "d_out": 512,
+      "n_rules": 128,
+      "consequent_rank": 32
+    },
+    "params": 2344507,
+    "gpu": {
+      "sent_per_s": 338981.92871882475,
+      "ms_per_batch": 1.5104049998626579,
+      "peak_mem_mb": 74.576896
+    },
+    "cpu": {
+      "sent_per_s": 103359.17311430257,
+      "ms_per_batch": 4.953600000590086,
+      "peak_mem_mb": null
+    }
+  },
+  {
+    "label": "R=128 rank32 d_out=768",
+    "config": {
+      "d_in": 64,
+      "d_out": 768,
+      "n_rules": 128,
+      "consequent_rank": 32
+    },
+    "params": 2385467,
+    "gpu": {
+      "sent_per_s": 295374.9589065225,
+      "ms_per_batch": 1.7333899999357527,
+      "peak_mem_mb": 75.265024
+    },
+    "cpu": {
+      "sent_per_s": 100455.18757671407,
+      "ms_per_batch": 5.0967999995918944,
+      "peak_mem_mb": null
+    }
+  },
+  {
+    "label": "R=128 rank32 d_in=128",
+    "config": {
+      "d_in": 128,
+      "d_out": 256,
+      "n_rules": 128,
+      "consequent_rank": 32
+    },
+    "params": 4535611,
+    "gpu": {
+      "sent_per_s": 311527.4274478039,
+      "ms_per_batch": 1.6435150002507726,
+      "peak_mem_mb": 121.482752
+    },
+    "cpu": {
+      "sent_per_s": 71864.01979574091,
+      "ms_per_batch": 7.124566667092343,
+      "peak_mem_mb": null
+    }
+  }
+]

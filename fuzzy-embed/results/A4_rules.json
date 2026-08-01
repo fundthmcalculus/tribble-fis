@@ -1,0 +1,610 @@
+[
+  {
+    "rule": 25,
+    "usage_corpus": 0.08815315585694863,
+    "usage_vocab": 0.02838512696325779,
+    "b_norm": 0.9798990488052368,
+    "a_norm": 15.39603042602539,
+    "top_tokens": [
+      "##mate",
+      "melbourne",
+      "freezing",
+      "indigenous",
+      "pakistani",
+      "glen",
+      "protesters",
+      "clutching",
+      "broadcaster",
+      "abbey"
+    ]
+  },
+  {
+    "rule": 18,
+    "usage_corpus": 0.08021613431931982,
+    "usage_vocab": 0.04533854499459267,
+    "b_norm": 1.0060851573944092,
+    "a_norm": 15.296723365783691,
+    "top_tokens": [
+      "\u3082",
+      "\u056c",
+      "days",
+      "investigation",
+      "\u3048",
+      "voiced",
+      "brad",
+      "1840",
+      "\u30c4",
+      "\u0909"
+    ]
+  },
+  {
+    "rule": 11,
+    "usage_corpus": 0.055271234341236694,
+    "usage_vocab": 0.021714000031352043,
+    "b_norm": 1.0109760761260986,
+    "a_norm": 15.408401489257812,
+    "top_tokens": [
+      "\u05e8",
+      "married",
+      "rebels",
+      "1975",
+      "2013",
+      "reasonable",
+      "downstairs",
+      "telugu",
+      "georgian",
+      "lb"
+    ]
+  },
+  {
+    "rule": 2,
+    "usage_corpus": 0.04865096922002583,
+    "usage_vocab": 0.03164666146039963,
+    "b_norm": 1.059658169746399,
+    "a_norm": 15.350301742553711,
+    "top_tokens": [
+      "friend",
+      "\u03c3",
+      "\u7537",
+      "\u0917",
+      "rain",
+      "golf",
+      "weird",
+      "thriller",
+      "eleven",
+      "certainly"
+    ]
+  },
+  {
+    "rule": 19,
+    "usage_corpus": 0.04603290073515377,
+    "usage_vocab": 0.03271480277180672,
+    "b_norm": 0.9926683902740479,
+    "a_norm": 15.47042179107666,
+    "top_tokens": [
+      "cop",
+      "cruz",
+      "tent",
+      "walls",
+      "bloody",
+      "operators",
+      "lacked",
+      "dawson",
+      "precisely",
+      "\u4eba"
+    ]
+  },
+  {
+    "rule": 4,
+    "usage_corpus": 0.03827264611296263,
+    "usage_vocab": 0.03473280370235443,
+    "b_norm": 0.9355024695396423,
+    "a_norm": 15.555845260620117,
+    "top_tokens": [
+      "language",
+      "men",
+      "fit",
+      "42",
+      "\u0baa",
+      "gasped",
+      "manufacturers",
+      "sometime",
+      "quartet",
+      "\u300a"
+    ]
+  },
+  {
+    "rule": 22,
+    "usage_corpus": 0.03635626385292229,
+    "usage_vocab": 0.026033876463770866,
+    "b_norm": 1.0531368255615234,
+    "a_norm": 15.357919692993164,
+    "top_tokens": [
+      "southwestern",
+      "\u0290",
+      "\u1102",
+      "stunned",
+      "hamlet",
+      "finalist",
+      "barrett",
+      "strangely",
+      "staged",
+      "somerset"
+    ]
+  },
+  {
+    "rule": 6,
+    "usage_corpus": 0.03475832741606022,
+    "usage_vocab": 0.03266573324799538,
+    "b_norm": 0.9463630318641663,
+    "a_norm": 15.340738296508789,
+    "top_tokens": [
+      "##ell",
+      "\u3088",
+      "\u5bfa",
+      "\u0f62",
+      "hamburg",
+      "prestigious",
+      "upgraded",
+      "conquered",
+      "hometown",
+      "spite"
+    ]
+  },
+  {
+    "rule": 31,
+    "usage_corpus": 0.03340880360679474,
+    "usage_vocab": 0.0267129335552454,
+    "b_norm": 1.0861972570419312,
+    "a_norm": 15.402268409729004,
+    "top_tokens": [
+      "\ufb02",
+      "\u02be",
+      "nationality",
+      "\u76f8",
+      "heated",
+      "jackson",
+      "rented",
+      "afghan",
+      "nintendo",
+      "\u2297"
+    ]
+  },
+  {
+    "rule": 10,
+    "usage_corpus": 0.03158205867607917,
+    "usage_vocab": 0.030502725392580032,
+    "b_norm": 1.0851428508758545,
+    "a_norm": 15.387358665466309,
+    "top_tokens": [
+      "\u51fa",
+      "17",
+      "materials",
+      "\u1105",
+      "\u026f",
+      "\u539f",
+      "internal",
+      "remix",
+      "\u52dd",
+      "\u30c6"
+    ]
+  },
+  {
+    "rule": 30,
+    "usage_corpus": 0.03124713160270117,
+    "usage_vocab": 0.039445340633392334,
+    "b_norm": 0.8859990835189819,
+    "a_norm": 15.368669509887695,
+    "top_tokens": [
+      "gilbert",
+      "\u0bae",
+      "discontinued",
+      "guinea",
+      "bowling",
+      "##ami",
+      "jung",
+      "##zel",
+      "consequence",
+      "\u4e0d"
+    ]
+  },
+  {
+    "rule": 12,
+    "usage_corpus": 0.030541671659828042,
+    "usage_vocab": 0.03489893674850464,
+    "b_norm": 0.9820468425750732,
+    "a_norm": 15.426912307739258,
+    "top_tokens": [
+      "\u30aa",
+      "\u10d7",
+      "happy",
+      "\u00b9",
+      "\u5b50",
+      "widely",
+      "guys",
+      "rough",
+      "professor",
+      "\u98df"
+    ]
+  },
+  {
+    "rule": 9,
+    "usage_corpus": 0.029801052374850118,
+    "usage_vocab": 0.02954780124127865,
+    "b_norm": 0.9663680195808411,
+    "a_norm": 15.513100624084473,
+    "top_tokens": [
+      "applied",
+      "\u10d5",
+      "\u2205",
+      "careful",
+      "\u570b",
+      "fitted",
+      "cardinals",
+      "wrestler",
+      "decreased",
+      "\u0447"
+    ]
+  },
+  {
+    "rule": 1,
+    "usage_corpus": 0.028760149437334657,
+    "usage_vocab": 0.03539199009537697,
+    "b_norm": 1.0287728309631348,
+    "a_norm": 15.465471267700195,
+    "top_tokens": [
+      "dagger",
+      "\u3084",
+      "uprising",
+      "loser",
+      "\u6ca2",
+      "collaborative",
+      "resembles",
+      "vocational",
+      "prosecution",
+      "indonesian"
+    ]
+  },
+  {
+    "rule": 14,
+    "usage_corpus": 0.028243140756041365,
+    "usage_vocab": 0.03316283971071243,
+    "b_norm": 1.024422287940979,
+    "a_norm": 15.354130744934082,
+    "top_tokens": [
+      "room",
+      "\u79c0",
+      "running",
+      "worked",
+      "\u201a",
+      "1925",
+      "1898",
+      "internationally",
+      "\u967d",
+      "\u30a8"
+    ]
+  },
+  {
+    "rule": 29,
+    "usage_corpus": 0.02787884654750757,
+    "usage_vocab": 0.02763262763619423,
+    "b_norm": 0.9394841194152832,
+    "a_norm": 15.224589347839355,
+    "top_tokens": [
+      "\u66f8",
+      "\u66f2",
+      "deployed",
+      "\u611b",
+      "widow",
+      "factory",
+      "geography",
+      "carpenter",
+      "bye",
+      "wearing"
+    ]
+  },
+  {
+    "rule": 26,
+    "usage_corpus": 0.027624169647162803,
+    "usage_vocab": 0.03967316448688507,
+    "b_norm": 1.0330036878585815,
+    "a_norm": 15.27356243133545,
+    "top_tokens": [
+      "soldiers",
+      "detachment",
+      "finalists",
+      "wilderness",
+      "\u30a4",
+      "electorate",
+      "setup",
+      "jp",
+      "german",
+      "\u057f"
+    ]
+  },
+  {
+    "rule": 0,
+    "usage_corpus": 0.02693534801545627,
+    "usage_vocab": 0.03493654355406761,
+    "b_norm": 1.0357763767242432,
+    "a_norm": 15.142062187194824,
+    "top_tokens": [
+      "\u0563",
+      "\u8c37",
+      "dance",
+      "\u0192",
+      "\uff0c",
+      "\u306e",
+      "holding",
+      "acquired",
+      "stage",
+      "\u02e1"
+    ]
+  },
+  {
+    "rule": 24,
+    "usage_corpus": 0.02623796026962593,
+    "usage_vocab": 0.0284016951918602,
+    "b_norm": 0.9554182887077332,
+    "a_norm": 15.617060661315918,
+    "top_tokens": [
+      "concept",
+      "margaret",
+      "surgeon",
+      "1822",
+      "regarding",
+      "shiver",
+      "420",
+      "##ares",
+      "##kai",
+      "reconnaissance"
+    ]
+  },
+  {
+    "rule": 23,
+    "usage_corpus": 0.025383278910068932,
+    "usage_vocab": 0.03374582529067993,
+    "b_norm": 0.9494572877883911,
+    "a_norm": 15.351960182189941,
+    "top_tokens": [
+      "winners",
+      "multiple",
+      "programmes",
+      "\u4e94",
+      "ella",
+      "kenny",
+      "clips",
+      "furnace",
+      "allegiance",
+      "backing"
+    ]
+  },
+  {
+    "rule": 27,
+    "usage_corpus": 0.02502958340360201,
+    "usage_vocab": 0.031061552464962006,
+    "b_norm": 0.9643878936767578,
+    "a_norm": 15.34981918334961,
+    "top_tokens": [
+      "corners",
+      "maxwell",
+      "publicity",
+      "japanese",
+      "\u099c",
+      "dante",
+      "brittany",
+      "deity",
+      "gaining",
+      "\u0432"
+    ]
+  },
+  {
+    "rule": 13,
+    "usage_corpus": 0.020811078181916035,
+    "usage_vocab": 0.035007257014513016,
+    "b_norm": 0.9604004621505737,
+    "a_norm": 15.422764778137207,
+    "top_tokens": [
+      "\u300f",
+      "\u624b",
+      "languages",
+      "\u30e2",
+      "kevin",
+      "\u5fc3",
+      "impossible",
+      "trials",
+      "participation",
+      "religion"
+    ]
+  },
+  {
+    "rule": 20,
+    "usage_corpus": 0.020440879954565623,
+    "usage_vocab": 0.03311791643500328,
+    "b_norm": 0.9869628548622131,
+    "a_norm": 15.328237533569336,
+    "top_tokens": [
+      "fish",
+      "\u6c37",
+      "jumping",
+      "representing",
+      "\u0621",
+      "rounded",
+      "neighbors",
+      "detached",
+      "chester",
+      "tribute"
+    ]
+  },
+  {
+    "rule": 28,
+    "usage_corpus": 0.019854053816792283,
+    "usage_vocab": 0.032597269862890244,
+    "b_norm": 1.0552566051483154,
+    "a_norm": 15.39722728729248,
+    "top_tokens": [
+      "karen",
+      "\u6210",
+      "stockholm",
+      "sebastian",
+      "##phone",
+      "surroundings",
+      "logistics",
+      "airports",
+      "frustrated",
+      "\u592a"
+    ]
+  },
+  {
+    "rule": 7,
+    "usage_corpus": 0.018739668402013524,
+    "usage_vocab": 0.025944115594029427,
+    "b_norm": 1.03339421749115,
+    "a_norm": 15.347332000732422,
+    "top_tokens": [
+      "heinrich",
+      "\u02b2",
+      "\u0935",
+      "angelo",
+      "\u30ec",
+      "marilyn",
+      "eminent",
+      "##eet",
+      "corpus",
+      "maori"
+    ]
+  },
+  {
+    "rule": 5,
+    "usage_corpus": 0.018511430515622925,
+    "usage_vocab": 0.03150255233049393,
+    "b_norm": 0.9617553949356079,
+    "a_norm": 15.328200340270996,
+    "top_tokens": [
+      "1942",
+      "\u0f0d",
+      "flight",
+      "\u0565",
+      "`",
+      "till",
+      "shower",
+      "slip",
+      "comfort",
+      "\u5b89"
+    ]
+  },
+  {
+    "rule": 3,
+    "usage_corpus": 0.01829543760097327,
+    "usage_vocab": 0.030032942071557045,
+    "b_norm": 1.0348223447799683,
+    "a_norm": 15.36184310913086,
+    "top_tokens": [
+      "odd",
+      "beach",
+      "pierce",
+      "\u5b87",
+      "1924",
+      "leslie",
+      "vanished",
+      "rendered",
+      "banned",
+      "\u1103"
+    ]
+  },
+  {
+    "rule": 15,
+    "usage_corpus": 0.017258424284588826,
+    "usage_vocab": 0.027626454830169678,
+    "b_norm": 0.988837718963623,
+    "a_norm": 15.44985580444336,
+    "top_tokens": [
+      "bike",
+      "\u3092",
+      "chapters",
+      "##ban",
+      "prague",
+      "curriculum",
+      "1841",
+      "##mine",
+      "gorgeous",
+      "lebanon"
+    ]
+  },
+  {
+    "rule": 8,
+    "usage_corpus": 0.01725162429924329,
+    "usage_vocab": 0.026354702189564705,
+    "b_norm": 1.0061492919921875,
+    "a_norm": 15.43100643157959,
+    "top_tokens": [
+      "\u0254",
+      "networks",
+      "architectural",
+      "southeast",
+      "\u0f0b",
+      "images",
+      "1858",
+      "flooding",
+      "those",
+      "\u305f"
+    ]
+  },
+  {
+    "rule": 16,
+    "usage_corpus": 0.016436305230667442,
+    "usage_vocab": 0.030345510691404343,
+    "b_norm": 1.0193445682525635,
+    "a_norm": 15.429884910583496,
+    "top_tokens": [
+      "ministry",
+      "victoria",
+      "thirty",
+      "woods",
+      "anywhere",
+      "1874",
+      "biography",
+      "paulo",
+      "1888",
+      "french"
+    ]
+  },
+  {
+    "rule": 17,
+    "usage_corpus": 0.016375634707194237,
+    "usage_vocab": 0.02273717150092125,
+    "b_norm": 0.9533808827400208,
+    "a_norm": 15.43419361114502,
+    "top_tokens": [
+      "\u30c8",
+      "recognition",
+      "educated",
+      "\u5206",
+      "pick",
+      "tournament",
+      "variants",
+      "##ex",
+      "climbing",
+      "\u092d"
+    ]
+  },
+  {
+    "rule": 21,
+    "usage_corpus": 0.015640645605931737,
+    "usage_vocab": 0.026388585567474365,
+    "b_norm": 0.9796342253684998,
+    "a_norm": 15.258131980895996,
+    "top_tokens": [
+      "\u25a0",
+      "suggestion",
+      "sneak",
+      "intention",
+      "familiar",
+      "misery",
+      "hum",
+      "cellar",
+      "candle",
+      "\u0996"
+    ]
+  }
+]
