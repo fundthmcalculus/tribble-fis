@@ -327,7 +327,11 @@ def t_norm(x, y, selected_norm: NormConorm | None = None):
     elif selected_norm == "luk":
         return np.maximum(0, x + y - 1)
     elif selected_norm == "hamacher":
-        return (x * y) / (x + y - x * y)
+        den = x + y - x * y
+        out = np.zeros_like(np.asarray(x, dtype=float))
+        ok = np.abs(den) > 1e-12
+        np.divide(x * y, den, out=out, where=ok)
+        return out
     else:
         raise ValueError(f"Invalid NORM_CORNOM value: {selected_norm}")
 
