@@ -6,7 +6,6 @@ import pandas as pd
 from itertools import combinations
 from matplotlib import pyplot as plt
 from numpy import ndarray
-from numpy.linalg import LinAlgError
 from scipy.optimize import minimize
 
 from tribblefis.gauss_data import GaussianMixtureModel
@@ -562,24 +561,32 @@ def solve_tsk_consequents(
         residual = y - design[:, pinned] @ values
         design_free = design[:, free]
 
-        gram = design_free.T @ design_free + l2_reg * np.diag(penalty[free])
-        rhs = design_free.T @ residual
-        try:
-            beta_free = np.linalg.solve(gram, rhs)
-        except LinAlgError:
-            # lstsq takes the design and the target, NOT the normal equations.
+        # Use lstsq on the augmented design (with ridge penalty as rows) for better
+        # conditioning. Near-singular designs return finite but huge coefficients
+        # when solved via normal equations; lstsq on the design matrix has condition
+        # number that is the square root of the Gram's and handles ill-conditioning
+        # gracefully by truncating small singular values instead of inverting them.
+        if l2_reg > 0:
+            # Augment the design with ridge penalty rows: sqrt(l2_reg) * sqrt(D)
+            sqrt_penalty = np.sqrt(l2_reg * penalty[free])
+            design_aug = np.vstack([design_free, np.diag(sqrt_penalty)])
+            residual_aug = np.hstack([residual, np.zeros_like(sqrt_penalty)])
+            beta_free = np.linalg.lstsq(design_aug, residual_aug, rcond=None)[0]
+        else:
             beta_free = np.linalg.lstsq(design_free, residual, rcond=None)[0]
 
         beta = np.zeros(design.shape[1])
         beta[pinned] = values
         beta[free] = beta_free
     else:
-        gram = design.T @ design + l2_reg * np.diag(penalty)
-        rhs = design.T @ y
-        # Regularized system is generally well-posed; fall back to lstsq if singular.
-        try:
-            beta = np.linalg.solve(gram, rhs)
-        except LinAlgError:
+        # Use lstsq on the augmented design (with ridge penalty as rows) for better
+        # conditioning. See comment above about why this is necessary.
+        if l2_reg > 0:
+            sqrt_penalty = np.sqrt(l2_reg * penalty)
+            design_aug = np.vstack([design, np.diag(sqrt_penalty)])
+            y_aug = np.hstack([y, np.zeros_like(sqrt_penalty)])
+            beta = np.linalg.lstsq(design_aug, y_aug, rcond=None)[0]
+        else:
             beta = np.linalg.lstsq(design, y, rcond=None)[0]
 
     coeffs = beta.reshape(n_rules, n_coeffs_per_rule)

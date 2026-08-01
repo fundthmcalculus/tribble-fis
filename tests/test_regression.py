@@ -366,19 +366,10 @@ class TestConsequentSolver(unittest.TestCase):
             X, y_part["y_bucket"], top_n_var_names=self.TOP, n_gaussians=1
         )
 
-        real_solve = np.linalg.solve
-
-        def always_singular(*_args, **_kwargs):
-            raise np.linalg.LinAlgError("forced singular for the fallback path")
-
-        np.linalg.solve = always_singular
-        try:
-            corr, means = solve_tsk_consequents(
-                X, model, self.TOP, y_bucket_mean, y_part,
-                n_output_buckets=self.N_BUCKETS, order="1st", l2_reg=0.0, verbose=False,
-            )
-        finally:
-            np.linalg.solve = real_solve
+        corr, means = solve_tsk_consequents(
+            X, model, self.TOP, y_bucket_mean, y_part,
+            n_output_buckets=self.N_BUCKETS, order="1st", l2_reg=0.0, verbose=False,
+        )
 
         self.assertTrue(np.all(np.isfinite(means)))
         self.assertTrue(np.all(np.isfinite(corr)))
@@ -386,6 +377,56 @@ class TestConsequentSolver(unittest.TestCase):
         y_true = y_part["y_value"].values
         self.assertAlmostEqual(means[0], y_true.min(), places=10)
         self.assertAlmostEqual(means[-1], y_true.max(), places=10)
+
+    def test_issue_36_near_singular_design_returns_bounded_coefficients(self):
+        """Issue #36: near-singular designs must not return astronomically large coefficients.
+
+        When two rules have nearly collinear firing strengths with no regularization,
+        the normal-equations approach inverts the nearly-singular Gram matrix and
+        produces coefficients of magnitude 1e24+. Using lstsq on the design matrix
+        instead (with better conditioning and explicit rcond truncation) prevents
+        this and keeps predictions bounded.
+        """
+        rng = np.random.default_rng(42)
+        n = 200
+        # Create a near-singular scenario: two features are nearly collinear
+        a = rng.uniform(0, 1, n)
+        b = a + rng.normal(0, 1e-4, n)  # nearly identical to a
+        X = pd.DataFrame({"a": a, "b": b})
+        y_raw = pd.Series(2.0 * a + b, name="y_value")
+        y_part, y_bucket_mean = partition_output(self.N_BUCKETS, y_raw)
+        model = create_gaussian_membership_dict(
+            X, y_part["y_bucket"], top_n_var_names=self.TOP, n_gaussians=1
+        )
+
+        # Solve with no regularization (l2_reg=0) -- the problematic case in issue #36
+        corr, means = solve_tsk_consequents(
+            X, model, self.TOP, y_bucket_mean, y_part,
+            n_output_buckets=self.N_BUCKETS, order="1st", l2_reg=0.0, verbose=False,
+        )
+
+        # All coefficients must be finite
+        self.assertTrue(np.all(np.isfinite(means)), "bucket means should be finite")
+        self.assertTrue(np.all(np.isfinite(corr)), "correction terms should be finite")
+
+        # Coefficients must not be astronomically large (issue #36 produced 1e24)
+        self.assertTrue(
+            np.max(np.abs(corr)) < 1e6,
+            f"correction term magnitude {np.max(np.abs(corr))} is too large"
+        )
+
+        # Predictions on the training data must be bounded (not 10,000 MPa on a
+        # target bounded near 4)
+        y_pred = predict_tsk(X, model, self.TOP, means, corr, order="1st")
+        y_true = y_part["y_value"].values
+        y_min, y_max = y_true.min(), y_true.max()
+        y_range = y_max - y_min
+        # Predictions should be within 2x the target range (some extrapolation ok)
+        self.assertTrue(
+            np.all(y_pred >= y_min - y_range) and np.all(y_pred <= y_max + y_range),
+            f"predictions {y_pred.min():.2f}..{y_pred.max():.2f} too far from target "
+            f"range {y_min:.2f}..{y_max:.2f}"
+        )
 
 
 class TestAntecedentRefinement(unittest.TestCase):
