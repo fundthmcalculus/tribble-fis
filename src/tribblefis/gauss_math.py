@@ -317,7 +317,7 @@ def t_norm(x, y, selected_norm: NormConorm | None = None):
     if y is None:
         z = np.ones(x.shape[0])
         for ij in range(0, x.shape[1]):
-            z = t_norm(z, x[:, ij])
+            z = t_norm(z, x[:, ij], selected_norm)
         return z
 
     if selected_norm == "min/max":
@@ -339,7 +339,7 @@ def t_conorm(x, y, selected_norm: NormConorm | None = None):
     if y is None:
         z = np.zeros(x.shape[0])
         for ij in range(0, x.shape[1]):
-            z = t_conorm(z, x[:, ij])
+            z = t_conorm(z, x[:, ij], selected_norm)
         return z
 
     if selected_norm == "min/max":
