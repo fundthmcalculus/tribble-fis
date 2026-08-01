@@ -10,6 +10,7 @@ from numpy.linalg import LinAlgError
 from scipy.optimize import minimize
 
 from tribblefis.gauss_data import GaussianMixtureModel
+from tribblefis.gauss_data import NormPair
 from tribblefis.gauss_math import tsk_firing_strengths
 
 
@@ -223,6 +224,7 @@ def optimize_tsk_coefficients(
     n_output_buckets: int,
     initial_corr_terms: ndarray | None = None,
     order: typing.Literal["0th", "1st", "2nd", "3rd", "full-2nd"] = "2nd",
+    norms: NormPair | None = None,
     l2_reg: float = 0.0,
 ) -> tuple[typing.Any, typing.Any]:
     """
@@ -246,7 +248,9 @@ def optimize_tsk_coefficients(
     print("=" * 80)
 
     # Compute training firing strengths
-    firing_strengths_train, labels_train = tsk_firing_strengths(X_train[top_n_todo], gaussian_memberships)
+    firing_strengths_train, labels_train = tsk_firing_strengths(
+        X_train[top_n_todo], gaussian_memberships, norms=norms
+    )
     # Create mask for rows where sum > 1e-6
     row_sums = firing_strengths_train.sum(axis=1)
     valid_rows = row_sums > 1e-6
@@ -470,6 +474,7 @@ def solve_tsk_consequents(
     basis: str = "raw",
     cross_pairs: list[tuple[int, int]] | None = None,
     pin_extremes: bool = True,
+    norms: NormPair | None = None,
     verbose: bool = True,
 ) -> tuple[ndarray, ndarray]:
     """Solve for the globally optimal TSK consequent coefficients in closed form.
@@ -505,7 +510,9 @@ def solve_tsk_consequents(
     if verbose:
         print(f"\nSolving {order} consequents in closed form (basis={basis}, l2={l2_reg:g})...")
 
-    firing_strengths_train, labels_train = tsk_firing_strengths(X_train[top_n_todo], gaussian_memberships)
+    firing_strengths_train, labels_train = tsk_firing_strengths(
+        X_train[top_n_todo], gaussian_memberships, norms=norms
+    )
     norm_fs = _normalize_firing_strengths(firing_strengths_train)
     n_rules = norm_fs.shape[1]
 
@@ -595,13 +602,14 @@ def predict_tsk(
     order: str = "2nd",
     basis: str = "raw",
     cross_pairs: list[tuple[int, int]] | None = None,
+    norms: NormPair | None = None,
 ) -> ndarray:
     """Shared TSK prediction path used by the solver's callers and CV.
 
     Uses the same firing-strength normalization and feature basis as
     `solve_tsk_consequents`, so fit and predict cannot silently diverge.
     """
-    firing_strengths, labels = tsk_firing_strengths(X[top_n_todo], model)
+    firing_strengths, labels = tsk_firing_strengths(X[top_n_todo], model, norms=norms)
     norm_fs = _normalize_firing_strengths(firing_strengths)
 
     if order == "0th":
