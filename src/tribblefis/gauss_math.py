@@ -353,7 +353,12 @@ def t_conorm(x, y, selected_norm: NormConorm | None = None):
     elif selected_norm == "luk":
         return np.minimum(1, x + y)
     elif selected_norm == "hamacher":
-        return (x + y) / (1 - x * y)
+        num = x + y - 2.0 * x * y
+        den = 1.0 - x * y
+        out = np.ones_like(np.asarray(x, dtype=float))
+        ok = np.abs(den) > 1e-12
+        np.divide(num, den, out=out, where=ok)
+        return out
     else:
         raise ValueError(f"Invalid NORM_CORNOM value: {selected_norm}")
 
