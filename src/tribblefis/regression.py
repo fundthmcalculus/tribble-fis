@@ -482,10 +482,22 @@ def solve_tsk_consequents(
     the intercept/bucket-mean columns) yields the exact minimizer of the
     firing-weighted MSE + ridge penalty -- no iterative optimizer needed.
 
-    When pin_extremes=True, the first and last bucket means are pinned to their
-    input values (typically the observed min/max of the target) via equality
-    constraints, ensuring the model's output range exactly matches the training
-    range.
+    ``pin_extremes`` holds the first and last rules' bucket means fixed at the
+    values supplied in ``y_bucket_mean`` -- normally the observed min and max set
+    by :func:`partition_output` -- instead of letting the solve re-derive them.
+    Without it those pinned values are silently discarded, since this function
+    returns its own ``y_bucket_mean_opt`` and the prediction path uses that; the
+    model is then free to shrink its output range inward and can no longer reach
+    the extremes of the target. The constraint is applied exactly, not as a
+    penalty: the pinned columns are moved to the right-hand side and the
+    remaining coefficients are solved against the residual, so the result is the
+    exact minimizer subject to the constraint.
+
+    The pin is skipped where it cannot be stated well-posedly: fewer than two
+    rules (the two extremes are then the same coefficient), or a
+    ``y_bucket_mean`` too short to index by rule, both of which fall back to the
+    unconstrained solve. A non-finite value at one extreme skips only that end;
+    the other stays pinned.
 
     Returns (corr_terms_opt, y_bucket_mean_opt), matching
     `optimize_tsk_coefficients`.
@@ -511,78 +523,66 @@ def solve_tsk_consequents(
 
     y = np.asarray(y_train["y_value"].values, dtype=float)
 
-    if pin_extremes:
-        # Extract the pinned values for the extreme bucket means.
-        pinned_first = float(y_bucket_mean[0])
-        pinned_last = float(y_bucket_mean[-1])
+    # Ridge diagonal: never penalize the intercept (column 0 of each rule block).
+    penalty = np.ones(n_rules * n_coeffs_per_rule)
+    penalty[::n_coeffs_per_rule] = 0.0
 
-        # The first and last columns (rule 0's intercept and rule n_rules-1's intercept)
-        # should equal the pinned values. Move them to the RHS.
-        # Column indices for the pinned intercepts in the full design matrix
-        col_first = 0  # Rule 0, column 0 of its block
-        col_last = (n_rules - 1) * n_coeffs_per_rule  # Rule n_rules-1, column 0 of its block
+    # Which columns, if any, are held fixed. Each rule block's column 0 IS that
+    # rule's bucket mean, so pinning is a linear equality constraint on those
+    # columns. Everything that could make the constraint ill-defined -- a single
+    # rule (where "first" and "last" are the same column), a short or non-finite
+    # y_bucket_mean -- drops out here, leaving the solve below to handle the
+    # empty case as the ordinary unconstrained problem.
+    pinned_cols: list[int] = []
+    pinned_vals: list[float] = []
+    if pin_extremes and n_rules >= 2 and y_bucket_mean is not None:
+        ybm = np.asarray(y_bucket_mean, dtype=float).ravel()
+        if ybm.size >= n_rules:
+            for rule_idx in (0, n_rules - 1):
+                value = float(ybm[rule_idx])
+                if np.isfinite(value):
+                    pinned_cols.append(rule_idx * n_coeffs_per_rule)
+                    pinned_vals.append(value)
 
-        # Build the reduced system: design matrix without the pinned columns,
-        # and RHS adjusted for the fixed contribution
-        cols_to_keep = [i for i in range(n_rules * n_coeffs_per_rule) if i != col_first and i != col_last]
-        design_reduced = design[:, cols_to_keep]
-        rhs_reduced = y - design[:, col_first] * pinned_first - design[:, col_last] * pinned_last
+    if pinned_cols:
+        # Move the pinned columns' known contribution to the right-hand side and
+        # solve the reduced system for the rest. That is exact -- the result is
+        # the true minimizer subject to the constraint, not a penalty
+        # approximation -- and it needs no iteration.
+        pinned = np.asarray(pinned_cols, dtype=int)
+        values = np.asarray(pinned_vals, dtype=float)
+        free = np.setdiff1d(np.arange(design.shape[1]), pinned)
+        residual = y - design[:, pinned] @ values
+        design_free = design[:, free]
 
-        # Solve the reduced system with ridge regression
-        penalty_reduced = np.ones(len(cols_to_keep))
-        # Adjust penalty indices to account for removed columns
-        # Intercepts (every n_coeffs_per_rule starting from 0) are not penalized,
-        # except for the pinned ones we removed
-        for i in range(len(cols_to_keep)):
-            orig_col = cols_to_keep[i]
-            if orig_col % n_coeffs_per_rule == 0:  # This is an intercept column
-                penalty_reduced[i] = 0.0
-
-        gram_reduced = design_reduced.T @ design_reduced + l2_reg * np.diag(penalty_reduced)
-        rhs_reduced = design_reduced.T @ rhs_reduced
-
-        # Solve the reduced system
+        gram = design_free.T @ design_free + l2_reg * np.diag(penalty[free])
+        rhs = design_free.T @ residual
         try:
-            beta_reduced = np.linalg.solve(gram_reduced, rhs_reduced)
+            beta_free = np.linalg.solve(gram, rhs)
         except LinAlgError:
-            beta_reduced = np.linalg.lstsq(design_reduced, rhs_reduced, rcond=None)[0]
+            # lstsq takes the design and the target, NOT the normal equations.
+            beta_free = np.linalg.lstsq(design_free, residual, rcond=None)[0]
 
-        # Reconstruct the full beta vector
-        beta = np.zeros(n_rules * n_coeffs_per_rule)
-        beta[col_first] = pinned_first
-        beta[col_last] = pinned_last
-        beta[cols_to_keep] = beta_reduced
-
-        # Extract bucket means and correction terms from the full coefficient vector
-        coeffs = beta.reshape(n_rules, n_coeffs_per_rule)
-        y_bucket_mean_opt = coeffs[:, 0].copy()
-        corr_terms_opt = coeffs[:, 1:].copy() if n_terms > 0 else np.zeros((n_rules, 0))
-
+        beta = np.zeros(design.shape[1])
+        beta[pinned] = values
+        beta[free] = beta_free
     else:
-        # Original unconstrained solve
-        # Ridge diagonal: never penalize the intercept (column 0 of each rule block).
-        penalty = np.ones(n_rules * n_coeffs_per_rule)
-        penalty[::n_coeffs_per_rule] = 0.0
         gram = design.T @ design + l2_reg * np.diag(penalty)
         rhs = design.T @ y
-
         # Regularized system is generally well-posed; fall back to lstsq if singular.
         try:
             beta = np.linalg.solve(gram, rhs)
         except LinAlgError:
             beta = np.linalg.lstsq(design, y, rcond=None)[0]
 
-        coeffs = beta.reshape(n_rules, n_coeffs_per_rule)
-        y_bucket_mean_opt = coeffs[:, 0].copy()
-        corr_terms_opt = coeffs[:, 1:].copy() if n_terms > 0 else np.zeros((n_rules, 0))
+    coeffs = beta.reshape(n_rules, n_coeffs_per_rule)
+    y_bucket_mean_opt = coeffs[:, 0].copy()
+    corr_terms_opt = coeffs[:, 1:].copy() if n_terms > 0 else np.zeros((n_rules, 0))
 
     if verbose:
-        if pin_extremes:
-            y_pred = design_reduced @ beta_reduced
-            y_pred = y_pred + design[:, col_first] * pinned_first + design[:, col_last] * pinned_last
-        else:
-            y_pred = design @ beta
-        print(f"  Training MSE: {_mse(y, y_pred):.4f}")
+        # beta carries the pinned entries, so this is the fitted prediction in
+        # both cases -- no need to reassemble it from the reduced solve.
+        print(f"  Training MSE: {_mse(y, design @ beta):.4f}")
     return corr_terms_opt, y_bucket_mean_opt
 
 
