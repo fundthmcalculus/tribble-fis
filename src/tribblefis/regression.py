@@ -469,6 +469,7 @@ def solve_tsk_consequents(
     l2_reg: float = 0.0,
     basis: str = "raw",
     cross_pairs: list[tuple[int, int]] | None = None,
+    pin_extremes: bool = True,
     verbose: bool = True,
 ) -> tuple[ndarray, ndarray]:
     """Solve for the globally optimal TSK consequent coefficients in closed form.
@@ -480,6 +481,11 @@ def solve_tsk_consequents(
     normal equations ``(Phi^T Phi + l2_reg * D) beta = Phi^T y`` (with D = 0 on
     the intercept/bucket-mean columns) yields the exact minimizer of the
     firing-weighted MSE + ridge penalty -- no iterative optimizer needed.
+
+    When pin_extremes=True, the first and last bucket means are pinned to their
+    input values (typically the observed min/max of the target) via equality
+    constraints, ensuring the model's output range exactly matches the training
+    range.
 
     Returns (corr_terms_opt, y_bucket_mean_opt), matching
     `optimize_tsk_coefficients`.
@@ -505,24 +511,77 @@ def solve_tsk_consequents(
 
     y = np.asarray(y_train["y_value"].values, dtype=float)
 
-    # Ridge diagonal: never penalize the intercept (column 0 of each rule block).
-    penalty = np.ones(n_rules * n_coeffs_per_rule)
-    penalty[::n_coeffs_per_rule] = 0.0
-    gram = design.T @ design + l2_reg * np.diag(penalty)
-    rhs = design.T @ y
+    if pin_extremes:
+        # Extract the pinned values for the extreme bucket means.
+        pinned_first = float(y_bucket_mean[0])
+        pinned_last = float(y_bucket_mean[-1])
 
-    # Regularized system is generally well-posed; fall back to lstsq if singular.
-    try:
-        beta = np.linalg.solve(gram, rhs)
-    except LinAlgError:
-        beta = np.linalg.lstsq(design, y, rcond=None)[0]
+        # The first and last columns (rule 0's intercept and rule n_rules-1's intercept)
+        # should equal the pinned values. Move them to the RHS.
+        # Column indices for the pinned intercepts in the full design matrix
+        col_first = 0  # Rule 0, column 0 of its block
+        col_last = (n_rules - 1) * n_coeffs_per_rule  # Rule n_rules-1, column 0 of its block
 
-    coeffs = beta.reshape(n_rules, n_coeffs_per_rule)
-    y_bucket_mean_opt = coeffs[:, 0].copy()
-    corr_terms_opt = coeffs[:, 1:].copy() if n_terms > 0 else np.zeros((n_rules, 0))
+        # Build the reduced system: design matrix without the pinned columns,
+        # and RHS adjusted for the fixed contribution
+        cols_to_keep = [i for i in range(n_rules * n_coeffs_per_rule) if i != col_first and i != col_last]
+        design_reduced = design[:, cols_to_keep]
+        rhs_reduced = y - design[:, col_first] * pinned_first - design[:, col_last] * pinned_last
+
+        # Solve the reduced system with ridge regression
+        penalty_reduced = np.ones(len(cols_to_keep))
+        # Adjust penalty indices to account for removed columns
+        # Intercepts (every n_coeffs_per_rule starting from 0) are not penalized,
+        # except for the pinned ones we removed
+        for i in range(len(cols_to_keep)):
+            orig_col = cols_to_keep[i]
+            if orig_col % n_coeffs_per_rule == 0:  # This is an intercept column
+                penalty_reduced[i] = 0.0
+
+        gram_reduced = design_reduced.T @ design_reduced + l2_reg * np.diag(penalty_reduced)
+        rhs_reduced = design_reduced.T @ rhs_reduced
+
+        # Solve the reduced system
+        try:
+            beta_reduced = np.linalg.solve(gram_reduced, rhs_reduced)
+        except LinAlgError:
+            beta_reduced = np.linalg.lstsq(design_reduced, rhs_reduced, rcond=None)[0]
+
+        # Reconstruct the full beta vector
+        beta = np.zeros(n_rules * n_coeffs_per_rule)
+        beta[col_first] = pinned_first
+        beta[col_last] = pinned_last
+        beta[cols_to_keep] = beta_reduced
+
+        # Extract bucket means and correction terms from the full coefficient vector
+        coeffs = beta.reshape(n_rules, n_coeffs_per_rule)
+        y_bucket_mean_opt = coeffs[:, 0].copy()
+        corr_terms_opt = coeffs[:, 1:].copy() if n_terms > 0 else np.zeros((n_rules, 0))
+
+    else:
+        # Original unconstrained solve
+        # Ridge diagonal: never penalize the intercept (column 0 of each rule block).
+        penalty = np.ones(n_rules * n_coeffs_per_rule)
+        penalty[::n_coeffs_per_rule] = 0.0
+        gram = design.T @ design + l2_reg * np.diag(penalty)
+        rhs = design.T @ y
+
+        # Regularized system is generally well-posed; fall back to lstsq if singular.
+        try:
+            beta = np.linalg.solve(gram, rhs)
+        except LinAlgError:
+            beta = np.linalg.lstsq(design, y, rcond=None)[0]
+
+        coeffs = beta.reshape(n_rules, n_coeffs_per_rule)
+        y_bucket_mean_opt = coeffs[:, 0].copy()
+        corr_terms_opt = coeffs[:, 1:].copy() if n_terms > 0 else np.zeros((n_rules, 0))
 
     if verbose:
-        y_pred = design @ beta
+        if pin_extremes:
+            y_pred = design_reduced @ beta_reduced
+            y_pred = y_pred + design[:, col_first] * pinned_first + design[:, col_last] * pinned_last
+        else:
+            y_pred = design @ beta
         print(f"  Training MSE: {_mse(y, y_pred):.4f}")
     return corr_terms_opt, y_bucket_mean_opt
 
@@ -612,6 +671,7 @@ def select_consequent_hyperparams(
     candidate_bases: typing.Sequence[str] = ("raw", "orthogonal"),
     candidate_l2: typing.Sequence[float] = (0.0, 1e-4, 1e-3, 1e-2, 1e-1),
     n_folds: int = 5,
+    pin_extremes: bool = True,
     random_state: int = 42,
 ) -> dict[str, typing.Any]:
     """Pick (order, basis, l2_reg) by k-fold cross-validated R² on X_train.
@@ -644,6 +704,7 @@ def select_consequent_hyperparams(
                     corr, means = solve_tsk_consequents(
                         X_tr, gaussian_memberships, top_n_todo, y_bucket_mean, y_tr,
                         n_output_buckets=n_output_buckets, order=order, l2_reg=l2, basis=basis,
+                        pin_extremes=pin_extremes,
                         verbose=False,
                     )
                     y_hat = predict_tsk(X_val, gaussian_memberships, top_n_todo, means, corr,

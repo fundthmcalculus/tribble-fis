@@ -117,6 +117,7 @@ def build_param_bounds(
 
 def _make_kfold_fitness(
     model, X_train, y_train, folds, top_n_todo, n_output_buckets, order, l2_reg, basis, cross_pairs,
+    pin_extremes=False,
 ):
     """Cross-validated fitness: mean held-out MSE over `folds`.
 
@@ -127,7 +128,7 @@ def _make_kfold_fitness(
     hot loop) so a fitness call is just: apply params -> per-fold solve+predict.
     """
     prepared = []
-    y_bucket_mean_dummy = np.zeros(n_output_buckets)  # solver ignores this arg
+    y_bucket_mean_dummy = np.zeros(n_output_buckets)  # solver ignores this arg when pin_extremes=False
     for tr_idx, val_idx in folds:
         prepared.append((
             X_train.iloc[tr_idx], y_train.iloc[tr_idx],
@@ -142,7 +143,8 @@ def _make_kfold_fitness(
                 corr, means = solve_tsk_consequents(
                     X_tr, candidate, top_n_todo, y_bucket_mean_dummy, y_tr,
                     n_output_buckets=n_output_buckets, order=order,
-                    l2_reg=l2_reg, basis=basis, cross_pairs=cross_pairs, verbose=False,
+                    l2_reg=l2_reg, basis=basis, cross_pairs=cross_pairs, pin_extremes=pin_extremes,
+                    verbose=False,
                 )
                 y_hat = predict_tsk(
                     X_val, candidate, top_n_todo, means, corr,

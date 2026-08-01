@@ -216,6 +216,33 @@ class TestConsequentSolver(unittest.TestCase):
         mse_cf = _mse(y_true, predict_tsk(X, model, self.TOP, cf_means, cf_corr, order="1st"))
         self.assertLessEqual(mse_cf, mse_lbfgs + 1e-9)
 
+    def test_extreme_bucket_means_are_pinned(self):
+        """The extreme bucket means (first and last) should be pinned to the actual
+        min and max of the target, and these should NOT be overwritten by
+        solve_tsk_consequents when pin_extremes=True (default)."""
+        X, y_part, y_bucket_mean, model = self._make_model_and_data()
+        y_true = y_part["y_value"].values
+        y_min = y_true.min()
+        y_max = y_true.max()
+
+        # partition_output should have pinned the extremes
+        self.assertAlmostEqual(y_bucket_mean[0], y_min, places=10,
+                              msg="First bucket mean should be pinned to min of target")
+        self.assertAlmostEqual(y_bucket_mean[-1], y_max, places=10,
+                              msg="Last bucket mean should be pinned to max of target")
+
+        # Solve consequents with pin_extremes=True (default)
+        corr, means_solved = solve_tsk_consequents(
+            X, model, self.TOP, y_bucket_mean, y_part,
+            n_output_buckets=self.N_BUCKETS, order="1st", l2_reg=0.0, verbose=False,
+        )
+
+        # After solving, the extremes should still be pinned
+        self.assertAlmostEqual(means_solved[0], y_min, places=10,
+                              msg="First bucket mean should remain pinned to min after solve_tsk_consequents")
+        self.assertAlmostEqual(means_solved[-1], y_max, places=10,
+                              msg="Last bucket mean should remain pinned to max after solve_tsk_consequents")
+
 
 class TestAntecedentRefinement(unittest.TestCase):
     """Unit tests for the Phase 2 antecedent-refinement module."""
