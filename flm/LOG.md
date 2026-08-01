@@ -51,6 +51,7 @@ Convention: **WORKED** / **FAILED** / **PARTIAL**, each with a why.
 | E32 | Lifting the class/seed caps | `max_classes` was not the cap; seed pool worth **11%** |
 | E33 | Wider context for first-order | FAILED again; mechanism = **mass fragmentation** (measured) |
 | E34 | Headline at the best configuration | **194.9 standalone, 180.4 mixed**; 31.5% better than a trigram |
+| E35 | Is lambda tuned on test? | yes, and it costs **0.00%** — mixture numbers stand |
 
 ---
 
@@ -3272,3 +3273,41 @@ left context fixes it (E26, E33), so it is a representation question rather than
 Order-3 classes deferred with a measured reason (E33.2: they would fragment mass further). GPT-2
 untested (blocked, and a data-gap comparison anyway). No neural-embedding comparison. Experiment B's
 real encoder and SST paths unrun.
+
+---
+
+## E35 — Is lambda tuned on the test set? **Yes, and it costs nothing (0.00%)**
+
+Noticed while writing the handoff: every mixture number in this log picked `lambda` by minimising
+perplexity on the **same** held-out positions it then reported. That is test-set tuning, and it
+affects every mixture figure from E19.4 onward. The standalone numbers never involved lambda and are
+unaffected.
+
+Measured rather than caveated. 2,000 held-out positions, split 1,000 dev / 1,000 test; tune lambda on
+dev, report on test, compare against the tuned-on-test figure:
+
+| partner | tuned on test | honest (dev → test) | lambda | inflation |
+|---|---|---|---|---|
+| bigram | 179.5 | 179.5 | 0.8 | **0.00%** |
+| trigram | 178.5 | 178.5 | 0.8 | **0.00%** |
+
+Standalone on the test half, for reference: 192.4.
+
+**Zero inflation**, and lambda=0.8 is selected identically either way — an 11-point 1-D grid over
+1,000 points cannot overfit when the optimum is this flat. So the mixture numbers stand as reported.
+Recorded so a later session does not have to re-worry about it, and because "probably fine" would not
+have been good enough.
+
+**What is still owed:** every number in this log is a **single split (`seed=0`), single evaluation
+sample of 1,000 positions, with no confidence interval anywhere**. Differences of a few percent
+between adjacent configurations should not be read as an ordering. Repeating the headline over 3-5
+seeds is cheap and is the first item of methodological debt in [`TODO.md`](TODO.md).
+
+---
+
+## Handoff
+
+[`TODO.md`](TODO.md) is the actionable residue of this log: current best configuration and how to run
+it, P0 items that need nothing external, P1 items blocked only by this environment's egress
+allowlist, research bets, and — most importantly — a **do-not-redo table** of eighteen things ruled
+out with measurements, six of which contradicted a confident prediction of mine.

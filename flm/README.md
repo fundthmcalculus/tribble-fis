@@ -17,6 +17,8 @@ recover names from a dense model after the fact.
 | **A6** | **First-order TSK — word-level consequents** (fuzzy class-based LM): each rule carries a *word distribution*, not a scalar | **best result in the project: ppl 194.9 standalone, 31.5% better than a tuned trigram (284.4) head-to-head**; mixed with a trigram 180.4 at fuzzy weight 0.8, bigram weight 0. Generation category-ppl 9.33 vs real text 8.18, bigram 12.84. Trains in 26s on 4 CPU cores | [`fuzzyembed/firstorder.py`](fuzzyembed/firstorder.py) |
 | **B** | **FIS head on a frozen neural embedding model** — sentiment analysis, TSK heads vs. linear probe | harness built & smoke-tested; not run on real data | [`FIS_ON_EMBEDDINGS_PLAN.md`](FIS_ON_EMBEDDINGS_PLAN.md) · [`exp_b/`](exp_b/) |
 
+**Continuing this work?** Start with [`TODO.md`](TODO.md) — current best configuration, how to run it, and a do-not-redo table of eighteen things already ruled out with measurements.
+
 **Experiment A is implemented** in [`fuzzyembed/`](fuzzyembed/) — see that README for
 results, the design corrections found by running it, and honest limitations. A full
 what-worked/what-didn't-and-why record is in [`LOG.md`](LOG.md).
