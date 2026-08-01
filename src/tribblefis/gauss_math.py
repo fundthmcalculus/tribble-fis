@@ -4,7 +4,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from scipy import stats
-from scipy.spatial.distance import jensenshannon
+from scipy.stats import wasserstein_distance
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from sklearn.mixture import GaussianMixture
@@ -149,8 +149,26 @@ def fit_gaussians(X, y, column: str, label_value: int, n_gaussians: int = 0, max
     return gaussians
 
 
-def calculate_gaussian_correlation(X, y) -> list[tuple[Any, Any]]:
-    """Calculate correlation coefficient between Gaussian distributions for each feature across different labels"""
+def calculate_gaussian_correlation(X, y, method: str = "bhattacharyya") -> list[tuple[Any, Any]]:
+    """Calculate distance metric between distributions for each feature across different labels.
+
+    Args:
+        X: Feature dataframe
+        y: Label series
+        method: Distance metric to use. Options:
+            - "bhattacharyya" (default): Parametric divergence, best empirical performance
+            - "wasserstein": Non-parametric, no distribution assumption
+
+    Returns:
+        List of tuples (feature_name, differentiation_score) sorted by score descending
+
+    Raises:
+        ValueError: If method is not recognized
+    """
+    valid_methods = {"bhattacharyya", "wasserstein"}
+    if method not in valid_methods:
+        raise ValueError(f"method must be one of {valid_methods}, got {method!r}")
+
     unique_labels = y.unique()
 
     def process_column(column):
@@ -173,59 +191,41 @@ def calculate_gaussian_correlation(X, y) -> list[tuple[Any, Any]]:
         for ij in range(len(unique_labels)):
             for jk in range(ij + 1, len(unique_labels)):
                 # Get data for each label
-                data_label_ij = data[y == unique_labels[ij]]
-                data_label_jk = data[y == unique_labels[jk]]
+                data_label_ij = data[y == unique_labels[ij]].values
+                data_label_jk = data[y == unique_labels[jk]].values
 
-                # Fit Gaussian distributions
-                mu_ij, std_ij = stats.norm.fit(data_label_ij)
-                mu_jk, std_jk = stats.norm.fit(data_label_jk)
+                if method == "bhattacharyya":
+                    # Fit Gaussian distributions
+                    mu_ij, std_ij = stats.norm.fit(data_label_ij)
+                    mu_jk, std_jk = stats.norm.fit(data_label_jk)
 
-                # Create probability distributions over same range
-                x_range = np.linspace(data.min(), data.max(), 100)
-                pdf_ij = stats.norm.pdf(x_range, mu_ij, std_ij)
-                pdf_jk = stats.norm.pdf(x_range, mu_jk, std_jk)
+                    # Create probability distributions over same range
+                    x_range = np.linspace(data.min(), data.max(), 100)
+                    pdf_ij = stats.norm.pdf(x_range, mu_ij, std_ij)
+                    pdf_jk = stats.norm.pdf(x_range, mu_jk, std_jk)
 
-                # Normalize PDFs to sum to 1 for proper probability distributions
-                pdf_ij = pdf_ij / np.sum(pdf_ij)
-                pdf_jk = pdf_jk / np.sum(pdf_jk)
+                    # Normalize PDFs to sum to 1 for proper probability distributions
+                    pdf_ij = pdf_ij / np.sum(pdf_ij)
+                    pdf_jk = pdf_jk / np.sum(pdf_jk)
 
-                # Calculate Bhattacharyya coefficient (correlation between distributions)
-                bhattacharyya_coeff = np.sum(np.sqrt(pdf_ij * pdf_jk))
+                    # Bhattacharyya distance = 1 - Bhattacharyya coefficient
+                    bhattacharyya_coeff = np.sum(np.sqrt(pdf_ij * pdf_jk))
+                    distance = 1 - bhattacharyya_coeff
 
-                # Calculate Jensen-Shannon distance (0 = identical, 1 = completely different)
-                js_distance = jensenshannon(pdf_ij, pdf_jk)
+                elif method == "wasserstein":
+                    # Wasserstein distance (non-parametric, no distribution assumption)
+                    distance = wasserstein_distance(data_label_ij, data_label_jk)
+                    # Normalize by pooled standard deviation for scale invariance
+                    pooled_std = np.sqrt((np.var(data_label_ij) + np.var(data_label_jk)) / 2)
+                    if pooled_std > 1e-10:
+                        distance = distance / pooled_std
 
-                # Calculate overlap coefficient (simpler measure)
-                overlap = np.sum(np.minimum(pdf_ij, pdf_jk))
-
-                # Calculate differentiation score
-                # Convert metrics to "higher = more different" scale
-                bhatta_diff = 1 - bhattacharyya_coeff  # 1=completely different, 0=identical
-                js_diff = js_distance  # already 1=completely different, 0=identical
-                overlap_diff = 1 - overlap  # 1=completely different, 0=identical
-
-                # Compute histogram in 1000 bins for each dataset
-                hist_ij, _ = np.histogram(data_label_ij, bins=100, range=(data.min(), data.max()), density=True)
-                hist_jk, _ = np.histogram(data_label_jk, bins=100, range=(data.min(), data.max()), density=True)
-                hist_corr = np.corrcoef(hist_ij, hist_jk)[0, 1]
-                corr_diff = 1 - hist_corr
-
-                # Arithmetic mean
-                diff_vals = np.array([bhatta_diff, js_diff, overlap_diff, corr_diff])
-                diff_vals = diff_vals[np.isfinite(diff_vals)]
-
-                arithmetic_mean = np.mean(diff_vals)
-
-                # Geometric mean
-                geometric_mean = np.prod(diff_vals) ** (1 / len(diff_vals))
-
-                # Combined differentiation score (average of both means)
-                differentiation_score += (arithmetic_mean + geometric_mean) / 2
+                differentiation_score += distance
 
         return column, differentiation_score
 
     # Use ThreadPoolExecutor to process columns in parallel
-    with ThreadPoolExecutor() as executor:
+    with ThreadPoolExecutor(max_workers=1) as executor:
         feature_differentiators = list(executor.map(process_column, X.columns))
 
     # Remove nan and inf
