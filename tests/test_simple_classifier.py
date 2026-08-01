@@ -50,5 +50,46 @@ class TestSimpleClassifier(unittest.TestCase):
         self.assertEqual(str(predictions[2]), "anomaly")
 
 
+class TestClassifierAnomalyParams(unittest.TestCase):
+    """`MixtureOfGaussiansFuzzyClassifier._anomaly_params` builds an
+    AnomalyParameters, and got out of step with that NamedTuple's fields.
+
+    Both failure modes were invisible to the suite because nothing imported the
+    module: a repeated keyword is a SyntaxError raised at compile time, so the
+    import blew up before any test could reach the class, and the bogus keyword
+    hiding behind it would have been a TypeError on the first call.
+    """
+
+    def test_classifier_module_imports(self):
+        """A repeated keyword argument is a compile-time error, so this import
+        is the whole test -- the SyntaxError took down the entire module, both
+        classifiers with it, not just the method that contained it."""
+        from tribblefis.gaussian_classifier import (
+            MixtureOfGaussiansFuzzyClassifier,
+            MixtureOfGaussiansFuzzySequenceClassifier,
+        )
+
+        self.assertTrue(callable(MixtureOfGaussiansFuzzyClassifier))
+        self.assertTrue(callable(MixtureOfGaussiansFuzzySequenceClassifier))
+
+    def test_anomaly_params_match_the_namedtuple_fields(self):
+        """Every keyword `_anomaly_params` passes must be a real field, and the
+        values it forwards must arrive intact."""
+        from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzySequenceClassifier
+
+        clf = MixtureOfGaussiansFuzzySequenceClassifier(
+            anomaly_threshold=0.75, anomaly_label="unknown",
+            norm_conorm="hamacher", member_function="gaussian",
+        )
+        params = clf._anomaly_params()
+
+        self.assertIsInstance(params, AnomalyParameters)
+        self.assertTrue(params.include_anomaly)
+        self.assertAlmostEqual(params.threshold, 0.75)
+        self.assertEqual(params.label, "unknown")
+        self.assertEqual(params.norm_conorm, "hamacher")
+        self.assertEqual(params.member_function, "gaussian")
+
+
 if __name__ == '__main__':
     unittest.main()

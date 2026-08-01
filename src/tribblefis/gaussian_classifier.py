@@ -315,6 +315,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         n_gaussians=0,
         member_function="gaussian",
         norm_conorm="min/max",
+        log_transform=False,
         random_state=42,
         max_layers=4,
         anomaly_threshold=0.99,
@@ -378,6 +379,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         self.n_gaussians = n_gaussians
         self.member_function = member_function
         self.norm_conorm = norm_conorm
+        self.log_transform = log_transform
         self.random_state = random_state
         self.max_layers = max_layers
         self.anomaly_threshold = anomaly_threshold
@@ -410,8 +412,6 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
             label=self.anomaly_label,
             norm_conorm=self.norm_conorm,
             member_function=self.member_function,
-            norm_conorm=self.norm_conorm,
-            random_state=self.random_state,
         )
 
     @staticmethod
