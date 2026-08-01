@@ -317,7 +317,7 @@ def t_norm(x, y, selected_norm: NormConorm | None = None):
     if y is None:
         z = np.ones(x.shape[0])
         for ij in range(0, x.shape[1]):
-            z = t_norm(z, x[:, ij])
+            z = t_norm(z, x[:, ij], selected_norm)
         return z
 
     if selected_norm == "min/max":
@@ -327,7 +327,11 @@ def t_norm(x, y, selected_norm: NormConorm | None = None):
     elif selected_norm == "luk":
         return np.maximum(0, x + y - 1)
     elif selected_norm == "hamacher":
-        return (x * y) / (x + y - x * y)
+        den = x + y - x * y
+        out = np.zeros_like(np.asarray(x, dtype=float))
+        ok = np.abs(den) > 1e-12
+        np.divide(x * y, den, out=out, where=ok)
+        return out
     else:
         raise ValueError(f"Invalid NORM_CORNOM value: {selected_norm}")
 
@@ -339,7 +343,7 @@ def t_conorm(x, y, selected_norm: NormConorm | None = None):
     if y is None:
         z = np.zeros(x.shape[0])
         for ij in range(0, x.shape[1]):
-            z = t_conorm(z, x[:, ij])
+            z = t_conorm(z, x[:, ij], selected_norm)
         return z
 
     if selected_norm == "min/max":
@@ -349,7 +353,12 @@ def t_conorm(x, y, selected_norm: NormConorm | None = None):
     elif selected_norm == "luk":
         return np.minimum(1, x + y)
     elif selected_norm == "hamacher":
-        return (x + y) / (1 - x * y)
+        num = x + y - 2.0 * x * y
+        den = 1.0 - x * y
+        out = np.ones_like(np.asarray(x, dtype=float))
+        ok = np.abs(den) > 1e-12
+        np.divide(num, den, out=out, where=ok)
+        return out
     else:
         raise ValueError(f"Invalid NORM_CORNOM value: {selected_norm}")
 
@@ -402,8 +411,9 @@ def tsk_firing_strengths(
         if anomaly_details and label_value == anomaly_details.label:
             # Anomaly label is treated as a special case
             # We'll use a complementary membership function for it
+            boosted = np.clip(firing_strengths[:, :-1] + anomaly_details.threshold, 0.0, 1.0)
             firing_strengths[:, label_idx] = t_complement(
-                t_conorm(firing_strengths[:, :-1] + anomaly_details.threshold, None, anomaly_details.norm_conorm)
+                t_conorm(boosted, None, anomaly_details.norm_conorm)
             )
             continue
 
@@ -500,8 +510,9 @@ def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierMode
     if anomaly_details and anomaly_details.include_anomaly:
         # Anomaly is the complement of the conorm of all other class firings
         # We use a similar hack as in tsk_firing_strengths
+        boosted = np.clip(rule_firing[:,:-1] + anomaly_details.threshold, 0.0, 1.0)
         rule_firing[:, -1] = t_complement(
-            t_conorm(rule_firing[:,:-1] + anomaly_details.threshold, None, norm_conorm)
+            t_conorm(boosted, None, norm_conorm)
         )
 
     predictions_idx = np.argmax(rule_firing, axis=1)
