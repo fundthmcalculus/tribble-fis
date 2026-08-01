@@ -411,8 +411,9 @@ def tsk_firing_strengths(
         if anomaly_details and label_value == anomaly_details.label:
             # Anomaly label is treated as a special case
             # We'll use a complementary membership function for it
+            boosted = np.clip(firing_strengths[:, :-1] + anomaly_details.threshold, 0.0, 1.0)
             firing_strengths[:, label_idx] = t_complement(
-                t_conorm(firing_strengths[:, :-1] + anomaly_details.threshold, None, anomaly_details.norm_conorm)
+                t_conorm(boosted, None, anomaly_details.norm_conorm)
             )
             continue
 
@@ -509,8 +510,9 @@ def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierMode
     if anomaly_details and anomaly_details.include_anomaly:
         # Anomaly is the complement of the conorm of all other class firings
         # We use a similar hack as in tsk_firing_strengths
+        boosted = np.clip(rule_firing[:,:-1] + anomaly_details.threshold, 0.0, 1.0)
         rule_firing[:, -1] = t_complement(
-            t_conorm(rule_firing[:,:-1] + anomaly_details.threshold, None, norm_conorm)
+            t_conorm(boosted, None, norm_conorm)
         )
 
     predictions_idx = np.argmax(rule_firing, axis=1)
