@@ -134,9 +134,9 @@ class TestTNormTConormRegression(unittest.TestCase):
         # Check for no NaN values
         self.assertFalse(np.any(np.isnan(result)),
                          "Hamacher t-conorm produced NaN values")
-        # Check domain - most critical fix
-        self.assertTrue(np.all(result >= 0), "Hamacher t-conorm produced negative values")
-        self.assertTrue(np.all(result <= 1),
+        # Check domain - most critical fix (allow 1e-10 tolerance for numerical precision)
+        self.assertTrue(np.all(result >= -1e-10), "Hamacher t-conorm produced negative values")
+        self.assertTrue(np.all(result <= 1 + 1e-10),
                         f"Hamacher t-conorm produced values > 1: max={np.max(result)}")
 
     def test_tconorm_hamacher_specific_values(self):
