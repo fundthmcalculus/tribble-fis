@@ -312,7 +312,9 @@ def create_gaussian_membership_dict(
 
 def t_norm(x, y, selected_norm: NormConorm | None = None):
     """T-norm (AND) function for fuzzy logic operations."""
-    selected_norm = selected_norm or DefaultNormCornorm
+    # None means "unspecified"; any other value is validated below rather than
+    # being swapped for the default by a falsy test.
+    selected_norm = selected_norm if selected_norm is not None else DefaultNormCornorm
 
     if y is None:
         z = np.ones(x.shape[0])
@@ -332,13 +334,18 @@ def t_norm(x, y, selected_norm: NormConorm | None = None):
         ok = np.abs(den) > 1e-12
         np.divide(x * y, den, out=out, where=ok)
         return out
+    elif selected_norm == "einstein":
+        # Einstein product. x + y - xy = 1 - (1-x)(1-y) lies in [0, 1] for inputs
+        # in [0, 1], so the denominator lies in [1, 2] and never vanishes -- no
+        # singularity to guard, unlike the Hamacher product.
+        return (x * y) / (2.0 - (x + y - x * y))
     else:
         raise ValueError(f"Invalid NORM_CORNOM value: {selected_norm}")
 
 
 def t_conorm(x, y, selected_norm: NormConorm | None = None):
     """T-conorm (OR) function for fuzzy logic operations."""
-    selected_norm = selected_norm or DefaultNormCornorm
+    selected_norm = selected_norm if selected_norm is not None else DefaultNormCornorm
 
     if y is None:
         z = np.zeros(x.shape[0])
@@ -352,6 +359,11 @@ def t_conorm(x, y, selected_norm: NormConorm | None = None):
         return x + y - x * y
     elif selected_norm == "luk":
         return np.minimum(1, x + y)
+    elif selected_norm == "einstein":
+        # Einstein sum, the De Morgan dual of the Einstein product. The
+        # denominator lies in [1, 2] for inputs in [0, 1], so it is likewise
+        # singularity-free.
+        return (x + y) / (1.0 + x * y)
     elif selected_norm == "hamacher":
         num = x + y - 2.0 * x * y
         den = 1.0 - x * y
@@ -382,7 +394,10 @@ def membership(x, mu, sigma, default_member: MemberFunction | None = None):
 
 
 def tsk_firing_strengths(
-    X: pd.DataFrame, model: GaussianMixtureModel, anomaly_details: AnomalyParameters | None = None
+    X: pd.DataFrame,
+    model: GaussianMixtureModel,
+    anomaly_details: AnomalyParameters | None = None,
+    norms: NormPair | None = None,
 ) -> tuple[np.ndarray, list[Any]]:
     """Calculate firing strengths for each label in a Zeroth-order TSK fuzzy model.
 
@@ -390,12 +405,18 @@ def tsk_firing_strengths(
         X: Feature dataframe (input variables)
         model: GaussianMixtureModel containing labels and their Gaussian parameters
         anomaly_details: Whether to include the anomaly label in the firing strengths
+        norms: Explicit (t-norm, t-conorm) pair. Takes precedence over
+            `anomaly_details`; when both are absent the default family is used.
+            Regression has no `anomaly_details` to carry the selection, so this
+            argument is the only way a regressor can choose its operators.
 
     Returns:
         tuple containing:
             - np.ndarray of firing strengths (n_samples, n_labels)
             - list of label values corresponding to the columns in firing_strengths
     """
+    if norms is None:
+        norms = anomaly_details.norms() if anomaly_details else resolve_norm_pair()
     n_samples = len(X)
     # Get unique labels from any of the feature models
     first_feature_model = next(iter(model.feature_models.values()))
@@ -413,7 +434,7 @@ def tsk_firing_strengths(
             # We'll use a complementary membership function for it
             boosted = np.clip(firing_strengths[:, :-1] + anomaly_details.threshold, 0.0, 1.0)
             firing_strengths[:, label_idx] = t_complement(
-                t_conorm(boosted, None, anomaly_details.norm_conorm)
+                t_conorm(boosted, None, norms.t_conorm)
             )
             continue
 
@@ -435,15 +456,11 @@ def tsk_firing_strengths(
                 # Evaluate membership function (works for both Gaussian and Trapezoid)
                 # Logic-OR
                 feature_membership = t_conorm(
-                    feature_membership,
-                    mf.evaluate(feature_data),
-                    anomaly_details.norm_conorm if anomaly_details else None,
+                    feature_membership, mf.evaluate(feature_data), norms.t_conorm
                 )
 
             # Logic-AND
-            label_membership = t_norm(
-                label_membership, feature_membership, anomaly_details.norm_conorm if anomaly_details else None
-            )
+            label_membership = t_norm(label_membership, feature_membership, norms.t_norm)
 
         firing_strengths[:, label_idx] = label_membership
 
@@ -483,7 +500,7 @@ def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierMode
     n_rules = len(model.rules)
 
     anomaly_details = model.anomaly_params
-    norm_conorm = anomaly_details.norm_conorm if anomaly_details else DefaultNormCornorm
+    norms = anomaly_details.norms() if anomaly_details else resolve_norm_pair()
     member_fcn = anomaly_details.member_function if anomaly_details else DefaultMemberFunction
 
 
@@ -498,8 +515,8 @@ def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierMode
             matched_mfs = model.get_mfs(mf_ids)
             local_vals = np.zeros(n_samples)
             for j, mf in enumerate(matched_mfs):
-                local_vals = t_conorm(local_vals, mf.evaluate(X[feature_name].values), norm_conorm)
-            rule_firing[:, i] = t_norm(local_vals, rule_firing[:, i], norm_conorm)
+                local_vals = t_conorm(local_vals, mf.evaluate(X[feature_name].values), norms.t_conorm)
+            rule_firing[:, i] = t_norm(local_vals, rule_firing[:, i], norms.t_norm)
 
     # Aggregate rule firing strengths by consequent label
     unique_labels = [rule.consequent for rule in model.rules]
@@ -512,7 +529,7 @@ def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierMode
         # We use a similar hack as in tsk_firing_strengths
         boosted = np.clip(rule_firing[:,:-1] + anomaly_details.threshold, 0.0, 1.0)
         rule_firing[:, -1] = t_complement(
-            t_conorm(boosted, None, norm_conorm)
+            t_conorm(boosted, None, norms.t_conorm)
         )
 
     predictions_idx = np.argmax(rule_firing, axis=1)

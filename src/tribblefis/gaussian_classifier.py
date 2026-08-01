@@ -23,7 +23,8 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
     """
 
     def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, norm_conorm="min/max", log_transform=False, member_function="gaussian", trapz_method="fast", random_state=42,
-                 refine=False, refine_method="coordinate", refine_l2_shrink=0.05):
+                 refine=False, refine_method="coordinate", refine_l2_shrink=0.05,
+                 t_norm=None, t_conorm=None, allow_mixed_norms=False):
         """
         Initialize the MixtureOfGaussiansFuzzyClassifier.
 
@@ -63,7 +64,16 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.trapz_method = trapz_method
         self.random_state = random_state
         self.norm_conorm = norm_conorm
-        self.anomaly_params = AnomalyParameters(include_anomaly=False, norm_conorm=self.norm_conorm)
+        self.t_norm = t_norm
+        self.t_conorm = t_conorm
+        self.allow_mixed_norms = allow_mixed_norms
+        self.anomaly_params = AnomalyParameters(
+            include_anomaly=False,
+            norm_conorm=self.norm_conorm,
+            t_norm=self.t_norm,
+            t_conorm=self.t_conorm,
+            allow_mixed_norms=self.allow_mixed_norms,
+        )
         self.refine = refine
         self.refine_method = refine_method
         self.refine_l2_shrink = refine_l2_shrink
@@ -315,6 +325,9 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         n_gaussians=0,
         member_function="gaussian",
         norm_conorm="min/max",
+        t_norm=None,
+        t_conorm=None,
+        allow_mixed_norms=False,
         log_transform=False,
         random_state=42,
         max_layers=4,
@@ -379,6 +392,9 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         self.n_gaussians = n_gaussians
         self.member_function = member_function
         self.norm_conorm = norm_conorm
+        self.t_norm = t_norm
+        self.t_conorm = t_conorm
+        self.allow_mixed_norms = allow_mixed_norms
         self.log_transform = log_transform
         self.random_state = random_state
         self.max_layers = max_layers
@@ -412,6 +428,9 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
             label=self.anomaly_label,
             norm_conorm=self.norm_conorm,
             member_function=self.member_function,
+            t_norm=self.t_norm,
+            t_conorm=self.t_conorm,
+            allow_mixed_norms=self.allow_mixed_norms,
         )
 
     @staticmethod
