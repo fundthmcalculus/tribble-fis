@@ -1,4 +1,4 @@
-<title>E29 — Word-level consequents beat n-grams</title>
+<title>E34 — Word-level consequents beat n-grams</title>
 <style>
   :root {
     color-scheme: light;
@@ -299,33 +299,34 @@
 <div class="wrap">
 
 <header class="masthead">
-  <p class="eyebrow">Fuzzy language model · engineering log · experiment E29</p>
+  <p class="eyebrow">Fuzzy language model · engineering log · experiments E28–E34</p>
   <h1>Word-level consequents make the interpretable model the best model</h1>
   <p class="standfirst">Giving each fuzzy rule a <em>word distribution</em> instead of a scalar takes
-  perplexity from 355.5 to 219.9 — past a bigram and a tuned trigram on the same corpus. The
-  interpretable architecture is now also the accurate one.</p>
+  perplexity from 355.5 to <strong>194.9</strong> — 31.5% past a tuned trigram on the same corpus. The
+  interpretable architecture is now also the accurate one, and it trains in 26 seconds on four CPU
+  cores.</p>
 </header>
 
 <div class="keyfigs">
   <div class="keyfig">
-    <span class="n">219.9</span>
+    <span class="n">194.9</span>
     <span class="l">First-order TSK, standalone perplexity</span>
     <span class="s">was 355.5 zero-order</span>
   </div>
   <div class="keyfig">
-    <span class="n">−23%</span>
+    <span class="n">−31.5%</span>
     <span class="l">vs the best n-gram on identical data</span>
     <span class="s">trigram 284.4 · bigram 286.4</span>
   </div>
   <div class="keyfig">
-    <span class="n">201.7</span>
+    <span class="n">180.4</span>
     <span class="l">Mixed with a trigram, fuzzy weight 0.8</span>
     <span class="s">bigram gets weight 0 in a 3-way mix</span>
   </div>
   <div class="keyfig">
-    <span class="n">1,050</span>
-    <span class="l">Parameters that already beat the old best</span>
-    <span class="s">50 classes → ppl 312.2</span>
+    <span class="n">26s</span>
+    <span class="l">Training, four CPU cores, no GPU</span>
+    <span class="s">was ~940s before E30–E31</span>
   </div>
 </div>
 <p class="figsub" style="margin-top:10px">1M-token narrative corpus · sentence-level 80/20 split · 1,000 held-out
@@ -665,15 +666,17 @@ cannot be saturated.</p>
     <line x1="56" y1="150" x2="530" y2="150" stroke="var(--grid)" stroke-width="1"/>
     <text class="axlab" x="293" y="184" text-anchor="middle">category-sequence perplexity</text>
     <g>
-      <rect class="hit" x="56" y="16" width="474" height="36" data-tip="first-order fuzzy&#10;category ppl 10.10&#10;~30% of the way from bigram to real text"/>
+      <rect class="hit" x="56" y="16" width="474" height="36" data-tip="first-order fuzzy&#10;category ppl 10.10 (E29) → 9.33 (E34)&#10;59% → 75% of the way from bigram to real"/>
       <rect class="hit" x="56" y="58" width="474" height="36" data-tip="bigram, same training data&#10;category ppl 12.84"/>
       <rect class="hit" x="56" y="100" width="474" height="36" data-tip="unigram floor&#10;category ppl 14.76"/>
     </g>
   </svg>
   </div>
   <figcaption>Generation is <b>measurably more syntactically plausible than a bigram's</b> and still
-  clearly short of real text — roughly 30% of the way from bigram to real on this scale. Text is
-  locally plausible and globally incoherent, which a two-token antecedent cannot fix.</figcaption>
+  clearly short of real text. <b>Correction:</b> an earlier version of this page said "roughly 30% of
+  the way from bigram to real" — that is wrong arithmetic; 10.10 on a 12.84→8.18 span is <b>59%</b>.
+  At the best configuration (E34) it reaches <b>9.33, or 75% of the way</b>. Text is locally plausible
+  and globally incoherent, which no amount of left context fixes.</figcaption>
 </figure>
 
 <div class="samples"><span class="p">he did    | </span>not possession of marrying you could hardly very voice and certainly man his seems
@@ -700,19 +703,66 @@ handful of observations, because information gain rewards low entropy and so fav
 look sharp by accident. At full data <em>jackal</em> sits at 0.035 among <em>boy</em> and
 <em>girl</em>, where it belongs: Bryant's stories genuinely do contain “the little jackal” often.</p>
 
+<h2>After the write-up: two caps and a refuted prediction <span class="expid">E32–E34</span></h2>
+<div class="measure">
+<p>Making training 142× faster (E30–E31) made two configuration caps testable. One of them was not
+the cap I had blamed.</p>
+<p><strong><span class="expid">E32.1</span> <code>max_classes</code> was never binding.</strong>
+Lifting it entirely admits only 4,646 classes — that is simply how many pass the mass floor — worth
+0.7%. The E29 write-up said the class cap was still binding when quality was improving; that reading
+confused the <em>rank-truncated frontier curve</em> with the total <em>supply</em>, and is corrected.</p>
+<p><strong><span class="expid">E32.2</span> The seed pool was, and it is worth 11%.</strong> Raising
+<code>top_singles</code> 140 → 560 with the mass floor at 8 takes standalone perplexity
+<strong>219.9 → 194.9</strong> and the mixture <strong>201.7 → 180.4</strong>. The curve never
+saturated — it <em>ran out of features</em>: at window 2 there are only 522 context features, so 560
+already takes every one.</p>
+<p><strong><span class="expid">E33</span> So I predicted a wider context would now help, and it does
+not.</strong> E26 found width monotonically harmful on the zero-order model, and I expected that to
+invert here as the corpus-scale conclusion had. Window 2 / 3 / 4 give mixed perplexity 194.8 / 201.4 /
+212.5. That is the third prediction of mine in this project refuted by the experiment built to test
+it.</p>
+<p><strong><span class="expid">E33.2</span> The mechanism, measured.</strong> Mean information gain
+per class is <em>flat</em> across windows (2.525 → 2.500) while class count rises 5.6× and mean mass
+falls 37%. The extra classes are not junk — they are <em>redundant and worse estimated</em>. A
+firing-weighted mixture over 98,000 equally-informative, less-well-estimated classes loses to one over
+17,600 better-estimated ones. That is mass fragmentation, and it is a different failure from the
+false-discovery story E26.1 wrongly proposed.</p>
+</div>
+
+<figure>
+  <p class="figtitle">Parameter count against quality, as a frontier</p>
+  <p class="figsub">the honest object is the curve, not a single point</p>
+  <div class="tblwrap">
+  <table>
+    <thead><tr><th>Parameters</th><th>Standalone ppl</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td>525</td><td>324.7</td><td>25 classes</td></tr>
+      <tr><td>1,050</td><td>312.2</td><td>already beats the zero-order best of 355.5</td></tr>
+      <tr class="hl"><td>~97,600</td><td>218.5</td><td>comparable size to the trigram's 108,511 counts, 23% better</td></tr>
+      <tr><td>483,105</td><td>194.9</td><td>best quality — <em>larger</em> than the trigram</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <figcaption><b>"Smaller than an n-gram" is true at matched quality, not at best quality.</b> The
+  earlier framing was unqualified and should not be carried forward: the 194.9 headline costs 483,105
+  sparse parameters against a trigram's 108,511 stored counts. At matched size the win is still
+  large.</figcaption>
+</figure>
+
 <h2>Where it stands</h2>
 <ul class="tight">
-  <li><strong>Beats n-grams standalone</strong>, 219.9 against 284.4, on the same corpus, split, and
-  held-out positions — the first configuration in this project to win outright rather than
-  contribute to a mixture.</li>
+  <li><strong>Beats n-grams standalone</strong>, 194.9 against 284.4 — 31.5% — on the same corpus,
+  split, and held-out positions.</li>
   <li><strong>Interpretability is not being paid for with quality.</strong> The named-class model is
   now also the best-performing one.</li>
-  <li><strong>Trains on a laptop.</strong> About 16 minutes on one CPU core at full data, three
-  minutes at 300,000 positions, no GPU. 80 tests pass.</li>
+  <li><strong>Trains on a laptop.</strong> 26 seconds on four CPU cores at full data, down from ~16
+  minutes before the E30–E31 speed work — 142×, almost all of it algorithmic rather than parallel.
+  No GPU; both Cython and a GPU were argued against on measurements. 82 tests pass.</li>
   <li><strong>Global coherence is the open problem.</strong> Samples are locally plausible and
   globally incoherent, and a two-token antecedent cannot carry discourse state.</li>
-  <li><strong>The class cap was still binding.</strong> Quality was improving at 3,000 classes, and
-  order-3 context classes are untested.</li>
+  <li><strong>Feature supply, not conjunction depth, is the live constraint.</strong> Order-3 classes
+  are deferred with a measured reason: a third conjunct would fragment mass further, which is exactly
+  the mechanism that makes more features hurt.</li>
 </ul>
 
 <div class="caveat">Not tested here, and worth naming: GPT-2 (unreachable in this environment, and a

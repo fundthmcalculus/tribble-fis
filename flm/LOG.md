@@ -48,6 +48,9 @@ Convention: **WORKED** / **FAILED** / **PARTIAL**, each with a why.
 | E29 | Consolidating first-order: data, selection, backoff, metrics | **beats bigram AND trigram head-to-head** (219.9 vs 284.4) |
 | E30 | Training speed: plan + reformulated pair counting | **4.0x measured**; Cython and GPU both argued against |
 | E31 | Executing the speed plan (items 2-4) | class estimation **940s -> 6.6s (142x)**; no dominant stage left |
+| E32 | Lifting the class/seed caps | `max_classes` was not the cap; seed pool worth **11%** |
+| E33 | Wider context for first-order | FAILED again; mechanism = **mass fragmentation** (measured) |
+| E34 | Headline at the best configuration | **194.9 standalone, 180.4 mixed**; 31.5% better than a trigram |
 
 ---
 
@@ -2694,8 +2697,10 @@ graded, so a degenerate sequence cannot saturate it:
 | unigram (floor) | 14.76 |
 
 So generation is measurably more syntactically plausible than a bigram's and still clearly short
-of real text. "Not grammatical" now has a number, and the fuzzy model sits about 30% of the way
-from bigram to real on this scale. Samples remain locally plausible and globally incoherent:
+of real text. "Not grammatical" now has a number. **Correction (E34):** I wrote "about 30% of the
+way from bigram to real" here, which is simply wrong arithmetic --
+`(12.84 - 10.10) / (12.84 - 8.18) = 59%`. The same error was repeated in the E29 write-up artifact
+and is corrected there too. Samples remain locally plausible and globally incoherent:
 ``he did | not possession of marrying you could hardly very voice and certainly man his seems``.
 
 ### E29.8 One inconsistency in the E29.3 table, found while plotting
@@ -2723,7 +2728,7 @@ company instead of dominating.
 
 ---
 
-## Standing summary — CURRENT (as of E29)
+## Standing summary (SUPERSEDED — see the final one)
 
 **Headline.** First-order TSK -- word-level consequents, a fuzzy class-based LM -- **beats
 n-gram baselines head-to-head on the same corpus and split**: perplexity **219.9** against a
@@ -3017,3 +3022,253 @@ CPU core, and the profile is sparse-GEMM and memory traffic rather than scalar l
 
 82 tests pass (2 new: sparse counts against the scatter-add; the fast pair blocks against the
 per-pair reference, already there from E30.1).
+
+---
+
+## E32 — Plan: spend the speedup on the caps that were never lifted
+
+E31 made full-corpus class estimation 142x faster, so two limits that were configuration choices
+made for cost reasons are now testable. Both are named as open in the E29 standing summary.
+
+**E32.1 `max_classes`.** E29.5's frontier was still improving at the 3,000-class cap — that was a
+number I picked, not a place the method saturated. Sweep 3,000 → unlimited. *Hypothesis:* quality
+keeps improving and then flattens; the interesting output is **where**, since it sets the real
+parameter count. *Risk:* E26's lesson was that a larger admitted set can dilute predictions, so
+watch for a turning point rather than assuming monotone gain.
+
+**E32.2 `top_singles`.** The order-2 pool is capped at the 140 strongest single features, giving
+9,730 candidate pairs. Doubling it to 280 gives 39,060 — 4x the search. *Hypothesis:* modest gain,
+because the seeds are ranked by information gain and the tail is weak by construction. *Risk:* the
+E26.1 multiplicity trap; the mass floor is the only guard.
+
+**E32.3 Order-3 context classes** (needs code). Currently a class is at most two conjoined context
+terms. `IF prev2:=he AND prev1:=did` is already the sharpest class at 4.37 nats, so a third term
+could sharpen further — or fragment the mass. Mine by extending each surviving order-2 class with a
+third seed, reusing the row-restricted scaled-GEMM machinery, which restricts *harder* at order 3
+because an order-2 class fires on fewer rows. *Hypothesis:* helps less than E32.1, because mass per
+class falls as specificity rises and the smoothing then pulls each class back toward the unigram.
+
+**E32.4** Re-measure the headline and the generation metric at whatever wins, so the standing
+summary reflects the best available configuration rather than the first one that worked.
+
+Order matters: E32.1 and E32.2 are parameter sweeps needing no new code, so they run first and may
+answer the question before E32.3's implementation is justified.
+
+---
+
+## E32 — Results: the cap I blamed was not the cap, and the seed pool is exhausted
+
+**E32.1 `max_classes` — not the binding cap, and this corrects an E29 claim.**
+
+| max_classes | classes admitted | standalone | + trigram |
+|---|---|---|---|
+| 3,000 (E29) | 3,000 | 219.9 | 201.7 |
+| 8,000 | 4,646 | 218.4 | 200.6 |
+| 20,000 | 4,646 | 218.4 | 200.6 |
+| unlimited | 4,646 | 218.4 | 200.6 |
+
+Lifting it entirely admits only **4,646** classes, because that is simply how many pass `min_mass`,
+and it is worth **0.7%**. E29.5 said "class count was still capped at 3,000 when quality was
+improving, so the right edge of that curve is a limit I imposed" — that reading was wrong. The
+frontier curve truncates by *rank*, so it was still rising at 3,000 while the total *supply* was
+4,646; the cap cost 0.7%, not the headroom I implied.
+
+**E32.2 `top_singles` — this was the binding cap, and it is worth 11%.**
+
+| seeds | mass floor | classes | params | standalone | + trigram |
+|---|---|---|---|---|---|
+| 140 (E29) | 20 | 4,647 | 97,587 | 218.5 | 200.7 |
+| 280 | 20 | 9,580 | 201,180 | 213.0 | 195.3 |
+| **560** | 20 | 16,169 | 339,549 | **196.8** | **182.4** |
+| 280 | 8 | 12,267 | 257,607 | 211.4 | 193.7 |
+| **560** | **8** | 23,006 | 483,126 | **194.9** | **180.4** |
+| 560 | 3 | 31,946 | 670,866 | 194.8 | 180.4 |
+
+**219.9 → 194.9 standalone, 201.7 → 180.4 mixed**, at 25s of training. The mass floor saturates at
+8. But the seed sweep did not saturate — it **ran out of supply**: at window 2 with
+`lexeme_top_k=200` there are only **522** context features, so `top_singles=560` already takes every
+one of them. The curve was still climbing when the pool emptied.
+
+**E32.3 (order-3 classes) is deferred**, and deliberately: it was planned as the way to get more
+specific classes, but E32.2 shows the model is short of *features*, not short of conjunction depth.
+Adding a third term to a pool that is already exhausted attacks the wrong shortage.
+
+### E32.4 What this implies, and why E26 has to be re-run
+
+More context features means a wider window or more lexeme-identity dimensions. E26 measured context
+width and found it **monotonically worse** out to 32 tokens — but **that was the zero-order model**,
+and this is the second time a conclusion of that kind is suspect for first-order: E23.4 found corpus
+scale made the model relatively *worse*, and E29.3 inverted it. The E26.1 mechanism (low-lift rules
+diluting a firing-weighted blend) was itself refuted in E27.2, and word-level consequents weight
+classes by measured information gain and mass rather than by lift. So the window conclusion cannot
+be inherited — it has to be measured again on this architecture.
+
+---
+
+## E33 — Plan: re-test the feature supply for first-order
+
+**What.** Sweep `window ∈ {2, 3, 4}` and `lexeme_top_k ∈ {200, 500}` with the seed pool, mass floor,
+and class cap all set to "unlimited" so the *supply* is the only thing varying.
+
+**Hypothesis.** Wider context helps here, opposite to E26. Two reasons: the dilution mechanism E26.1
+proposed was refuted (E27.2 — long-range structure is real, just redundant for a scalar consequent),
+and a word-level consequent can use a distant context term to pick *which word*, which is precisely
+what a scalar could not do.
+
+**What would falsify it.** Perplexity flat or worse at window 3-4 despite a larger admitted class
+set. That would mean the E26 result was about context width per se rather than about consequent
+shape, and the supply shortage would have to be met with lexeme dimensions instead.
+
+**Protocol.** 300,000 estimation positions rather than the full 624,325, because the design matrix
+grows with feature count (window 4 is 1,044 context features) — so these rows are comparable to each
+other but **not** to the 624K numbers above; a window-2 row at 300K is included as the in-sweep
+baseline. Scored at positions >= 32 as everywhere else, so all rows see identical held-out data
+(E26.2's lesson: keep a control that cannot legitimately move).
+
+---
+
+## E33 — Results: wider context still fails, and now the mechanism is measured
+
+**Hypothesis refuted.** I predicted first-order would want a wider context because E26's dilution
+mechanism had been refuted and a word-level consequent can use a distant term to pick *which* word.
+It does not. All caps lifted, 300,000 estimation positions, bigram/trigram controls constant:
+
+| window | lexeme_top_k | ctx features | classes | standalone | + trigram | lambda |
+|---|---|---|---|---|---|---|
+| **2** | **200** | 522 | 17,621 | 230.8 | **194.8** | 0.7 |
+| 3 | 200 | 783 | 49,331 | **226.6** | 201.4 | 0.8 |
+| 4 | 200 | 1,044 | 97,952 | 235.6 | 212.5 | 0.7 |
+| 2 | 500 | 1,122 | 24,906 | 233.9 | 194.7 | 0.7 |
+| 3 | 500 | 1,683 | 67,008 | 229.7 | 202.0 | 0.7 |
+
+Window 3 is marginally better *standalone* (226.6 vs 230.8) and clearly worse *mixed* (201.4 vs
+194.8); window 4 is worse on both. More lexeme dimensions are a wash. So E26's conclusion survives
+the change of architecture, which is worth stating plainly: **this is the third prediction of mine in
+this project to be refuted by the experiment built to test it** (E24.3, E26.1, now E33).
+
+### E33.2 The mechanism: mass fragmentation, not false discovery
+
+Measured at 300,000 positions, min_mass 8, all seeds:
+
+| window | classes | mean mass | median mass | **mean gain** |
+|---|---|---|---|---|
+| 2 | 17,619 | 253.1 | 34.3 | **2.525** |
+| 3 | 49,325 | 187.0 | 30.0 | **2.515** |
+| 4 | 97,942 | 160.5 | 28.0 | **2.500** |
+
+**Mean information gain is flat** (2.525 → 2.500) while class count rises 5.6x and mean mass falls
+37%. So the extra classes are neither junk (E26.1's wrong guess) nor informative — they are
+*redundant and worse estimated*. A firing-weighted mixture over 98,000 equally-informative,
+less-well-estimated classes is worse than one over 17,600 better-estimated ones. That is a different
+failure from E26.1's false-discovery story, and unlike it, it is measured rather than assumed.
+
+Note this also explains why E29.2's parent backoff could not help: backing off a fragmented class
+toward its parent makes it *more* redundant, which is the actual disease.
+
+**Order-3 classes remain deferred**, now with a stronger reason than E32.3's: a third conjunct would
+fragment mass further, which is precisely the mechanism that makes more features hurt.
+
+---
+
+## E34 — Headline at the best known configuration
+
+Window 2, `lexeme_top_k` 200, seed pool unlimited, `min_mass` 8, full-corpus estimation (624,325
+positions), 23,005 classes, **26s of training on 4 CPU cores**.
+
+| | perplexity | vs baseline |
+|---|---|---|
+| bigram (same data, tuned) | 286.4 | — |
+| trigram (same data, tuned) | 284.4 | — |
+| **first-order TSK, standalone** | **194.9** | **31.5% better than the trigram** |
+| + bigram, lambda 0.8 | 182.0 | 36.5% better than the bigram alone |
+| **+ trigram, lambda 0.8** | **180.4** | **36.6% better than the trigram alone** |
+| 3-way (fuzzy 0.8 / bigram 0.0 / trigram 0.2) | 180.4 | bigram still gets zero weight |
+
+Against E29's 219.9 / 201.7, that is **11.4% / 10.6%** from lifting the seed-pool and mass-floor caps
+alone — no architectural change.
+
+**Generation also improved**: category-sequence perplexity **9.33**, against real held-out text 8.18
+and a bigram's 12.84. That is **75% of the way from bigram to real text**, up from 59% at E29.
+
+**On parameter count, the honest version.** The best-quality setting uses 483,105 sparse parameters
+(top-20 words per class), which is more than a trigram's 108,511 stored counts — so "smaller than an
+n-gram" is *not* true at the best setting, and the E29 framing should not be carried forward
+unqualified. At *matched* size it is still a large win: ~97,600 parameters gives 218.5 against the
+trigram's 284.4 at 108,511 counts. The frontier is the honest object, not a single point:
+
+| parameters | standalone | note |
+|---|---|---|
+| 525 | 324.7 | 25 classes (E29.5) |
+| 1,050 | 312.2 | already beats the zero-order model's best (355.5) |
+| ~97,600 | 218.5 | comparable size to the trigram, 23% better than it |
+| 483,105 | **194.9** | best quality |
+
+Samples at the best configuration, still locally plausible and globally incoherent:
+
+```
+he did     | not rise to pieces was more attached with their for years by his astonishment
+the little | window otter and stared as no nearer on this and still more had red
+she was    | great triumph of warmth he would stand be sure and away at it face
+```
+
+The sharpest classes are unchanged in character, which is the point — they are still readable:
+
+```
+IF prev2:=he AND prev1:=did      -> not(0.701)  so(0.045)  it(0.033)                4.37 nats
+IF prev2:=the AND prev1:=little  -> jackal(0.133) boy(0.062) man(0.057) red(0.055)  2.21 nats
+```
+
+---
+
+## Standing summary — CURRENT (as of E34)
+
+**Headline.** First-order TSK — word-level consequents, a fuzzy class-based LM — **beats n-gram
+baselines head-to-head on the same corpus and split**: perplexity **194.9** against a bigram's 286.4
+and a tuned trigram's 284.4, **31.5% better**. Mixed with a trigram, **180.4** at fuzzy weight 0.8,
+and in a 3-way mixture the bigram gets zero weight. Trains in **26s on 4 CPU cores**, no GPU.
+
+**Generation.** Category-sequence perplexity **9.33** against real held-out text 8.18 and a bigram's
+12.84 — 75% of the way from bigram to real. Text is locally plausible, globally incoherent.
+
+**Size, stated as a frontier rather than a point.** 1,050 parameters reach 312.2 (already past the
+zero-order model's best of 355.5); ~97,600 reach 218.5, comparable in size to the trigram's 108,511
+stored counts and 23% better than it; the best quality, 194.9, costs 483,105 sparse parameters, which
+is *larger* than the trigram. "Smaller than an n-gram" is true at matched quality, not at best
+quality — E29's unqualified framing should not be carried forward.
+
+**Speed.** Full-corpus class estimation went 940s → 6.6s across E30-E31 (142x), all of it algorithmic
+plus 1.5x from 4 processes. Whole pipeline ~39s. Cython and GPU both argued against on measurements,
+not preference.
+
+**Representation.** Coverage 96.7%, exact multi-resolution rollup asserted in CI, L2 similarity gap
++0.278, explainable typo robustness, correct senses for rare words.
+
+**Interpretability.** Named graded classes with readable word distributions and information gain in
+nats. The interpretable model is also the best-performing one.
+
+**Ruled out:** context width — twice, for both architectures and for *different* measured reasons
+(E26 zero-order, E33 first-order/mass fragmentation); rule order (E12, E15); Gaussian antecedents
+(E9/E10); symmetric decode similarity (E11); Cython and BLAS threading (E14, E23.3, E30.3); raw score
+normalisation (E18.2); candidate-side lexicalisation (E19); the linguistic parameter space (E22);
+thread parallelism (E23.3); OOV quality as the ceiling (E24.2); open-class rule quota (E25.1);
+significance gating and relational slots (E27); held-out class selection and parent backoff (E29.1,
+E29.2); `max_classes` as a binding cap (E32.1); more lexeme dimensions (E33).
+
+**Confirmed:** the consequent's shape was the ceiling (E28); class estimation is data-bound and scale
+now favours the fuzzy model (E29.3, inverting E23.4, which was true of the zero-order model only);
+the seed pool was the binding cap, worth 11% (E32.2); added features are redundant-and-worse-estimated
+rather than spurious (E33.2).
+
+**Corrected along the way:** 0.569 balanced accuracy (E12.1); all pre-E17 ranking numbers; the trigram
+baseline (E20.2); E19.4's mixture gain without its budget dependence (E22.4); E22.3's fit-cost
+attribution (E23.1); pushing corpus size (E23.4, later inverted); E24.3's "all rules are closed-class"
+(E25.1); a per-condition test set caught by a moving control (E26.2); E26.1's dilution mechanism
+(E27.2); E28's undersmoothed standalone numbers (E28.3); E29.6's first grammaticality metric, which
+could not discriminate real text from a unigram; a two-config scaling curve (E29.8); **E29.5's claim
+that the class cap was binding (E32.1), and E29.6's "30% of the way" arithmetic, which is 59% (E34)**.
+
+**Open.** Global coherence — samples are locally plausible and globally incoherent, and no amount of
+left context fixes it (E26, E33), so it is a representation question rather than a window one.
+Order-3 classes deferred with a measured reason (E33.2: they would fragment mass further). GPT-2
+untested (blocked, and a data-gap comparison anyway). No neural-embedding comparison. Experiment B's
+real encoder and SST paths unrun.
