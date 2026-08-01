@@ -33,6 +33,7 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         optimize_coefficients=True,
         consequent_basis="raw",
         l2_reg=0.0,
+        pin_extremes=True,
         random_state=42,
     ):
         """
@@ -55,6 +56,9 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
                 higher orders.
             l2_reg: Ridge penalty on the correction coefficients (constants are not
                 penalized). 0 disables regularization.
+            pin_extremes: If True (default), the first and last bucket means are pinned
+                to the observed min and max of the target, ensuring the model's output
+                range exactly matches the training range.
             random_state: Seed for reproducibility.
         """
         self.is_fitted_ = False
@@ -77,6 +81,7 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         self.optimize_coefficients = optimize_coefficients
         self.consequent_basis = consequent_basis
         self.l2_reg = l2_reg
+        self.pin_extremes = pin_extremes
         self.random_state = random_state
 
     def _apply_log_transform(self, X):
@@ -150,6 +155,7 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
             self.y_bucket_mean_, y_partitioned,
             n_output_buckets=self.n_output_buckets,
             order=self.tsk_order, l2_reg=self.l2_reg, basis=self.consequent_basis,
+            pin_extremes=self.pin_extremes,
             verbose=False,
         )
 
