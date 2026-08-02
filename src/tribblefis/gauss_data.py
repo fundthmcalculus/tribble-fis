@@ -240,6 +240,69 @@ class Rule(NamedTuple):
     consequent: int | str  # output label
 
 
+class ExclusionClause(NamedTuple):
+    """A negated cross-term appended to one rule's antecedent.
+
+    A label's rule is a conjunction *of disjunctions*::
+
+        IF (x is X1 OR X2 OR X4) AND (y is Y1 OR Y3) THEN A
+
+    which admits the whole outer product of the two disjunctions -- every one of
+    ``X1&Y1, X2&Y1, X4&Y1, ... X4&Y3`` fires rule ``A`` just as hard as any
+    other. That is fine when the label really does occupy every cell, and wrong
+    when it does not: if the data says ``X1&Y3`` is class ``B``, rule ``A``
+    still claims it, because no term in the rule can see the *combination*.
+
+    An :class:`ExclusionClause` is the correction. It names one cell of that
+    outer product -- one membership function per listed feature -- and appends
+    its negation to the parent rule::
+
+        IF (x is X1 OR X2 OR X4) AND (y is Y1 OR Y3)
+           AND NOT (x is X1 AND y is Y3)                <- this clause
+        THEN A
+
+    The reduction is deliberately narrow. It is attached to a single parent
+    ``label``, so no other rule's firing changes; and it names a specific cell,
+    so ``X1`` paired with any other ``y`` term, and ``Y3`` paired with any other
+    ``x`` term, are both untouched. Only the confused block is withdrawn. The
+    blamed class is never boosted -- it wins the argmax by default once the
+    parent stops over-claiming.
+
+    Attributes:
+        label: The parent rule this clause narrows. Only that label's firing
+            strength is reduced.
+        terms: ``((feature_name, membership_index), ...)`` naming the cell. The
+            index is a position in
+            ``model.feature_models[feature].label_models[label].memberships``.
+            Positional rather than by ``id`` because that list is what the
+            firing-strength conorm folds over, and antecedent refinement
+            rewrites the memberships in place while preserving their order.
+            Clauses do not survive a change in the *number* of memberships per
+            feature-label -- :func:`tribblefis.exclusion.validate_exclusions`
+            checks this.
+        strength: Scales the negation to ``1 - strength * cell``. ``1.0`` is the
+            hard clause "AND NOT cell"; smaller values discount the parent's
+            firing over the cell instead of vetoing it, which matters when the
+            mined evidence is thin. ``0.0`` makes the clause a no-op.
+        blamed: The class the cell's rows actually belong to, when mining
+            identified one. Diagnostic only -- it does not affect inference.
+        support: Number of training rows in the cell at mining time.
+        purity: Fraction of those rows that really were ``label``. Diagnostic.
+    """
+
+    label: int | str
+    terms: tuple[tuple[str, int], ...]
+    strength: float = 1.0
+    blamed: Optional[int | str] = None
+    support: int = 0
+    purity: float = 0.0
+
+    @property
+    def features(self) -> tuple[str, ...]:
+        """The features this cell constrains, in clause order."""
+        return tuple(feature for feature, _ in self.terms)
+
+
 class SimpleGaussianClassifierModel(NamedTuple):
     """A simple classifier model with explicit rules (supports any membership function type)."""
 
@@ -299,10 +362,24 @@ class FeatureModel(NamedTuple):
 
 
 class GaussianMixtureModel(NamedTuple):
-    """A collection of FeatureModels mapping feature names to their models."""
+    """A collection of FeatureModels mapping feature names to their models.
+
+    ``exclusions`` carries the optional second-stage admissibility reduction:
+    negated cross-terms mined from the training data that narrow individual
+    rules away from the outer-product cells they wrongly claim. See
+    :class:`ExclusionClause` and :mod:`tribblefis.exclusion`. It is empty by
+    default, and :func:`tribblefis.gauss_math.tsk_firing_strengths` applies
+    whatever is present, so a model without mined clauses fires exactly as it
+    did before the feature existed.
+    """
 
     feature_models: dict[str, FeatureModel]
     anomaly_params: Optional[AnomalyParameters] = None
+    exclusions: tuple[ExclusionClause, ...] = ()
+
+    def with_exclusions(self, clauses) -> "GaussianMixtureModel":
+        """This model with ``clauses`` as its exclusion set (replacing any existing)."""
+        return self._replace(exclusions=tuple(clauses))
 
     @property
     def n_rules(self) -> int:
@@ -386,7 +463,13 @@ class GaussianMixtureModel(NamedTuple):
                 pass
 
     def augment(self, other) -> "GaussianMixtureModel":
-        """Augment this GaussianMixtureModel with another GaussianMixtureModel, combining feature models."""
+        """Augment this GaussianMixtureModel with another GaussianMixtureModel, combining feature models.
+
+        Any :attr:`exclusions` are dropped: augmenting appends memberships to
+        the per-feature-label lists, so the positional indices a mined clause
+        names would then point at different membership functions. Re-mine
+        against the augmented model rather than carrying stale cells forward.
+        """
         new_feature_models = self.feature_models.copy()
         for feature_name, other_feature_model in other.feature_models.items():
             if feature_name in new_feature_models:
