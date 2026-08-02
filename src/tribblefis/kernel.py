@@ -637,6 +637,16 @@ class IncrementalFIS:
         self._candidate = np.empty((n, n_l), dtype=float)
         self._mu_k = np.empty(n_k, dtype=float)
         self._sigma_k = np.empty(n_k, dtype=float)
+        self._act_k = np.empty(n_k, dtype=float)
+        # Allocated on first use: only the analytic-gradient path needs them.
+        self._d_mu: np.ndarray | None = None
+        self._d_sigma: np.ndarray | None = None
+        # Feature-major copy of the samples. `evaluate_slot` needs one feature's
+        # column as a contiguous buffer; taking it from the (n, F) matrix is a
+        # strided slice, so the compiled kernel would copy all n elements on
+        # every candidate. Paying for the transpose once removes that copy from
+        # the hot loop entirely.
+        self.x_by_feature = np.ascontiguousarray(self.x.T)
         self._pending: tuple[int, int, int, float, float] | None = None
         self.refresh()
 
@@ -690,13 +700,13 @@ class IncrementalFIS:
         self._sigma_k[:] = self.compiled.sigma[fi, :, li]
         self._mu_k[ki] = mu
         self._sigma_k[ki] = sigma
-        active_k = np.ascontiguousarray(self.compiled.active[fi, :, li])
+        self._act_k[:] = self.compiled.active[fi, :, li]
 
         cells_l = self.cells[li]
         if HAVE_CYTHON_KERNEL:
             _fis_kernel.refold_label(
-                np.ascontiguousarray(self.x[:, fi]),
-                self._mu_k, self._sigma_k, active_k,
+                self.x_by_feature[fi],
+                self._mu_k, self._sigma_k, self._act_k,
                 cells_l, fi, self._new_cell, self._new_col,
                 _NORM_CODES[self.norms.t_norm],
                 _NORM_CODES[self.norms.t_conorm],
@@ -704,7 +714,7 @@ class IncrementalFIS:
             )
         else:
             _refold_label_numpy(
-                self.x[:, fi], self._mu_k, self._sigma_k, active_k,
+                self.x_by_feature[fi], self._mu_k, self._sigma_k, self._act_k,
                 cells_l, fi, self._new_cell, self._new_col, self.norms,
             )
 
@@ -712,6 +722,68 @@ class IncrementalFIS:
         self._candidate[:, li] = self._new_col
         self._pending = (fi, ki, li, float(mu), sigma)
         return self._candidate
+
+    def supports_gradient(self) -> bool:
+        """Whether :meth:`evaluate_slot_with_grad` can serve this configuration.
+
+        Needs the compiled kernel, and a norm family whose partials are
+        implemented there -- ``min/max`` and ``probability``. Everything else
+        falls back to finite differences, which is correct and slower.
+        """
+        return HAVE_CYTHON_KERNEL and (
+            _NORM_CODES.get(self.norms.t_norm, -1) in (0, 1)
+            and _NORM_CODES.get(self.norms.t_conorm, -1) in (0, 1)
+        )
+
+    def evaluate_slot_with_grad(self, slot: int, mu: float, sigma: float):
+        """:meth:`evaluate_slot`, plus ``d(column)/d(mu, sigma)``.
+
+        Returns ``(firing_strengths, d_col_dmu, d_col_dsigma)``. The derivatives
+        are of the *affected label's column only* -- every other column is
+        constant in this slot's parameters -- and are carried through the same
+        two folds that compute the value, so they cost no extra pass over the
+        data.
+
+        Under ``min/max`` these are subgradients: the derivative of the active
+        branch, and exactly zero where the membership function is not the
+        arg-min/arg-max. See :meth:`supports_gradient`.
+        """
+        if not self.supports_gradient():
+            raise RuntimeError(
+                "analytic gradients need the compiled kernel and a min/max or "
+                "probability norm pair"
+            )
+        fi, ki, li = self._decode(slot)
+        sigma = max(float(sigma), 1e-6)
+
+        self._mu_k[:] = self.compiled.mu[fi, :, li]
+        self._sigma_k[:] = self.compiled.sigma[fi, :, li]
+        self._mu_k[ki] = mu
+        self._sigma_k[ki] = sigma
+        self._act_k[:] = self.compiled.active[fi, :, li]
+
+        if self._d_mu is None:
+            self._d_mu = np.empty(self.n_samples, dtype=float)
+            self._d_sigma = np.empty(self.n_samples, dtype=float)
+
+        _fis_kernel.refold_label_with_grad(
+            self.x_by_feature[fi],
+            self._mu_k, self._sigma_k, self._act_k, ki,
+            self.cells[li], fi,
+            self._new_cell, self._new_col, self._d_mu, self._d_sigma,
+            _NORM_CODES[self.norms.t_norm],
+            _NORM_CODES[self.norms.t_conorm],
+            _thread_count(self.n_samples * (self.n_k + self.compiled.n_features)),
+        )
+
+        self._candidate[...] = self.base
+        self._candidate[:, li] = self._new_col
+        self._pending = (fi, ki, li, float(mu), sigma)
+        return self._candidate, self._d_mu, self._d_sigma
+
+    def target_label_index(self, slot: int) -> int:
+        """Which firing-strength column membership `slot` affects."""
+        return self._decode(slot)[2]
 
     def commit(self) -> None:
         """Accept the last :meth:`evaluate_slot` candidate into the cache."""
