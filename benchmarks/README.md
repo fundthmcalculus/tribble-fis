@@ -40,6 +40,13 @@ TRIBBLEFIS_NUM_THREADS=1 python -m benchmarks.bench -k forward   # compiled, one
 | `forward-prob` | 20k x 20 x 8 x 4 under `probability` norms (the smooth family used by the analytic-gradient refinement) |
 | `predict-large` | `MixtureOfGaussiansFuzzyClassifier.predict_proba`, i.e. the kernel plus the deployed estimator's overhead |
 | `refine-classifier` | end-to-end `refine_classifier_antecedents` — the training cost, ~1.3k fitness evaluations |
+| `refine-classifier-wide` | the same, at a size anyone would deploy: 4k x 20 features x 6 labels x 3 MF, 720 free parameters |
+
+`refine-classifier` is small so it catches regressions in under a second, but at
+that size the forward pass is only about a fifth of the work — the rest is
+SciPy's L-BFGS-B machinery over 48 tiny sub-problems. `refine-classifier-wide`
+inverts that ratio, which is why both exist: an optimization that helps only one
+regime should be visibly an optimization for only one regime.
 
 The forward-pass workloads pass a pre-extracted `feature_arrays` mapping,
 matching what the refinement path already does, so they measure the kernel and
@@ -64,14 +71,20 @@ Measured at `origin/main` (`b7d25c5`), Python 3.12.3 / NumPy 2.4.6, Windows 11,
 Each row is `min` time; every checksum is unchanged from the baseline, so these
 are like-for-like.
 
-| workload | baseline | + compiled model | + Cython kernel | total |
-|---|---|---|---|---|
-| forward-small | 472 us | 474 us | 123 us | **3.84x** |
-| forward-wide | 9.91 ms | 9.72 ms | 1.87 ms | **5.30x** |
-| forward-large | 164.98 ms | 164.42 ms | 24.69 ms | **6.68x** |
-| forward-prob | 71.32 ms | 76.59 ms | 8.36 ms | **8.53x** |
-| predict-large | 99.91 ms | 99.21 ms | 31.09 ms | **3.21x** |
-| refine-classifier | 625.08 ms | 537.49 ms | 252.45 ms | **2.48x** |
+| workload | baseline | + compiled model | + Cython kernel | + incremental fitness | total |
+|---|---|---|---|---|---|
+| forward-small | 472 us | 474 us | 123 us | 119 us | **3.97x** |
+| forward-wide | 9.91 ms | 9.72 ms | 1.87 ms | 1.84 ms | **5.39x** |
+| forward-large | 164.98 ms | 164.42 ms | 24.69 ms | 24.20 ms | **6.82x** |
+| forward-prob | 71.32 ms | 76.59 ms | 8.36 ms | 8.37 ms | **8.52x** |
+| predict-large | 99.91 ms | 99.21 ms | 31.09 ms | 30.47 ms | **3.28x** |
+| refine-classifier | 625.08 ms | 537.49 ms | 247.12 ms | 169.49 ms | **3.69x** |
+| refine-classifier-wide | — | — | 3.701 s | 670.90 ms | **5.52x** |
+
+`refine-classifier-wide` was added with the incremental-fitness work, so its
+"before" is measured at the Cython commit rather than at the original baseline.
+The forward workloads are untouched by that change; their last two columns differ
+only by measurement noise.
 
 Measured with the default (non-fast-math) OpenMP build on 24 cores. A
 `TRIBBLEFIS_FAST_MATH=1` build is roughly a further 1.5x on the forward

@@ -91,6 +91,34 @@ cdef inline double _tnorm(double a, double b, int code) noexcept nogil:
         return ab / (2.0 - (a + b - ab))
 
 
+cdef inline void _sample(
+    Py_ssize_t i,
+    const double[:, ::1] x,
+    const double[:, :, ::1] mu,
+    const double[:, :, ::1] sigma,
+    const double[:, :, ::1] active,
+    double[:, ::1] out,
+    int t_norm_code,
+    int t_conorm_code,
+) noexcept nogil:
+    """One sample's full forward pass, written into ``out[i, :]``."""
+    cdef Py_ssize_t n_f = mu.shape[0], n_k = mu.shape[1], n_l = mu.shape[2]
+    cdef Py_ssize_t f, k, l
+    cdef double xv, d, g, cell
+
+    for l in range(n_l):
+        out[i, l] = 1.0                                   # t-norm identity
+    for f in range(n_f):
+        xv = x[i, f]
+        for l in range(n_l):
+            cell = 0.0                                    # t-conorm identity
+            for k in range(n_k):
+                d = (xv - mu[f, k, l]) / sigma[f, k, l]
+                g = exp(-0.5 * d * d) * active[f, k, l]
+                cell = _conorm(cell, g, t_conorm_code)
+            out[i, l] = _tnorm(out[i, l], cell, t_norm_code)
+
+
 def firing_strengths(
     const double[:, ::1] x,
     const double[:, :, ::1] mu,
@@ -109,39 +137,170 @@ def firing_strengths(
     those calls.
     """
     cdef Py_ssize_t n = x.shape[0]
-    cdef Py_ssize_t n_f = mu.shape[0]
-    cdef Py_ssize_t n_k = mu.shape[1]
-    cdef Py_ssize_t n_l = mu.shape[2]
-    cdef Py_ssize_t i, f, k, l
-    cdef double xv, d, g, cell
+    cdef Py_ssize_t i
 
     if n == 0:
         return
 
     if num_threads > 1:
         for i in prange(n, nogil=True, schedule='static', num_threads=num_threads):
-            for l in range(n_l):
-                out[i, l] = 1.0                       # t-norm identity
-            for f in range(n_f):
-                xv = x[i, f]
-                for l in range(n_l):
-                    cell = 0.0                        # t-conorm identity
-                    for k in range(n_k):
-                        d = (xv - mu[f, k, l]) / sigma[f, k, l]
-                        g = exp(-0.5 * d * d) * active[f, k, l]
-                        cell = _conorm(cell, g, t_conorm_code)
-                    out[i, l] = _tnorm(out[i, l], cell, t_norm_code)
+            _sample(i, x, mu, sigma, active, out, t_norm_code, t_conorm_code)
     else:
         with nogil:
             for i in range(n):
-                for l in range(n_l):
-                    out[i, l] = 1.0
-                for f in range(n_f):
-                    xv = x[i, f]
-                    for l in range(n_l):
-                        cell = 0.0
-                        for k in range(n_k):
-                            d = (xv - mu[f, k, l]) / sigma[f, k, l]
-                            g = exp(-0.5 * d * d) * active[f, k, l]
-                            cell = _conorm(cell, g, t_conorm_code)
-                        out[i, l] = _tnorm(out[i, l], cell, t_norm_code)
+                _sample(i, x, mu, sigma, active, out, t_norm_code, t_conorm_code)
+
+
+# ---------------------------------------------------------------------------
+# Incremental evaluation.
+#
+# Block coordinate descent perturbs exactly one membership function -- one
+# (feature, membership, label) slot -- and then, with the reference forward pass,
+# recomputes every membership of every feature for every label. Almost all of
+# that is unchanged from the previous evaluation.
+#
+# Only two things actually depend on the perturbed slot:
+#
+#   cell[f*, l*]  the conorm fold over that (feature, label) cell's memberships
+#   out[:, l*]    the t-norm fold over features, for that one label
+#
+# Every other cell, and every other label's column, is exactly what it was. So
+# caching the per-(label, sample, feature) cell values turns an O(F*K*L)
+# evaluation into O(K + F): recompute one cell, refold one column. The two
+# functions below are that -- one to fill the cache, one to use it.
+# ---------------------------------------------------------------------------
+
+def firing_strengths_cells(
+    const double[:, ::1] x,
+    const double[:, :, ::1] mu,
+    const double[:, :, ::1] sigma,
+    const double[:, :, ::1] active,
+    double[:, :, ::1] cells,
+    double[:, ::1] out,
+    int t_norm_code,
+    int t_conorm_code,
+    int num_threads,
+):
+    """Full forward pass that also records the per-cell conorm folds.
+
+    `cells` is ``(L, n, F)`` -- label outermost so one label's plane is
+    contiguous, and feature innermost so the t-norm fold over features reads
+    consecutive memory. `out` is the usual ``(n, L)``.
+    """
+    cdef Py_ssize_t n = x.shape[0]
+    cdef Py_ssize_t i
+
+    if n == 0:
+        return
+
+    if num_threads > 1:
+        for i in prange(n, nogil=True, schedule='static', num_threads=num_threads):
+            _sample_cells(i, x, mu, sigma, active, cells, out,
+                          t_norm_code, t_conorm_code)
+    else:
+        with nogil:
+            for i in range(n):
+                _sample_cells(i, x, mu, sigma, active, cells, out,
+                              t_norm_code, t_conorm_code)
+
+
+cdef inline void _sample_cells(
+    Py_ssize_t i,
+    const double[:, ::1] x,
+    const double[:, :, ::1] mu,
+    const double[:, :, ::1] sigma,
+    const double[:, :, ::1] active,
+    double[:, :, ::1] cells,
+    double[:, ::1] out,
+    int t_norm_code,
+    int t_conorm_code,
+) noexcept nogil:
+    cdef Py_ssize_t n_f = mu.shape[0], n_k = mu.shape[1], n_l = mu.shape[2]
+    cdef Py_ssize_t f, k, l
+    cdef double xv, d, g, cell
+
+    for l in range(n_l):
+        out[i, l] = 1.0
+    for f in range(n_f):
+        xv = x[i, f]
+        for l in range(n_l):
+            cell = 0.0
+            for k in range(n_k):
+                d = (xv - mu[f, k, l]) / sigma[f, k, l]
+                g = exp(-0.5 * d * d) * active[f, k, l]
+                cell = _conorm(cell, g, t_conorm_code)
+            cells[l, i, f] = cell
+            out[i, l] = _tnorm(out[i, l], cell, t_norm_code)
+
+
+def refold_label(
+    const double[::1] xcol,
+    const double[::1] mu_k,
+    const double[::1] sigma_k,
+    const double[::1] active_k,
+    const double[:, ::1] cells_l,
+    Py_ssize_t fi,
+    double[::1] new_cell,
+    double[::1] out_col,
+    int t_norm_code,
+    int t_conorm_code,
+    int num_threads,
+):
+    """Recompute one ``(feature, label)`` cell and refold that label's column.
+
+    `xcol` is the perturbed feature's column, `mu_k`/`sigma_k`/`active_k` are that
+    cell's ``K`` memberships with the candidate substituted, and `cells_l` is the
+    cached ``(n, F)`` plane for the label. Writes the recomputed cell to
+    `new_cell` and the label's new firing strength to `out_col`; the caller
+    commits `new_cell` into `cells_l` only if the candidate is accepted.
+
+    The t-norm fold is over features in the same order, and starts from the same
+    1.0, as the full pass -- so the column this produces is bit-identical to
+    recomputing everything.
+    """
+    cdef Py_ssize_t n = xcol.shape[0]
+    cdef Py_ssize_t i
+
+    if n == 0:
+        return
+
+    if num_threads > 1:
+        for i in prange(n, nogil=True, schedule='static', num_threads=num_threads):
+            _sample_refold(i, xcol, mu_k, sigma_k, active_k, cells_l, fi,
+                           new_cell, out_col, t_norm_code, t_conorm_code)
+    else:
+        with nogil:
+            for i in range(n):
+                _sample_refold(i, xcol, mu_k, sigma_k, active_k, cells_l, fi,
+                               new_cell, out_col, t_norm_code, t_conorm_code)
+
+
+cdef inline void _sample_refold(
+    Py_ssize_t i,
+    const double[::1] xcol,
+    const double[::1] mu_k,
+    const double[::1] sigma_k,
+    const double[::1] active_k,
+    const double[:, ::1] cells_l,
+    Py_ssize_t fi,
+    double[::1] new_cell,
+    double[::1] out_col,
+    int t_norm_code,
+    int t_conorm_code,
+) noexcept nogil:
+    cdef Py_ssize_t n_f = cells_l.shape[1], n_k = mu_k.shape[0]
+    cdef Py_ssize_t f, k
+    cdef double xv = xcol[i]
+    cdef double d, g, cell, acc
+
+    cell = 0.0
+    for k in range(n_k):
+        d = (xv - mu_k[k]) / sigma_k[k]
+        g = exp(-0.5 * d * d) * active_k[k]
+        cell = _conorm(cell, g, t_conorm_code)
+    new_cell[i] = cell
+
+    acc = 1.0
+    for f in range(n_f):
+        acc = _tnorm(acc, cell if f == fi else cells_l[i, f], t_norm_code)
+    out_col[i] = acc

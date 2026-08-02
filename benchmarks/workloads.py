@@ -264,17 +264,29 @@ def all_workloads() -> list[Workload]:
     return [
         # Small/wide/large sweep the two axes a kernel rewrite trades against:
         # per-call Python overhead (small) and per-element arithmetic (large).
-        _forward_workload("forward-small", 1_000, 8, 3, 3, "min/max", repeats=20),
+        # Many repeats: once the compiled kernel took this workload under 200 us,
+        # 20 repeats gave a run-to-run spread of +/-25% on the min, enough to
+        # report a 0.79x "regression" on a code path nothing had touched. A
+        # benchmark that noisy is not evidence.
+        _forward_workload("forward-small", 1_000, 8, 3, 3, "min/max", repeats=300),
         _forward_workload("forward-wide", 2_000, 40, 6, 4, "min/max", repeats=10),
         _forward_workload("forward-large", 50_000, 20, 8, 4, "min/max", repeats=5),
         # The probability family is the one the analytic-gradient path uses, and
         # it is arithmetically heavier than min/max, so it is timed separately.
         _forward_workload("forward-prob", 20_000, 20, 8, 4, "probability", repeats=5),
         _predict_workload("predict-large", 50_000, 20, 8, repeats=5),
-        # The headline training number. Small on purpose: at the default
-        # settings this already runs tens of thousands of forward passes.
+        # The headline training numbers. `refine-classifier` is small on purpose
+        # -- it runs in under a second and catches regressions quickly -- but at
+        # that size the forward pass is only about a fifth of the work, the rest
+        # being SciPy's L-BFGS-B machinery over 48 tiny sub-problems. A model of
+        # a size anyone would actually deploy inverts that ratio, so
+        # `refine-classifier-wide` exists to keep optimizations honest about
+        # which regime they help.
         _refine_classifier_workload(
             "refine-classifier", 1_000, 8, 3, 2, n_sweeps=2, repeats=3
+        ),
+        _refine_classifier_workload(
+            "refine-classifier-wide", 4_000, 20, 6, 3, n_sweeps=1, repeats=2
         ),
     ]
 

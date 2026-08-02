@@ -111,6 +111,45 @@ def test_refinement_parity_across_membership_counts(monkeypatch, n_mf):
     )
 
 
+def test_incremental_and_full_objective_reach_the_same_antecedents():
+    """The cached per-cell evaluation changes *how* a candidate is scored, not
+    what it scores, so the search must visit the same points and stop in the
+    same place. `incremental=False` is the A/B switch for exactly this."""
+    kwargs = dict(method="coordinate", n_sweeps=2, seed=42, verbose=False)
+    fast_model, fast_info = R.refine_classifier_antecedents(
+        _MODEL, _X, _Y, incremental=True, **kwargs)
+    slow_model, slow_info = R.refine_classifier_antecedents(
+        _MODEL, _X, _Y, incremental=False, **kwargs)
+
+    assert np.array_equal(
+        R.extract_gaussian_params(fast_model), R.extract_gaussian_params(slow_model)
+    )
+    assert fast_info["train_obj"] == slow_info["train_obj"]
+    assert fast_info["n_eval"] == slow_info["n_eval"]
+
+
+@pytest.mark.parametrize("block", [1, 3])
+def test_non_pair_blocks_fall_back_to_the_full_objective(block):
+    """`block != 2` does not line up with one membership function's (mu, sigma),
+    so the incremental path must decline it rather than decode the wrong slot."""
+    out, info = R.refine_classifier_antecedents(
+        _MODEL, _X, _Y, method="coordinate", n_sweeps=1, block=block,
+        seed=42, verbose=False,
+    )
+    assert info["n_eval"] > 1
+    assert np.all(np.isfinite(R.extract_gaussian_params(out)))
+
+
+def test_fused_cross_entropy_matches_the_two_step_form():
+    rng = np.random.default_rng(31)
+    for n_labels in (2, 3, 6):
+        fs = rng.random((200, n_labels))
+        fs[::17] = 0.0                      # rows that fire on nothing
+        y_idx = rng.integers(0, n_labels, size=200)
+        expected = R._cross_entropy(R._normalize_proba(fs, n_labels), y_idx)
+        assert R._cross_entropy_from_strengths(fs, y_idx, n_labels) == expected
+
+
 def test_non_gaussian_model_still_refines_via_the_fallback():
     """A trapezoid model cannot be compiled; refinement must still run (and
     report that it had no Gaussian parameters to move)."""

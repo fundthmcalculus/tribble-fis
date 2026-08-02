@@ -1,0 +1,96 @@
+{
+  "label": "PR4 incremental fitness",
+  "environment": {
+    "python": "3.12.3",
+    "numpy": "2.4.6",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+    "git_rev": "b8e3052"
+  },
+  "results": [
+    {
+      "name": "forward-small",
+      "description": "tsk_firing_strengths: 1000 samples x 8 features x 3 labels x 3 MF, min/max norms",
+      "tags": [
+        "forward"
+      ],
+      "repeats": 300,
+      "min_s": 0.00011890000314451754,
+      "median_s": 0.0001714000027277507,
+      "max_s": 0.0003180999920004979,
+      "checksum": 148.56504563887765
+    },
+    {
+      "name": "forward-wide",
+      "description": "tsk_firing_strengths: 2000 samples x 40 features x 6 labels x 4 MF, min/max norms",
+      "tags": [
+        "forward"
+      ],
+      "repeats": 10,
+      "min_s": 0.0020132999925408512,
+      "median_s": 0.0020502999977907166,
+      "max_s": 0.003283700003521517,
+      "checksum": 9.178950158443259
+    },
+    {
+      "name": "forward-large",
+      "description": "tsk_firing_strengths: 50000 samples x 20 features x 8 labels x 4 MF, min/max norms",
+      "tags": [
+        "forward"
+      ],
+      "repeats": 5,
+      "min_s": 0.024766999995335937,
+      "median_s": 0.025246699995477684,
+      "max_s": 0.025659200007794425,
+      "checksum": 2912.4509604453706
+    },
+    {
+      "name": "forward-prob",
+      "description": "tsk_firing_strengths: 20000 samples x 20 features x 8 labels x 4 MF, probability norms",
+      "tags": [
+        "forward"
+      ],
+      "repeats": 5,
+      "min_s": 0.00839780000387691,
+      "median_s": 0.008601299996371381,
+      "max_s": 0.009403300005942583,
+      "checksum": 23.828259355810527
+    },
+    {
+      "name": "predict-large",
+      "description": "MixtureOfGaussiansFuzzyClassifier.predict_proba: 50000 samples x 20 features x 8 labels x 3 MF",
+      "tags": [
+        "predict"
+      ],
+      "repeats": 5,
+      "min_s": 0.030568300004233606,
+      "median_s": 0.03131389999180101,
+      "max_s": 0.033766600012313575,
+      "checksum": 25000.125478105812
+    },
+    {
+      "name": "refine-classifier",
+      "description": "refine_classifier_antecedents(coordinate): 1000x8, 3 labels, 2 MF, 2 sweeps (96 free params)",
+      "tags": [
+        "train"
+      ],
+      "repeats": 3,
+      "min_s": 0.20428809999430086,
+      "median_s": 0.21942519998992793,
+      "max_s": 0.3912842999998247,
+      "checksum": 30.049766138317732
+    },
+    {
+      "name": "refine-classifier-wide",
+      "description": "refine_classifier_antecedents(coordinate): 4000x20, 6 labels, 3 MF, 1 sweeps (720 free params)",
+      "tags": [
+        "train"
+      ],
+      "repeats": 2,
+      "min_s": 0.6693436999921687,
+      "median_s": 0.7164099999936298,
+      "max_s": 0.7634762999950908,
+      "checksum": 189.51832088571766
+    }
+  ]
+}

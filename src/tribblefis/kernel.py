@@ -485,6 +485,7 @@ def firing_strengths_numpy(
     compiled: CompiledFIS,
     feature_matrix: np.ndarray,
     norms: NormPair,
+    cells: np.ndarray | None = None,
 ) -> np.ndarray:
     """The portable NumPy implementation, bit-identical to the reference.
 
@@ -496,6 +497,10 @@ def firing_strengths_numpy(
     constraint (see the module docstring) -- so this is the always-available
     implementation of the compiled representation, and the definition of
     correctness the compiled kernel is checked against, rather than the fast one.
+
+    When `cells` is given (an ``(L, n, F)`` array) each ``(feature, label)``
+    cell's conorm fold is recorded into it, which is what
+    :class:`IncrementalFIS` caches.
     """
     x_all = np.asanyarray(feature_matrix, dtype=float)
     if x_all.ndim != 2 or x_all.shape[1] != compiled.n_features:
@@ -553,6 +558,171 @@ def firing_strengths_numpy(
             cell.fill(0.0)  # t-conorm identity
             for k in range(n_k):
                 _conorm_into(cell, g3[:, k, :], norms.t_conorm, cell_scratch)
+            if cells is not None:
+                cells[:, start:stop, fi] = cell.T
             _norm_into(acc, cell, norms.t_norm, acc_scratch)
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# Incremental evaluation for block coordinate descent.
+# ---------------------------------------------------------------------------
+
+class IncrementalFIS:
+    """Firing strengths under a *one-membership-at-a-time* perturbation.
+
+    Block coordinate descent (``refine.refine_classifier_antecedents`` with
+    ``method="coordinate"``, ``block=2``) moves exactly one Gaussian's
+    ``(mu, sigma)`` per sub-problem and then asks for the whole forward pass
+    again -- of which almost everything is bit-for-bit what it was on the
+    previous call. Only two quantities depend on the moved membership function:
+
+    * the conorm fold of its own ``(feature, label)`` cell, and
+    * the t-norm fold over features for its own label.
+
+    Caching the per-cell folds therefore reduces an evaluation from
+    ``O(n * F * K * L)`` to ``O(n * (K + F))``. On the wide training benchmark
+    (20 features, 6 labels, 3 memberships) that is 360 membership evaluations per
+    sample replaced by 23.
+
+    The result is *bit-identical* to a full pass, not an approximation: the
+    recomputed cell uses the same fold in the same order, the refold over
+    features starts from the same 1.0 and visits features in the same order, and
+    every untouched column is a value the same code produced earlier.
+
+    Memory is ``n * F * L`` doubles for the cache. That is the trade -- 3.8 MB on
+    the wide benchmark, but it scales with the training set, so
+    :meth:`from_compiled` is the place to add a cap if one is ever needed.
+
+    Usage is propose-then-commit::
+
+        fs = inc.evaluate_slot(slot, mu, sigma)   # candidate, cache untouched
+        ...                                        # score it
+        inc.commit()                               # only if the caller accepts
+
+    Nothing mutates until :meth:`commit`, so a rejected candidate needs no undo.
+    """
+
+    def __init__(self, compiled: CompiledFIS, feature_matrix: np.ndarray, norms: NormPair):
+        self.compiled = compiled
+        self.norms = norms
+        self.x = np.ascontiguousarray(feature_matrix, dtype=float)
+        if self.x.ndim != 2 or self.x.shape[1] != compiled.n_features:
+            raise ValueError(
+                f"feature_matrix must be (n, {compiled.n_features}), got {self.x.shape}"
+            )
+        n = self.x.shape[0]
+        n_f, n_k, n_l = compiled.n_features, compiled.mu.shape[1], compiled.n_labels
+        self.n_k = n_k
+        self.cells = np.empty((n_l, n, n_f), dtype=float)
+        self.base = np.empty((n, n_l), dtype=float)
+        # Scratch reused across evaluations: a candidate must not allocate.
+        self._new_cell = np.empty(n, dtype=float)
+        self._new_col = np.empty(n, dtype=float)
+        self._candidate = np.empty((n, n_l), dtype=float)
+        self._mu_k = np.empty(n_k, dtype=float)
+        self._sigma_k = np.empty(n_k, dtype=float)
+        self._pending: tuple[int, int, int, float, float] | None = None
+        self.refresh()
+
+    @property
+    def n_samples(self) -> int:
+        return self.x.shape[0]
+
+    def refresh(self) -> None:
+        """Recompute the cache from the compiled model's current parameters."""
+        n_f, n_k, n_l = (
+            self.compiled.n_features, self.compiled.mu.shape[1], self.compiled.n_labels
+        )
+        if HAVE_CYTHON_KERNEL:
+            _fis_kernel.firing_strengths_cells(
+                self.x,
+                np.ascontiguousarray(self.compiled.mu),
+                np.ascontiguousarray(self.compiled.sigma),
+                np.ascontiguousarray(self.compiled.active),
+                self.cells,
+                self.base,
+                _NORM_CODES[self.norms.t_norm],
+                _NORM_CODES[self.norms.t_conorm],
+                _thread_count(self.n_samples * self.compiled.mu.size),
+            )
+        else:
+            self.base[...] = firing_strengths_numpy(
+                self.compiled, self.x, self.norms, cells=self.cells
+            )
+        self._pending = None
+
+    def _decode(self, slot: int) -> tuple[int, int, int]:
+        """Slot index in refine's parameter order -> ``(feature, membership, label)``."""
+        flat = int(self.compiled.slot_index[slot])
+        n_k, n_l = self.compiled.mu.shape[1], self.compiled.n_labels
+        li = flat % n_l
+        ki = (flat // n_l) % n_k
+        fi = flat // (n_l * n_k)
+        return fi, ki, li
+
+    def evaluate_slot(self, slot: int, mu: float, sigma: float) -> np.ndarray:
+        """Firing strengths with membership `slot` set to ``(mu, sigma)``.
+
+        The returned array is a reused buffer -- valid until the next call, which
+        is all the fitness closure needs and saves an ``(n, L)`` allocation per
+        candidate. ``sigma`` is floored at 1e-6 exactly as everywhere else.
+        """
+        fi, ki, li = self._decode(slot)
+        sigma = max(float(sigma), 1e-6)
+
+        self._mu_k[:] = self.compiled.mu[fi, :, li]
+        self._sigma_k[:] = self.compiled.sigma[fi, :, li]
+        self._mu_k[ki] = mu
+        self._sigma_k[ki] = sigma
+        active_k = np.ascontiguousarray(self.compiled.active[fi, :, li])
+
+        cells_l = self.cells[li]
+        if HAVE_CYTHON_KERNEL:
+            _fis_kernel.refold_label(
+                np.ascontiguousarray(self.x[:, fi]),
+                self._mu_k, self._sigma_k, active_k,
+                cells_l, fi, self._new_cell, self._new_col,
+                _NORM_CODES[self.norms.t_norm],
+                _NORM_CODES[self.norms.t_conorm],
+                _thread_count(self.n_samples * (self.n_k + self.compiled.n_features)),
+            )
+        else:
+            _refold_label_numpy(
+                self.x[:, fi], self._mu_k, self._sigma_k, active_k,
+                cells_l, fi, self._new_cell, self._new_col, self.norms,
+            )
+
+        self._candidate[...] = self.base
+        self._candidate[:, li] = self._new_col
+        self._pending = (fi, ki, li, float(mu), sigma)
+        return self._candidate
+
+    def commit(self) -> None:
+        """Accept the last :meth:`evaluate_slot` candidate into the cache."""
+        if self._pending is None:
+            raise RuntimeError("commit() without a preceding evaluate_slot()")
+        fi, ki, li, mu, sigma = self._pending
+        self.cells[li, :, fi] = self._new_cell
+        self.base[:, li] = self._new_col
+        self.compiled.mu[fi, ki, li] = mu
+        self.compiled.sigma[fi, ki, li] = sigma
+        self._pending = None
+
+
+def _refold_label_numpy(
+    xcol, mu_k, sigma_k, active_k, cells_l, fi, new_cell, new_col, norms: NormPair
+) -> None:
+    """NumPy twin of ``_fis_kernel.refold_label``; see :class:`IncrementalFIS`."""
+    g = np.exp(-0.5 * ((xcol[:, None] - mu_k) / sigma_k) ** 2) * active_k
+    cell = np.zeros(len(xcol), dtype=float)
+    scratch = np.empty_like(cell)
+    for k in range(g.shape[1]):
+        _conorm_into(cell, g[:, k], norms.t_conorm, scratch)
+    new_cell[...] = cell
+
+    acc = np.ones(len(xcol), dtype=float)
+    for f in range(cells_l.shape[1]):
+        _norm_into(acc, cell if f == fi else cells_l[:, f], norms.t_norm, scratch)
+    new_col[...] = acc
