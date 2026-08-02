@@ -162,6 +162,11 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
                 y_array,
                 method=self.refine_method,
                 l2_shrink=self.refine_l2_shrink,
+                # The operators this estimator predicts with. Without this the
+                # refinement optimised the antecedents against min/max firing
+                # strengths and then deployed them under whatever pair the user
+                # actually chose -- tuning one model and shipping another.
+                norms=self.anomaly_params.norms(),
                 seed=self.random_state,
                 verbose=False,
             )
