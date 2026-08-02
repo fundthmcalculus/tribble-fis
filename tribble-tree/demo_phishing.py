@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split
+from sklearn.pipeline import make_pipeline
 
 warnings.filterwarnings("ignore")  # quiet upstream KMeans/scipy fit warnings
 
@@ -40,6 +41,7 @@ from fuzzytree import (
     render_tree_text,
 )
 from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+from tribblefis.scaling import StandardFuzzyScalar
 
 DATA_PATH = os.path.join(
     os.path.dirname(__file__),
@@ -85,6 +87,17 @@ def main():
 
     baseline = MixtureOfGaussiansFuzzyClassifier(top_n=5, random_state=42).fit(X_tr, y_tr)
     report("Flat TRIBBLE (MixtureOfGaussiansFuzzyClassifier)", y_te, baseline.predict(X_te))
+
+    # Several of the URL/page count features here (e.g. NoOfSubDomain,
+    # NoOfImage) span multiple orders of magnitude. StandardFuzzyScalar is the
+    # opt-in preprocessing step for exactly that: it log-transforms the
+    # wide-dynamic-range columns and min-max bounds everything to [0, 1]
+    # before the FIS sees it. Nothing in the estimator itself changes --
+    # composing it via a Pipeline is the only difference from the row above.
+    scaled_pipe = make_pipeline(
+        StandardFuzzyScalar(), MixtureOfGaussiansFuzzyClassifier(top_n=5, random_state=42)
+    ).fit(X_tr, y_tr)
+    report("Flat TRIBBLE + StandardFuzzyScalar (Pipeline)", y_te, scaled_pipe.predict(X_te))
 
     tree = FuzzyClassificationTree(
         criterion="ambiguity", max_depth=3, n_terms=2, top_n=5, min_soft_count=50

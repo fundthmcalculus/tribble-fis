@@ -77,6 +77,24 @@ clf = FuzzyClassificationTree(criterion="ambiguity", max_depth=3, n_terms=2).fit
 clf.predict(X); clf.predict_proba(X)
 ```
 
+### Feature scaling
+
+No estimator here (or in `tribblefis`) scales its input automatically -- raw units are
+kept by default so split thresholds stay physically meaningful (e.g. "Cement is High
+>= 350"). If your features need bounding to `[0, 1]` or span multiple scales, compose
+`tribblefis.scaling.StandardFuzzyScalar` in front of the estimator with a `Pipeline`,
+the same way you'd use `StandardScaler`:
+
+```python
+from sklearn.pipeline import make_pipeline
+from tribblefis.scaling import StandardFuzzyScalar
+
+model = make_pipeline(StandardFuzzyScalar(), FuzzyRegressionTree(tsk_order="1st")).fit(X, y)
+```
+
+`StandardFuzzyScalar` auto-detects per-feature dynamic range and log1p-transforms
+features spanning multiple decades before min-max bounding everything to `[0, 1]`.
+
 ## Hierarchical mixture of fuzzy experts (composing sub-FIS)
 
 The models above are a single fuzzy tree. To instead **compose multiple sub-FIS into
