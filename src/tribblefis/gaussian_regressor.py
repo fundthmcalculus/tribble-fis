@@ -8,7 +8,6 @@ from .gauss_math import (
     calculate_gaussian_correlation,
     take_top_features,
     create_gaussian_membership_dict,
-    detect_and_apply_log_transform,
 )
 from .regression import (
     partition_output,
@@ -28,7 +27,6 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         top_n=-1,
         top_p=0.95,
         n_gaussians=0,
-        log_transform=False,
         n_output_buckets=2,
         tsk_order="1st",
         optimize_coefficients=True,
@@ -51,7 +49,6 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
                    is kept when its own normalized differentiation score is
                    >= (1 - top_p). Ignored if top_n > 0.
             n_gaussians: Number of Gaussians per feature per label (0 for automatic).
-            log_transform: Whether to automatically apply log-transformation to features.
             n_output_buckets: Number of output buckets for partitioning y during training.
             tsk_order: TSK polynomial order ('0th', '1st', '2nd', '3rd', 'full-2nd').
             optimize_coefficients: Retained for API compatibility. Consequents are
@@ -83,7 +80,6 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         self.top_n_actual_ = None
         self.feature_differentiators_ = None
         self.feature_names_in_ = []
-        self.log_transformed_features_ = []
         self.y_bucket_mean_ = None
         self.corr_terms_ = None
         self.n_rules_ = None
@@ -91,7 +87,6 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         self.top_n = top_n
         self.top_p = top_p
         self.n_gaussians = n_gaussians
-        self.log_transform = log_transform
         self.n_output_buckets = n_output_buckets
         self.tsk_order = tsk_order
         self.optimize_coefficients = optimize_coefficients
@@ -114,20 +109,6 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         return resolve_norm_pair(
             self.norm_conorm, self.t_norm, self.t_conorm, self.allow_mixed_norms
         )
-
-    def _apply_log_transform(self, X):
-        """Check if features need log-transformation and apply it."""
-        if not self.log_transform:
-            return X
-
-        X_transformed, features = detect_and_apply_log_transform(
-            X, already_fitted=self.is_fitted_, fitted_features=self.log_transformed_features_
-        )
-
-        if not self.is_fitted_:
-            self.log_transformed_features_ = features
-
-        return X_transformed
 
     def fit(self, X, y):
         """
@@ -156,9 +137,6 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         # Store as DataFrame for internal functions
         X_df = pd.DataFrame(X_array, columns=self.feature_names_in_)
         y_series = pd.Series(y_array, name="y_value")
-
-        # Apply log-transformation if requested
-        X_df = self._apply_log_transform(X_df)
 
         # Partition output into buckets
         y_partitioned, self.y_bucket_mean_ = partition_output(self.n_output_buckets, y_series)
@@ -211,8 +189,6 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         else:
             X_df = pd.DataFrame(X, columns=self.feature_names_in_)
 
-        X_df = self._apply_log_transform(X_df)
-
         # Shared prediction path: identical firing-strength normalization and
         # feature basis as the solver, so fit and predict cannot diverge.
         return predict_tsk(
@@ -236,7 +212,6 @@ class MimoGaussianPredictor(BaseEstimator, RegressorMixin):
         top_n=-1,
         top_p=0.95,
         n_gaussians=0,
-        log_transform=False,
         n_output_buckets=15,
         tsk_order="1st",
         optimize_coefficients=True,
@@ -245,7 +220,6 @@ class MimoGaussianPredictor(BaseEstimator, RegressorMixin):
         self.top_n = top_n
         self.top_p = top_p
         self.n_gaussians = n_gaussians
-        self.log_transform = log_transform
         self.n_output_buckets = n_output_buckets
         self.tsk_order = tsk_order
         self.optimize_coefficients = optimize_coefficients
@@ -256,7 +230,6 @@ class MimoGaussianPredictor(BaseEstimator, RegressorMixin):
             top_n=self.top_n,
             top_p=self.top_p,
             n_gaussians=self.n_gaussians,
-            log_transform=self.log_transform,
             n_output_buckets=self.n_output_buckets,
             tsk_order=self.tsk_order,
             optimize_coefficients=self.optimize_coefficients,

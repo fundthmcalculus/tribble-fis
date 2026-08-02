@@ -22,7 +22,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
     It follows scikit-learn's ClassifierMixin interface.
     """
 
-    def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, norm_conorm=DefaultNormCornorm, log_transform=False, member_function="gaussian", trapz_method="fast", random_state=42,
+    def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, norm_conorm=DefaultNormCornorm, member_function="gaussian", trapz_method="fast", random_state=42,
                  refine=False, refine_method="coordinate", refine_l2_shrink=0.05,
                  t_norm=None, t_conorm=None, allow_mixed_norms=False):
         """
@@ -38,7 +38,6 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
                          Can also be a dictionary mapping feature names or labels to number of Gaussians.
             member_function: Type of membership function ("gaussian" or "trap").
             trapz_method: Method for trapezoid fitting ("fast" for histogram-based default, "em" for EM-based).
-                           that have a broad range of scales.
             norm_conorm: Fuzzy norm/conorm family -- one of "min/max",
                     "probability" (the default), "luk", "hamacher", "einstein".
                     The default is not the textbook min/max: measured across 18
@@ -92,20 +91,6 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.refine_method = refine_method
         self.refine_l2_shrink = refine_l2_shrink
         self.refine_info_: dict | None = None
-
-    def _apply_log_transform(self, X):
-        """Check if features need log-transformation and apply it."""
-        if not self.log_transform:
-            return X
-
-        X_transformed, features = detect_and_apply_log_transform(
-            X, already_fitted=self.is_fitted_, fitted_features=self.log_transformed_features_
-        )
-
-        if not self.is_fitted_:
-            self.log_transformed_features_ = features
-
-        return X_transformed
 
     def fit(self, X, y):
         """
@@ -347,7 +332,6 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         t_norm=None,
         t_conorm=None,
         allow_mixed_norms=False,
-        log_transform=False,
         random_state=42,
         max_layers=4,
         anomaly_threshold=0.99,
@@ -414,7 +398,6 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         self.t_norm = t_norm
         self.t_conorm = t_conorm
         self.allow_mixed_norms = allow_mixed_norms
-        self.log_transform = log_transform
         self.random_state = random_state
         self.max_layers = max_layers
         self.anomaly_threshold = anomaly_threshold
@@ -433,7 +416,6 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
             top_n=self.top_n,
             top_p=self.top_p,
             n_gaussians=self.n_gaussians,
-            log_transform=self.log_transform,
             random_state=self.random_state,
             refine=self.refine,
             refine_method=self.refine_method,

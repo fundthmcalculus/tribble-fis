@@ -16,7 +16,6 @@ from sklearn.utils.validation import check_is_fitted, check_X_y
 
 from tribblefis.gauss_math import (
     calculate_gaussian_correlation,
-    detect_and_apply_log_transform,
     take_top_features,
 )
 from tribblefis.regression import partition_output
@@ -68,7 +67,6 @@ class FuzzyRegressionTree(BaseEstimator, RegressorMixin):
         t_norm: str = DEFAULT_T_NORM,
         n_score_buckets: int = 3,
         term_style: str = "trapezoid",
-        log_transform: bool = False,
         random_state: int = 42,
     ):
         self.variable_plan = variable_plan
@@ -86,7 +84,6 @@ class FuzzyRegressionTree(BaseEstimator, RegressorMixin):
         self.t_norm = t_norm
         self.n_score_buckets = n_score_buckets
         self.term_style = term_style
-        self.log_transform = log_transform
         self.random_state = random_state
 
     def _resolve_plan(self) -> VariablePlan:
@@ -99,18 +96,6 @@ class FuzzyRegressionTree(BaseEstimator, RegressorMixin):
             max_terms_per_var=max(self.n_terms, 2),
             term_style=self.term_style,
         )
-
-    def _apply_log_transform(self, X):
-        if not self.log_transform:
-            return X
-        X_t, features = detect_and_apply_log_transform(
-            X,
-            already_fitted=getattr(self, "is_fitted_", False),
-            fitted_features=getattr(self, "log_transformed_features_", []),
-        )
-        if not getattr(self, "is_fitted_", False):
-            self.log_transformed_features_ = features
-        return X_t
 
     def fit(self, X, y):
         if isinstance(X, pd.DataFrame):
@@ -127,10 +112,6 @@ class FuzzyRegressionTree(BaseEstimator, RegressorMixin):
         X_array, y_array = check_X_y(X, y_array, multi_output=False, y_numeric=True)
         X_df = pd.DataFrame(X_array, columns=self.feature_names_in_)
         y_series = pd.Series(y_array, name="y_value")
-
-        self.is_fitted_ = False
-        self.log_transformed_features_ = []
-        X_df = self._apply_log_transform(X_df)
 
         # Feature preselection by differentiation score (pseudo-classes from y).
         y_part, _ = partition_output(self.n_score_buckets, y_series)
@@ -175,7 +156,6 @@ class FuzzyRegressionTree(BaseEstimator, RegressorMixin):
             X_df = X.copy()
         else:
             X_df = pd.DataFrame(X, columns=self.feature_names_in_)
-        X_df = self._apply_log_transform(X_df)
 
         X_top = X_df[self.top_features_]
         leaf_firing = compute_leaf_firing(self.tree_, X_top, self.n_leaves_, self.t_norm)
@@ -210,7 +190,6 @@ class MimoFuzzyTreeRegressor(BaseEstimator, RegressorMixin):
         t_norm: str = DEFAULT_T_NORM,
         n_score_buckets: int = 3,
         term_style: str = "trapezoid",
-        log_transform: bool = False,
         random_state: int = 42,
     ):
         self.variable_plan = variable_plan
@@ -228,7 +207,6 @@ class MimoFuzzyTreeRegressor(BaseEstimator, RegressorMixin):
         self.t_norm = t_norm
         self.n_score_buckets = n_score_buckets
         self.term_style = term_style
-        self.log_transform = log_transform
         self.random_state = random_state
 
     def _make_tree(self) -> FuzzyRegressionTree:
@@ -248,7 +226,6 @@ class MimoFuzzyTreeRegressor(BaseEstimator, RegressorMixin):
             t_norm=self.t_norm,
             n_score_buckets=self.n_score_buckets,
             term_style=self.term_style,
-            log_transform=self.log_transform,
             random_state=self.random_state,
         )
 

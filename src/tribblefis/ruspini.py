@@ -395,7 +395,6 @@ class RuspiniFuzzyClassifier(BaseEstimator, ClassifierMixin):
         top_n=-1,
         top_p=0.95,
         n_gaussians=0,
-        log_transform=False,
         merge_tol_frac=0.05,
         max_terms=None,
         refine=False,
@@ -406,7 +405,6 @@ class RuspiniFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.top_n = top_n
         self.top_p = top_p
         self.n_gaussians = n_gaussians
-        self.log_transform = log_transform
         self.merge_tol_frac = merge_tol_frac
         self.max_terms = max_terms
         self.refine = refine
@@ -428,7 +426,7 @@ class RuspiniFuzzyClassifier(BaseEstimator, ClassifierMixin):
 
         base = MixtureOfGaussiansFuzzyClassifier(
             top_n=self.top_n, top_p=self.top_p, n_gaussians=self.n_gaussians,
-            log_transform=self.log_transform, member_function="gaussian",
+            member_function="gaussian",
             random_state=self.random_state,
         )
         base.fit(X_df, y_arr)

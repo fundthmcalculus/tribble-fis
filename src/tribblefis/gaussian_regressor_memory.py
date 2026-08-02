@@ -185,7 +185,6 @@ class MimoGaussianPredictorMemory(BaseEstimator, RegressorMixin):
         top_n: int = -1,
         top_p: float = 0.95,
         n_gaussians: int = 0,
-        log_transform: bool = False,
         n_output_buckets: int = 15,
         tsk_order: str = "1st",
         optimize_coefficients: bool = True,
@@ -203,7 +202,6 @@ class MimoGaussianPredictorMemory(BaseEstimator, RegressorMixin):
                    coverage: a feature is kept when its own normalized score is
                    >= (1 - top_p). Ignored if top_n > 0.
             n_gaussians: Number of Gaussians per feature (0=automatic)
-            log_transform: Whether to apply log-transform to features
             n_output_buckets: Number of output buckets for TSK
             tsk_order: TSK polynomial order ('0th', '1st', '2nd', '3rd', 'full-2nd')
             optimize_coefficients: Whether to optimize TSK coefficients
@@ -215,7 +213,6 @@ class MimoGaussianPredictorMemory(BaseEstimator, RegressorMixin):
         self.top_n = top_n
         self.top_p = top_p
         self.n_gaussians = n_gaussians
-        self.log_transform = log_transform
         self.n_output_buckets = n_output_buckets
         self.tsk_order = tsk_order
         self.optimize_coefficients = optimize_coefficients
@@ -274,7 +271,6 @@ class MimoGaussianPredictorMemory(BaseEstimator, RegressorMixin):
             top_n=self.top_n,
             top_p=self.top_p,
             n_gaussians=self.n_gaussians,
-            log_transform=self.log_transform,
             n_output_buckets=self.n_output_buckets,
             tsk_order=self.tsk_order,
             optimize_coefficients=self.optimize_coefficients,
