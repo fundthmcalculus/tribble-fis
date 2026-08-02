@@ -39,6 +39,7 @@ reference path, so nothing needs a fallback flag.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -50,6 +51,29 @@ from .gauss_data import (
     NormConorm,
     NormPair,
 )
+
+# The optional compiled accelerator (see setup_cython.py). Absent by default:
+# `pip install tribble-fis` never needs a C compiler, and everything below works
+# without it, just slower.
+try:
+    from . import _fis_kernel  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover - depends on whether the build was run
+    _fis_kernel = None
+
+HAVE_CYTHON_KERNEL = _fis_kernel is not None
+HAVE_OPENMP = bool(getattr(_fis_kernel, "HAVE_OPENMP", False))
+
+# Operator -> integer code, kept in sync with the switch in _fis_kernel.pyx.
+_NORM_CODES: dict[str, int] = {
+    "min/max": 0, "probability": 1, "luk": 2, "hamacher": 3, "einstein": 4,
+}
+
+# Below this much work (n_samples * F * K * L membership evaluations) the
+# compiled kernel runs serially, because an OpenMP parallel region has a fixed
+# entry cost. Measured on the reference machine that cost is small -- threading
+# already wins ~9x at 4 800 evaluations, the smallest size swept -- so the
+# threshold only exists to keep genuinely trivial calls out of the thread pool.
+_THREAD_WORK_THRESHOLD = 2048
 
 # Row block size, in elements, for the per-feature membership buffer. Each block
 # holds ``rows x (L * K)`` doubles; keeping that near 1 MiB means the buffer and
@@ -356,24 +380,122 @@ def _block_rows(n_samples: int, n_cells: int) -> int:
     return max(256, min(n_samples, _BLOCK_BYTES // per_row))
 
 
+def _thread_count(work: int) -> int:
+    """Threads for a compiled call of the given size.
+
+    ``TRIBBLEFIS_NUM_THREADS`` overrides the choice outright, which is what a
+    benchmark comparing serial against parallel needs.
+    """
+    override = os.environ.get("TRIBBLEFIS_NUM_THREADS")
+    if override:
+        try:
+            return max(1, int(override))
+        except ValueError:
+            pass
+    if work < _THREAD_WORK_THRESHOLD:
+        return 1
+    return max(1, os.cpu_count() or 1)
+
+
 def firing_strengths(
     compiled: CompiledFIS,
     feature_matrix: np.ndarray,
     norms: NormPair,
+    backend: str = "auto",
 ) -> np.ndarray:
     """Raw per-label firing strengths, ``(n_samples, n_labels)``.
 
     `feature_matrix` is ``(n_samples, n_features)`` in ``compiled.feature_names``
     order -- see :meth:`CompiledFIS.feature_matrix`.
 
+    `backend` is ``"auto"`` (the compiled kernel when it was built, else NumPy),
+    ``"cython"`` (compiled, raising if unavailable) or ``"numpy"``. The two
+    backends agree to within an ULP rather than exactly -- see
+    :func:`firing_strengths_numpy`.
+    """
+    if backend not in ("auto", "cython", "numpy"):
+        raise ValueError(f"backend must be 'auto', 'cython' or 'numpy', got {backend!r}")
+    if backend == "cython" and not HAVE_CYTHON_KERNEL:
+        raise RuntimeError(
+            "the compiled kernel is not built; run "
+            "`python setup_cython.py build_ext --inplace`"
+        )
+    if backend == "numpy" or not HAVE_CYTHON_KERNEL:
+        return firing_strengths_numpy(compiled, feature_matrix, norms)
+    if backend == "auto" and not _cython_is_faster(compiled, feature_matrix):
+        return firing_strengths_numpy(compiled, feature_matrix, norms)
+    return _firing_strengths_cython(compiled, feature_matrix, norms)
+
+
+def _cython_is_faster(compiled: CompiledFIS, feature_matrix: np.ndarray) -> bool:
+    """Whether ``auto`` should prefer the compiled kernel for this call.
+
+    It is not unconditional, because a *serial* compiled loop loses to NumPy
+    once the input is more than a few thousand evaluations -- measured 0.50x on
+    the 50k-sample workload. The reason is ``exp``: NumPy's is SIMD-vectorized
+    and libm's is one scalar call per element, and at that size the pass is
+    nothing but ``exp``. Threading reverses it decisively (9-14x across the whole
+    swept range), so with OpenMP the compiled kernel always wins, and without it
+    only the small end -- where removing per-call NumPy dispatch is the point --
+    is worth taking.
+    """
+    if HAVE_OPENMP:
+        return True
+    work = int(np.shape(feature_matrix)[0]) * compiled.mu.size
+    return work < _THREAD_WORK_THRESHOLD
+
+
+def _firing_strengths_cython(
+    compiled: CompiledFIS, feature_matrix: np.ndarray, norms: NormPair
+) -> np.ndarray:
+    """Dispatch to the compiled kernel, which fuses the whole forward pass.
+
+    The NumPy path makes six passes over an ``(rows, K*L)`` block per feature and
+    one more per conorm step; this makes none -- every intermediate lives in a
+    register and only the ``(n, L)`` output is written. It also threads the
+    sample loop, which NumPy's ufuncs cannot do.
+    """
+    x = np.ascontiguousarray(feature_matrix, dtype=float)
+    if x.ndim != 2 or x.shape[1] != compiled.n_features:
+        raise ValueError(
+            f"feature_matrix must be (n, {compiled.n_features}), got {x.shape}"
+        )
+    try:
+        t_norm_code = _NORM_CODES[norms.t_norm]
+        t_conorm_code = _NORM_CODES[norms.t_conorm]
+    except KeyError as exc:  # pragma: no cover - resolve_norm_pair validates first
+        raise ValueError(f"Invalid NORM_CORNOM value: {exc.args[0]}") from None
+
+    out = np.empty((x.shape[0], compiled.n_labels), dtype=float)
+    work = x.shape[0] * compiled.mu.size
+    _fis_kernel.firing_strengths(
+        x,
+        np.ascontiguousarray(compiled.mu),
+        np.ascontiguousarray(compiled.sigma),
+        np.ascontiguousarray(compiled.active),
+        out,
+        t_norm_code,
+        t_conorm_code,
+        _thread_count(work),
+    )
+    return out
+
+
+def firing_strengths_numpy(
+    compiled: CompiledFIS,
+    feature_matrix: np.ndarray,
+    norms: NormPair,
+) -> np.ndarray:
+    """The portable NumPy implementation, bit-identical to the reference.
+
     The loop structure is blocks of rows on the outside, then features, then the
     K-fold conorm and the F-fold t-norm. Within one feature every ``(label,
     membership)`` Gaussian is evaluated in a single broadcast ``exp``, so the
     reference's ``L * K`` NumPy calls per feature become a handful. That removes
     dispatch overhead but not arithmetic, and the arithmetic is the binding
-    constraint (see the module docstring) -- so treat this as the portable,
-    always-available implementation of the compiled representation rather than
-    as the fast one.
+    constraint (see the module docstring) -- so this is the always-available
+    implementation of the compiled representation, and the definition of
+    correctness the compiled kernel is checked against, rather than the fast one.
     """
     x_all = np.asanyarray(feature_matrix, dtype=float)
     if x_all.ndim != 2 or x_all.shape[1] != compiled.n_features:

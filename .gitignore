@@ -15,3 +15,10 @@
 __pycache__/
 *.py[cod]
 .venv/
+build/
+
+# Outputs of `python setup_cython.py build_ext --inplace`. The .pyx is the
+# source; the generated C and the compiled extension are per-platform artifacts.
+/src/tribblefis/_fis_kernel.c
+*.so
+*.pyd

@@ -23,6 +23,13 @@ python -m benchmarks.bench -n refine-classifier --profile
 
 `--compare` exits non-zero if any checksum moved, so it can be wired into CI.
 
+The compiled kernel, when built, is picked up automatically. To measure without
+it, or to measure it serially:
+
+```bash
+TRIBBLEFIS_NUM_THREADS=1 python -m benchmarks.bench -k forward   # compiled, one thread
+```
+
 ## Workloads
 
 | workload | what it measures |
@@ -51,6 +58,24 @@ Measured at `origin/main` (`b7d25c5`), Python 3.12.3 / NumPy 2.4.6, Windows 11,
 | forward-prob | 71.32 ms | 73.28 ms |
 | predict-large | 99.91 ms | 101.15 ms |
 | refine-classifier | 625.08 ms | 634.40 ms |
+
+## Progress against that baseline
+
+Each row is `min` time; every checksum is unchanged from the baseline, so these
+are like-for-like.
+
+| workload | baseline | + compiled model | + Cython kernel | total |
+|---|---|---|---|---|
+| forward-small | 472 us | 474 us | 123 us | **3.84x** |
+| forward-wide | 9.91 ms | 9.72 ms | 1.87 ms | **5.30x** |
+| forward-large | 164.98 ms | 164.42 ms | 24.69 ms | **6.68x** |
+| forward-prob | 71.32 ms | 76.59 ms | 8.36 ms | **8.53x** |
+| predict-large | 99.91 ms | 99.21 ms | 31.09 ms | **3.21x** |
+| refine-classifier | 625.08 ms | 537.49 ms | 252.45 ms | **2.48x** |
+
+Measured with the default (non-fast-math) OpenMP build on 24 cores. A
+`TRIBBLEFIS_FAST_MATH=1` build is roughly a further 1.5x on the forward
+workloads; see `setup_cython.py` for why it is not the default.
 
 ## Where the time goes at baseline
 
