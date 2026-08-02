@@ -92,7 +92,6 @@ class FuzzyClassificationTree(BaseEstimator, ClassifierMixin):
             y_idx.astype(float),
             y_idx,
             plan,
-            t_norm_name=self.t_norm,
             min_soft_count=self.min_soft_count,
             min_gain=self.min_gain,
             max_leaves=self.max_leaves,

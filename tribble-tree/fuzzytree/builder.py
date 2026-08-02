@@ -29,7 +29,6 @@ def build_tree(
     y_value: np.ndarray,
     y_bucket: np.ndarray,
     plan: VariablePlan,
-    t_norm_name: str,
     min_soft_count: float = 5.0,
     min_gain: float = 1e-3,
     max_leaves: int = 64,
