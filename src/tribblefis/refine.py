@@ -22,6 +22,7 @@ fold, never on the test set, and both guarantee they never return a model worse
 """
 
 import typing
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -920,8 +921,35 @@ def _sub_solve(method: str, fun, x0, bounds, budget: int, jac: bool):
             f"sub_method={method!r} not in {sorted(_SUB_SOLVERS)}"
         ) from None
     options = {name: budget for name in spec["budget"]}
-    return minimize(fun, x0, method=method, bounds=bounds,
-                    jac=jac and spec["jac"], options=options)
+    with warnings.catch_warnings():
+        # SLSQP steps outside the box before projecting back, and SciPy warns
+        # once per occurrence -- about seven times per fit, hundreds per
+        # cross-validation. It is noise, not a defect: SciPy clips, the objective
+        # is defined outside the box anyway (sigma is floored independently), and
+        # the accepted point is clipped again by the caller. Silencing it is a
+        # precondition for making SLSQP a default.
+        warnings.filterwarnings(
+            "ignore", message="Values in x were outside bounds",
+            category=RuntimeWarning,
+        )
+        return minimize(fun, x0, method=method, bounds=bounds,
+                        jac=jac and spec["jac"], options=options)
+
+
+#: Families whose classifier objective is differentiable everywhere, so a
+#: closed-form gradient is the *actual* derivative rather than a subgradient.
+#: Only `probability` qualifies among the pairs the kernel has partials for:
+#: min/max is piecewise smooth, with a kink wherever the arg-min or arg-max
+#: switches. This distinction is not academic -- measured, the analytic gradient
+#: is accuracy-neutral under probability (+0.0012 +/- 0.0026) and an accuracy
+#: lottery under min/max (mean -0.0091, worst -0.0967).
+_SMOOTH_FAMILIES = frozenset({"probability"})
+
+
+def _smooth_objective(norms: NormPair) -> bool:
+    """Whether `norms` makes the objective differentiable everywhere."""
+    return (norms.t_norm in _SMOOTH_FAMILIES
+            and norms.t_conorm in _SMOOTH_FAMILIES)
 
 
 class _CrossEntropy:
@@ -1230,8 +1258,8 @@ def refine_classifier_antecedents(
     block: int = 2,
     norms: NormPair | None = None,
     incremental: bool = True,
-    analytic_gradient: bool = False,
-    sub_method: str = "L-BFGS-B",
+    analytic_gradient: bool | None = None,
+    sub_method: str = "SLSQP",
     sub_maxfun: int = 25,
     population_size: int = 40,
     num_generations: int = 20,
@@ -1264,13 +1292,19 @@ def refine_classifier_antecedents(
     results and the cache is several times faster on a wide model, so this exists
     to A/B that claim, not because either answer is preferable.
 
-    ``analytic_gradient=True`` hands L-BFGS-B a closed-form gradient instead of
-    letting it finite-difference each two-parameter block. It is **off by
-    default** and is not a free speedup -- read
-    ``docs/analytic-gradient-evaluation.md`` before turning it on. In short: it
-    removes two thirds of the evaluations, but under the default ``min/max``
-    norms the gradient of an inactive branch is exactly zero, so the search takes
-    a different path and lands on different (not reliably better) antecedents.
+    ``analytic_gradient`` hands the solver a closed-form gradient instead of
+    letting it finite-difference each two-parameter block, removing two thirds of
+    the evaluations. The default, ``None``, enables it exactly when the operator
+    pair makes the objective differentiable everywhere -- which is what the
+    default ``probability`` family does. Under a piecewise-smooth pair such as
+    ``min/max`` the closed form is only a *subgradient*, and measured it turns
+    the search into an accuracy lottery (mean -0.0091, worst -0.0967), so ``None``
+    leaves it off there. ``True``/``False`` override the rule. See
+    ``docs/analytic-gradient-evaluation.md``.
+
+    ``sub_method`` selects the solver for each block. Measured under the default
+    family: SLSQP 1.14x over L-BFGS-B at equal accuracy, and 1.95x with the
+    gradient; Powell is slightly more accurate but 1.5x slower; TNC is 3x slower.
     """
     y_arr = np.asarray(y_train)
     # The operators the deployed model will use. Refining against a different
@@ -1322,8 +1356,12 @@ def refine_classifier_antecedents(
             and n_params % 2 == 0
             and isinstance(fitness, _CompiledClassifierObjective)
         )
+        want_grad = (
+            _smooth_objective(resolved_norms)
+            if analytic_gradient is None else analytic_gradient
+        )
         use_analytic_grad = (
-            use_incremental and analytic_gradient
+            use_incremental and want_grad
             and _SUB_SOLVERS.get(sub_method, {}).get("jac", False)
             and fitness.supports_gradient()
         )
