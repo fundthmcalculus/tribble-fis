@@ -58,15 +58,17 @@ def test_norms_reach_the_objective(family):
     lo = np.array([b[0] for b in bounds])
     hi = np.array([b[1] for b in bounds])
 
+    from tribblefis.gauss_data import DefaultNormCornorm
+
     default = R._make_classifier_fitness(model, X, y, 0.0, x0, lo, hi)
     chosen = R._make_classifier_fitness(model, X, y, 0.0, x0, lo, hi,
                                         NormPair(family, family))
-    if family == "min/max":
+    if family == DefaultNormCornorm:
         assert chosen(x0) == default(x0)
     else:
         assert chosen(x0) != default(x0), (
-            f"{family} produced the same objective as min/max -- the pair is "
-            f"being ignored somewhere"
+            f"{family} produced the same objective as the default "
+            f"{DefaultNormCornorm!r} -- the pair is being ignored somewhere"
         )
 
 

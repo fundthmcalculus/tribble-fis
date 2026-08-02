@@ -105,8 +105,15 @@ class TestEinstein:
 
 class TestResolveNormPair:
     def test_default_is_a_matched_pair(self):
+        """What matters is that both halves come from one family -- the anomaly
+        rule's complement construction assumes De Morgan duality. Which family is
+        a tuning decision (see docs/norm-family-evaluation.md), so this asserts
+        the property rather than pinning the name."""
+        from tribblefis.gauss_data import DefaultNormCornorm
+
         pair = resolve_norm_pair()
-        assert pair.is_de_morgan and pair == NormPair("min/max", "min/max")
+        assert pair.is_de_morgan
+        assert pair == NormPair(DefaultNormCornorm, DefaultNormCornorm)
 
     @pytest.mark.parametrize("family", NORM_FAMILIES)
     def test_coupled_selection_sets_both_halves(self, family):

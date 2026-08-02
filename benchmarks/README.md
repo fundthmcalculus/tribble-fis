@@ -44,6 +44,14 @@ TRIBBLEFIS_NUM_THREADS=1 python -m benchmarks.bench -k forward   # compiled, one
 | `forward-huge-cpu` / `-gpu64` / `-gpu32` | 1M-sample forward pass, data resident, CPU vs Torch |
 | `batch-candidates-cpu` / `-gpu` / `-gpu-seq` | 64 candidate parameter vectors, the shape a population search evaluates |
 
+Both `refine-*` rows start from a **randomly parameterised** model, which is a
+stable fixed point for measuring the search but not how anyone trains. Their
+wall clock is therefore not comparable across a change that alters how far the
+search travels — notably the `min/max` → `probability` default switch, where
+min/max stalls early on a flat surface and probability runs to convergence. See
+`docs/norm-family-evaluation.md` for the heuristic-start numbers, which are the
+meaningful training comparison.
+
 `refine-classifier` is small so it catches regressions in under a second, but at
 that size the forward pass is only about a fifth of the work — the rest is
 SciPy's L-BFGS-B machinery over 48 tiny sub-problems. `refine-classifier-wide`
