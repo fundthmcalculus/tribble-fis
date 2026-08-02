@@ -33,7 +33,7 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         tsk_order="1st",
         optimize_coefficients=True,
         consequent_basis="raw",
-        l2_reg=0.0,
+        l2_reg=1e-6,
         pin_extremes=True,
         norm_conorm=DefaultNormCornorm,
         t_norm=None,

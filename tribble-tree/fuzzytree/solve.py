@@ -33,7 +33,7 @@ def solve_leaf_consequents(
     leaf_firing: np.ndarray,
     order: str = "0th",
     basis: str = "raw",
-    l2_reg: float = 0.0,
+    l2_reg: float = 1e-6,
     cross_pairs: list[tuple[int, int]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Solve every leaf's TSK consequent in one closed-form ridge least squares.
