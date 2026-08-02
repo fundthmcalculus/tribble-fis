@@ -163,14 +163,18 @@ def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tu
               mis-ranked feature is simply never seen.
             - "bhattacharyya": parametric (Gaussian fit per class). Cheaper, and fine
               when features are approximately Gaussian.
-            - "composite": blend of three Gaussian-fit measures (Bhattacharyya,
-              Jensen-Shannon, overlap coefficient) via the average of their
-              arithmetic and geometric means. The geometric-mean term requires
-              every measure to agree, so a feature can't score high on the
-              strength of a single measure's blind spot. Costs ~3x bhattacharyya.
-              Does not include the histogram-correlation term the pre-#34 blend
-              had; that measure was on a different scale, crashed on
-              zero-variance features, and was the worst performing of the four.
+            - "composite": blend of four measures -- three Gaussian-fit
+              (Bhattacharyya, Jensen-Shannon, overlap coefficient) plus
+              wasserstein, the one non-parametric view -- via the average of
+              their arithmetic and geometric means. The geometric-mean term
+              requires every measure to agree, so a feature can't score high
+              on the strength of a single measure's blind spot; without
+              wasserstein the other three all share the same Gaussian-fit
+              blind spot and don't actually diversify against it. Costs ~4x
+              bhattacharyya. Does not include the histogram-correlation term
+              the pre-#34 blend had; that measure was on a different scale,
+              crashed on zero-variance features, and was the worst performing
+              of the four.
 
     Returns:
         List of tuples (feature_name, differentiation_score) sorted by score descending
@@ -225,26 +229,33 @@ def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tu
                     bhattacharyya_coeff = np.sum(np.sqrt(pdf_ij * pdf_jk))
                     bhatta_diff = 1 - bhattacharyya_coeff
 
+                if method in ("wasserstein", "composite"):
+                    # Wasserstein distance (non-parametric, no distribution assumption)
+                    w_distance = wasserstein_distance(data_label_ij, data_label_jk)
+                    # Normalize by pooled standard deviation for scale invariance
+                    pooled_std = np.sqrt((np.var(data_label_ij) + np.var(data_label_jk)) / 2)
+                    if pooled_std > 1e-10:
+                        w_distance = w_distance / pooled_std
+
                 if method == "bhattacharyya":
                     distance = bhatta_diff
 
                 elif method == "wasserstein":
-                    # Wasserstein distance (non-parametric, no distribution assumption)
-                    distance = wasserstein_distance(data_label_ij, data_label_jk)
-                    # Normalize by pooled standard deviation for scale invariance
-                    pooled_std = np.sqrt((np.var(data_label_ij) + np.var(data_label_jk)) / 2)
-                    if pooled_std > 1e-10:
-                        distance = distance / pooled_std
+                    distance = w_distance
 
                 elif method == "composite":
                     # Jensen-Shannon distance (0 = identical, 1 = completely different)
                     js_diff = jensenshannon(pdf_ij, pdf_jk)
                     # Overlap coefficient, converted to a "higher = more different" scale
                     overlap_diff = 1 - np.sum(np.minimum(pdf_ij, pdf_jk))
+                    # Squash the unbounded pooled-std-normalized wasserstein distance
+                    # onto the same [0, 1) scale as the other three measures so it
+                    # doesn't dominate or get drowned out in the blend.
+                    wasserstein_diff = w_distance / (1 + w_distance)
 
                     # Deliberately excludes the removed histogram-correlation term
                     # (different scale, crashed on zero-variance features).
-                    diff_vals = np.array([bhatta_diff, js_diff, overlap_diff])
+                    diff_vals = np.array([bhatta_diff, js_diff, overlap_diff, wasserstein_diff])
                     diff_vals = diff_vals[np.isfinite(diff_vals)]
 
                     if len(diff_vals) == 0:
