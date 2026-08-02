@@ -108,9 +108,16 @@ def render_table(results: list[dict[str, Any]], baseline: dict[str, Any] | None)
              "|" + "|".join(["---"] * len(header)) + "|"]
 
     for r in results:
+        if "skipped" in r:
+            lines.append("| " + " | ".join(
+                [r["name"], f"skipped: {r['skipped']}"] + ["-"] * (len(header) - 2)
+            ) + " |")
+            continue
         row = [r["name"], _fmt_time(r["min_s"]), _fmt_time(r["median_s"])]
         if has_base:
             b = base_index.get(r["name"])
+            if b is not None and "skipped" in b:
+                b = None
             if b is None:
                 row += ["-", "-"]
             else:
@@ -195,6 +202,16 @@ def main(argv: list[str] | None = None) -> int:
 
     results = []
     for w in workloads:
+        ok, reason = w.available()
+        if not ok:
+            # Recorded, not dropped: a missing GPU row should say "no CUDA
+            # device", not look like a workload nobody bothered to run.
+            print(f"skipping {w.name}: {reason}", flush=True)
+            results.append({
+                "name": w.name, "description": w.description, "tags": list(w.tags),
+                "skipped": reason,
+            })
+            continue
         print(f"running {w.name} ...", flush=True)
         results.append(run_workload(w))
 
@@ -219,7 +236,8 @@ def main(argv: list[str] | None = None) -> int:
     if baseline:
         base_index = {r["name"]: r for r in baseline["results"]}
         moved = [r["name"] for r in results
-                 if r["name"] in base_index
+                 if "skipped" not in r and r["name"] in base_index
+                 and "skipped" not in base_index[r["name"]]
                  and not _checksums_match(base_index[r["name"]]["checksum"], r["checksum"])]
         if moved:
             print(f"\nCHECKSUM MISMATCH on: {', '.join(moved)}")

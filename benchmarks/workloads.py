@@ -25,7 +25,7 @@ Three things are measured, because they are three different kinds of cost:
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import numpy as np
@@ -112,6 +112,11 @@ class Workload:
     repeats: int = 5
     warmups: int = 1
     tags: tuple[str, ...] = ()
+    # Some workloads need hardware or an optional dependency the machine may not
+    # have. They are skipped with a reason rather than dropped from the list, so
+    # a results file always says whether a GPU row is missing because the GPU is
+    # slow or because there was no GPU.
+    available: Callable[[], tuple[bool, str]] = lambda: (True, "")
 
 
 def _array_checksum(a: np.ndarray) -> float:
@@ -163,6 +168,224 @@ def _forward_workload(
         checksum=_array_checksum,
         repeats=repeats,
         tags=("forward",),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GPU workloads.
+# ---------------------------------------------------------------------------
+
+def _cuda_available() -> tuple[bool, str]:
+    try:
+        from tribblefis import gpu
+    except ImportError as exc:  # pragma: no cover
+        return False, f"tribblefis.gpu unimportable: {exc}"
+    if not gpu.is_available():
+        return False, "PyTorch not installed"
+    if not gpu.is_available(require_cuda=True):
+        return False, "no CUDA device"
+    return True, ""
+
+
+def _resident_forward_workload(
+    name: str, n_samples: int, n_features: int, n_labels: int, n_mf: int, repeats: int
+) -> Workload:
+    """CPU forward pass with the model compiled and the matrix built in `setup`.
+
+    The GPU workloads hold their data on the device across calls, so this is what
+    they have to be compared against: the same timing boundary, measuring the
+    kernel rather than the marshalling. `forward-large` and friends deliberately
+    include the pandas-facing path; this one deliberately does not.
+    """
+
+    def setup():
+        from tribblefis import kernel
+
+        X, _ = make_dataset(n_samples, n_features, n_labels, seed=0)
+        model = make_model(n_features, n_labels, n_mf, seed=0)
+        arrays = {c: X[c].to_numpy() for c in X.columns}
+        compiled = kernel.compile_model(model, list(arrays))
+        return compiled, compiled.feature_matrix(arrays), NormPair("min/max", "min/max")
+
+    def run(state):
+        from tribblefis import kernel
+
+        compiled, matrix, norms = state
+        return kernel.firing_strengths(compiled, matrix, norms)
+
+    return Workload(
+        name=name,
+        description=(
+            f"kernel.firing_strengths (resident data): {n_samples} samples x "
+            f"{n_features} features x {n_labels} labels x {n_mf} MF"
+        ),
+        setup=setup,
+        run=run,
+        checksum=_array_checksum,
+        repeats=repeats,
+        tags=("forward", "resident"),
+    )
+
+
+def _cpu_batch_workload(
+    name: str, n_samples: int, n_features: int, n_labels: int, n_mf: int,
+    n_candidates: int, repeats: int,
+) -> Workload:
+    """The CPU counterpart of the batched GPU workload: the same `P` candidates,
+    evaluated one at a time, which is all a CPU can do."""
+
+    def setup():
+        from tribblefis import kernel
+
+        X, _ = make_dataset(n_samples, n_features, n_labels, seed=0)
+        model = make_model(n_features, n_labels, n_mf, seed=0)
+        arrays = {c: X[c].to_numpy() for c in X.columns}
+        compiled = kernel.compile_model(model, list(arrays))
+        return (compiled, compiled.feature_matrix(arrays),
+                NormPair("min/max", "min/max"),
+                _candidate_params(compiled, n_candidates))
+
+    def run(state):
+        from tribblefis import kernel
+
+        compiled, matrix, norms, params = state
+        return np.stack([
+            kernel.firing_strengths(_with_params(compiled, p), matrix, norms)
+            for p in params
+        ])
+
+    return Workload(
+        name=name,
+        description=(
+            f"kernel.firing_strengths x {n_candidates} candidates (float64): "
+            f"{n_samples} samples x {n_features} features x {n_labels} labels "
+            f"x {n_mf} MF"
+        ),
+        setup=setup,
+        run=run,
+        checksum=_array_checksum,
+        repeats=repeats,
+        tags=("batch", "resident"),
+    )
+
+
+def _candidate_params(compiled, n_candidates: int) -> np.ndarray:
+    """A seeded population of parameter vectors around the model's own."""
+    rng = np.random.default_rng(0)
+    base = compiled.extract_params()
+    params = base + rng.normal(0.0, 0.25, size=(n_candidates, base.size))
+    params[:, 1::2] = np.abs(params[:, 1::2]) + 0.1      # keep sigma positive
+    return params
+
+
+def _with_params(compiled, vec):
+    compiled.set_params(vec)
+    return compiled
+
+
+def _gpu_forward_workload(
+    name: str, n_samples: int, n_features: int, n_labels: int, n_mf: int,
+    dtype: str, repeats: int,
+) -> Workload:
+    """A resident-data GPU forward pass.
+
+    The sample matrix is uploaded in `setup`, so this times the kernel and the
+    result download but not the upload -- matching how the backend is meant to be
+    used (hold a `TorchFIS`, evaluate many times). `forward-huge` is the CPU
+    row to compare against; it is the same shape and seed.
+    """
+
+    def setup():
+        import torch
+        from tribblefis import gpu, kernel
+
+        X, _ = make_dataset(n_samples, n_features, n_labels, seed=0)
+        model = make_model(n_features, n_labels, n_mf, seed=0)
+        arrays = {c: X[c].to_numpy() for c in X.columns}
+        compiled = kernel.compile_model(model, list(arrays))
+        handle = gpu.TorchFIS(
+            compiled, compiled.feature_matrix(arrays),
+            NormPair("min/max", "min/max"), dtype=dtype,
+        )
+        return handle, torch
+
+    def run(state):
+        handle, torch = state
+        out = handle.firing_strengths()
+        torch.cuda.synchronize()
+        return out
+
+    return Workload(
+        name=name,
+        description=(
+            f"TorchFIS.firing_strengths ({dtype}, resident data): {n_samples} "
+            f"samples x {n_features} features x {n_labels} labels x {n_mf} MF"
+        ),
+        setup=setup,
+        run=run,
+        checksum=_array_checksum,
+        repeats=repeats,
+        tags=("forward", "gpu"),
+        available=_cuda_available,
+    )
+
+
+def _gpu_batch_workload(
+    name: str, n_samples: int, n_features: int, n_labels: int, n_mf: int,
+    n_candidates: int, repeats: int, batched: bool = True,
+) -> Workload:
+    """`n_candidates` parameter vectors evaluated on the GPU.
+
+    Run both ways on purpose. `batched=True` submits them as one tensor,
+    `batched=False` loops. They measure the same to within noise -- the device is
+    saturated by a single candidate at this size -- and keeping both rows is what
+    stops "we added batching" from being read as "batching made it faster".
+
+    The checksum covers all `P` results, so a batching bug that broadcast one
+    candidate over the rest would be caught rather than rewarded with a speedup.
+    """
+
+    def setup():
+        import torch
+        from tribblefis import gpu, kernel
+
+        X, _ = make_dataset(n_samples, n_features, n_labels, seed=0)
+        model = make_model(n_features, n_labels, n_mf, seed=0)
+        arrays = {c: X[c].to_numpy() for c in X.columns}
+        compiled = kernel.compile_model(model, list(arrays))
+        handle = gpu.TorchFIS(
+            compiled, compiled.feature_matrix(arrays),
+            NormPair("min/max", "min/max"), dtype="float32",
+        )
+        return handle, _candidate_params(compiled, n_candidates), torch
+
+    def run(state):
+        handle, params, torch = state
+        if batched:
+            out = handle.firing_strengths_batch(params)
+        else:
+            rows = []
+            for p in params:
+                handle.set_params(p)
+                rows.append(handle.firing_strengths())
+            out = np.stack(rows)
+        torch.cuda.synchronize()
+        return out
+
+    how = "firing_strengths_batch" if batched else "firing_strengths in a loop"
+    return Workload(
+        name=name,
+        description=(
+            f"TorchFIS.{how} (float32): {n_candidates} candidates "
+            f"x {n_samples} samples x {n_features} features x {n_labels} labels "
+            f"x {n_mf} MF"
+        ),
+        setup=setup,
+        run=run,
+        checksum=_array_checksum,
+        repeats=repeats,
+        tags=("gpu", "batch"),
+        available=_cuda_available,
     )
 
 
@@ -288,6 +511,20 @@ def all_workloads() -> list[Workload]:
         _refine_classifier_workload(
             "refine-classifier-wide", 4_000, 20, 6, 3, n_sweeps=1, repeats=2
         ),
+        # CPU/GPU pairs. Each `-cpu` row is the same shape, the same seed and the
+        # same timing boundary as the `-gpu*` row beneath it, so the two can be
+        # read against each other directly.
+        _resident_forward_workload("forward-huge-cpu", 1_000_000, 20, 8, 4, repeats=3),
+        _gpu_forward_workload("forward-huge-gpu64", 1_000_000, 20, 8, 4,
+                              "float64", repeats=3),
+        _gpu_forward_workload("forward-huge-gpu32", 1_000_000, 20, 8, 4,
+                              "float32", repeats=3),
+        _cpu_batch_workload("batch-candidates-cpu", 4_000, 20, 6, 3,
+                            n_candidates=64, repeats=3),
+        _gpu_batch_workload("batch-candidates-gpu", 4_000, 20, 6, 3,
+                            n_candidates=64, repeats=3),
+        _gpu_batch_workload("batch-candidates-gpu-seq", 4_000, 20, 6, 3,
+                            n_candidates=64, repeats=3, batched=False),
     ]
 
 

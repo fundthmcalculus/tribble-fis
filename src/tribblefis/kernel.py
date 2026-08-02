@@ -408,13 +408,27 @@ def firing_strengths(
     `feature_matrix` is ``(n_samples, n_features)`` in ``compiled.feature_names``
     order -- see :meth:`CompiledFIS.feature_matrix`.
 
-    `backend` is ``"auto"`` (the compiled kernel when it was built, else NumPy),
-    ``"cython"`` (compiled, raising if unavailable) or ``"numpy"``. The two
-    backends agree to within an ULP rather than exactly -- see
-    :func:`firing_strengths_numpy`.
+    `backend` is one of:
+
+    ``"auto"``
+        The compiled kernel when it was built, else NumPy. Bit-identical to the
+        reference forward pass either way, which is why it is the default.
+    ``"cython"`` / ``"numpy"``
+        Force one of those two.
+    ``"torch"``
+        The Torch/CUDA backend in :mod:`tribblefis.gpu`. Never selected by
+        ``auto``: CUDA's ``exp`` differs from libm's by about an ULP, so
+        substituting it silently would move every benchmark checksum in the
+        repo. Asking for it explicitly is the opt-in to that drift.
     """
-    if backend not in ("auto", "cython", "numpy"):
-        raise ValueError(f"backend must be 'auto', 'cython' or 'numpy', got {backend!r}")
+    if backend not in ("auto", "cython", "numpy", "torch"):
+        raise ValueError(
+            f"backend must be 'auto', 'cython', 'numpy' or 'torch', got {backend!r}"
+        )
+    if backend == "torch":
+        from . import gpu
+
+        return gpu.firing_strengths(compiled, feature_matrix, norms)
     if backend == "cython" and not HAVE_CYTHON_KERNEL:
         raise RuntimeError(
             "the compiled kernel is not built; run "

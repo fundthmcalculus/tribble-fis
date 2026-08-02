@@ -41,6 +41,8 @@ TRIBBLEFIS_NUM_THREADS=1 python -m benchmarks.bench -k forward   # compiled, one
 | `predict-large` | `MixtureOfGaussiansFuzzyClassifier.predict_proba`, i.e. the kernel plus the deployed estimator's overhead |
 | `refine-classifier` | end-to-end `refine_classifier_antecedents` — the training cost, ~1.3k fitness evaluations |
 | `refine-classifier-wide` | the same, at a size anyone would deploy: 4k x 20 features x 6 labels x 3 MF, 720 free parameters |
+| `forward-huge-cpu` / `-gpu64` / `-gpu32` | 1M-sample forward pass, data resident, CPU vs Torch |
+| `batch-candidates-cpu` / `-gpu` / `-gpu-seq` | 64 candidate parameter vectors, the shape a population search evaluates |
 
 `refine-classifier` is small so it catches regressions in under a second, but at
 that size the forward pass is only about a fifth of the work — the rest is
@@ -89,6 +91,33 @@ only by measurement noise.
 Measured with the default (non-fast-math) OpenMP build on 24 cores. A
 `TRIBBLEFIS_FAST_MATH=1` build is roughly a further 1.5x on the forward
 workloads; see `setup_cython.py` for why it is not the default.
+
+## GPU
+
+Skipped with a recorded reason when PyTorch or a CUDA device is absent, so a
+missing row never looks like an unrun one. Each `-cpu` row is the same shape,
+seed and timing boundary as the `-gpu*` rows below it.
+
+| workload | min | vs CPU |
+|---|---|---|
+| forward-huge-cpu (1M x 20 x 8 x 4) | 351.24 ms | — |
+| forward-huge-gpu64 | 188.72 ms | 1.86x |
+| forward-huge-gpu32 | 90.40 ms | 3.88x |
+| batch-candidates-cpu (64 candidates) | 67.95 ms | — |
+| batch-candidates-gpu (batched) | 13.85 ms | 4.91x |
+| batch-candidates-gpu-seq (one at a time) | 15.83 ms | 4.29x |
+
+The last two rows are the point of keeping both: **batching is worth ~1.15x, not
+a multiplier.** The device is already saturated by a single candidate at this
+size, and what batching saves is 64 parameter uploads.
+
+Note also that the CPU rows are the thermally variable ones — the 24-thread
+kernel ranged 351–435 ms across repeats of the same input while the GPU rows
+held within 1%. The ratios above use the CPU's best run.
+
+The GPU backend is **never** selected by `backend="auto"`: CUDA's `exp` differs
+from libm's by about an ULP, so a silent substitution would move every checksum
+in this table.
 
 ## Where the time goes at baseline
 

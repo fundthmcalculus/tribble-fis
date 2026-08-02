@@ -29,3 +29,26 @@ it.
 `TRIBBLEFIS_NO_OPENMP=1` builds without threading, `TRIBBLEFIS_FAST_MATH=1`
 trades the bit-exactness guarantee for roughly a further 1.5x, and
 `TRIBBLEFIS_NUM_THREADS` overrides the thread count at runtime.
+
+## Optional GPU backend
+
+`tribblefis.gpu` runs the same forward pass on a Torch device. PyTorch is not a
+dependency; install it to enable the backend.
+
+```python
+from tribblefis import gpu, kernel
+
+compiled = kernel.compile_model(model, list(X.columns))
+handle = gpu.TorchFIS(compiled, compiled.feature_matrix(arrays), norms)
+strengths = handle.firing_strengths()             # (n_samples, n_labels)
+```
+
+It is **never** chosen automatically. CUDA's `exp` differs from libm's by about
+an ULP, so a silent substitution would change results everywhere; ask for it with
+`kernel.firing_strengths(..., backend="torch")` and you are opting into that.
+
+Measured against the 24-thread CPU kernel on an RTX 4080 Laptop: 1.86x on a
+million-sample forward pass in float64, 3.88x in float32, 4.91x for repeated
+candidate evaluation. Batching candidates is worth about 1.15x on top — the
+device is already saturated by one candidate — so it is a convenience, not the
+speedup.
