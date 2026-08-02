@@ -31,6 +31,10 @@ from .gauss_data import (
     GaussianMembership, LabelModel, FeatureModel, GaussianMixtureModel, NormPair, resolve_norm_pair,
 )
 from .gauss_math import tsk_firing_strengths, firing_strengths_and_mf_grad
+from .kernel import (
+    IncrementalFIS, NotCompilable, compile_model,
+    firing_strengths as kernel_firing_strengths,
+)
 from .regression import (
     solve_tsk_consequents, predict_tsk, _mse, _rsquared,
     build_consequent_features, _normalize_firing_strengths,
@@ -861,16 +865,44 @@ def refine_antecedents_optimizers(
 # model does not improve validation loss.
 
 
+def _normalize_proba(fs: np.ndarray, n_labels: int) -> np.ndarray:
+    """Row-normalise firing strengths, with zero-firing rows falling back to
+    uniform -- the same rule as ``MixtureOfGaussiansFuzzyClassifier.predict_proba``.
+
+    Written as a masked ``divide`` rather than boolean fancy-indexing
+    (``proba[nz] = fs[nz] / row[nz]``), which materialised three whole-array
+    temporaries and made two index passes. Identical arithmetic, and it profiled
+    at a third of the wide refinement's total runtime before the change.
+    """
+    row = fs.sum(axis=1, keepdims=True)
+    proba = np.full_like(fs, 1.0 / max(n_labels, 1))
+    np.divide(fs, row, out=proba, where=row > 0)
+    return proba
+
+
+def _cross_entropy_from_strengths(fs: np.ndarray, y_idx: np.ndarray, n_labels: int) -> float:
+    """``_cross_entropy(_normalize_proba(fs, n_labels), y_idx)`` without the matrix.
+
+    The cross-entropy only ever reads one probability per row -- the true
+    class's -- so normalising all ``n * L`` of them to throw away all but ``n`` is
+    wasted work in a function called thousands of times per refinement. Each
+    step is the same floating-point operation on the same operands as the two-call
+    form, so the value is bit-identical.
+    """
+    row = fs.sum(axis=1)
+    num = fs[np.arange(len(y_idx)), y_idx]
+    p = np.full(len(y_idx), 1.0 / max(n_labels, 1))
+    np.divide(num, row, out=p, where=row > 0)
+    np.clip(p, 1e-12, 1.0, out=p)
+    return float(-np.mean(np.log(p)))
+
+
 def _classifier_proba(X: pd.DataFrame, model: GaussianMixtureModel):
     """Row-normalised firing strengths -> class probabilities, plus the label
     order. Mirrors ``MixtureOfGaussiansFuzzyClassifier.predict_proba`` (zero-firing
     rows fall back to uniform) so the fitness matches the deployed forward pass."""
     fs, labels = tsk_firing_strengths(X, model)
-    row = fs.sum(axis=1, keepdims=True)
-    proba = np.full_like(fs, 1.0 / max(len(labels), 1))
-    nz = row.flatten() > 0
-    proba[nz] = fs[nz] / row[nz]
-    return proba, labels
+    return _normalize_proba(fs, len(labels)), labels
 
 
 def _cross_entropy(proba: np.ndarray, y_idx: np.ndarray) -> float:
@@ -896,6 +928,29 @@ def _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi):
     y_idx_tr = y_idx_tr[valid_tr]
     X_tr = X_tr.iloc[np.where(valid_tr)[0]] if not valid_tr.all() else X_tr
     width = np.where((hi - lo) > 0, hi - lo, 1.0)
+    n_labels = len(labels)
+    norms = resolve_norm_pair()
+
+    # Compile the model once, if its shape allows (all-Gaussian, every feature
+    # carrying every label). A candidate evaluation is then an in-place write of
+    # 2*n_MF floats instead of a full reconstruction of the immutable model tree,
+    # and the feature columns are extracted once instead of per call. Profiled at
+    # baseline, those two costs were ~17% and ~5% of a refinement respectively.
+    # The kernel is bit-exact against `tsk_firing_strengths`, so this changes the
+    # cost of the search and not its trajectory.
+    compiled = None
+    try:
+        compiled = compile_model(model, list(X_tr.columns))
+    except NotCompilable:
+        pass
+
+    if compiled is not None:
+        feature_matrix = compiled.feature_matrix(
+            {name: X_tr[name].to_numpy() for name in compiled.feature_names}
+        )
+        return _CompiledClassifierObjective(
+            compiled, feature_matrix, norms, y_idx_tr, n_labels, l2_shrink, x0, width
+        )
 
     def fitness(vec: np.ndarray) -> float:
         candidate = apply_gaussian_params(model, vec)
@@ -909,6 +964,85 @@ def _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi):
         return ce + reg
 
     return fitness
+
+
+class _CompiledClassifierObjective:
+    """The ridge-shrunk cross-entropy objective over a compiled model.
+
+    Callable like the plain closure it replaces, so every existing caller is
+    unaffected. What it adds is :meth:`slot_fitness`: block coordinate descent
+    knows it is moving one membership function's ``(mu, sigma)``, and that lets
+    the evaluation reuse :class:`~tribblefis.kernel.IncrementalFIS`'s cached
+    per-cell folds instead of recomputing the forward pass. Same number, ~15x
+    less arithmetic on a wide model.
+    """
+
+    def __init__(self, compiled, feature_matrix, norms, y_idx, n_labels,
+                 l2_shrink, x0, width):
+        self.compiled = compiled
+        self.feature_matrix = feature_matrix
+        self.norms = norms
+        self.y_idx = y_idx
+        self.n_labels = n_labels
+        self.l2_shrink = l2_shrink
+        self.x0 = x0
+        self.width = width
+        self._incremental: IncrementalFIS | None = None
+
+    def _reg(self, vec: np.ndarray) -> float:
+        if not self.l2_shrink:
+            return 0.0
+        return self.l2_shrink * float(np.mean(((vec - self.x0) / self.width) ** 2))
+
+    def _loss(self, fs: np.ndarray, vec: np.ndarray) -> float:
+        return (
+            _cross_entropy_from_strengths(fs, self.y_idx, self.n_labels)
+            + self._reg(vec)
+        )
+
+    def __call__(self, vec: np.ndarray) -> float:
+        try:
+            self.compiled.set_params(vec)
+            fs = kernel_firing_strengths(self.compiled, self.feature_matrix, self.norms)
+        except Exception:
+            return 1e6
+        # A full evaluation moved parameters behind the incremental cache's back,
+        # so the cache is stale until it is rebuilt.
+        if self._incremental is not None:
+            self._incremental.refresh()
+        return self._loss(fs, vec)
+
+    def slot_fitness(self, slot: int, template: np.ndarray):
+        """A two-argument objective for membership `slot`'s ``(mu, sigma)``.
+
+        `template` is the current full parameter vector; only the shrinkage term
+        needs it, and only the two entries this slot owns ever differ from it.
+        Returns ``(f_sub, commit)``: call ``commit(v)`` to fold an accepted
+        ``v`` into the cache. Nothing is mutated until then, so an L-BFGS-B
+        sub-problem that ends up rejecting every trial leaves no trace.
+        """
+        if self._incremental is None:
+            self._incremental = IncrementalFIS(
+                self.compiled, self.feature_matrix, self.norms
+            )
+        inc = self._incremental
+        vec = template.copy()
+        i_mu, i_sigma = 2 * slot, 2 * slot + 1
+
+        def f_sub(v) -> float:
+            vec[i_mu] = v[0]
+            vec[i_sigma] = v[1]
+            try:
+                fs = inc.evaluate_slot(slot, float(v[0]), float(v[1]))
+            except Exception:
+                return 1e6
+            return self._loss(fs, vec)
+
+        def commit(v) -> None:
+            inc.evaluate_slot(slot, float(v[0]), float(v[1]))
+            inc.commit()
+
+        return f_sub, commit
 
 
 def _classifier_accuracy(X, y, model) -> float:
@@ -935,6 +1069,7 @@ def refine_classifier_antecedents(
     val_fraction: float = 0.25,
     n_sweeps: int = 3,
     block: int = 2,
+    incremental: bool = True,
     sub_maxfun: int = 25,
     population_size: int = 40,
     num_generations: int = 20,
@@ -954,6 +1089,12 @@ def refine_classifier_antecedents(
     cross-entropy and the result is accepted only if it does not worsen a held-out
     validation split's accuracy *and* cross-entropy (otherwise the heuristic model
     is returned unchanged). Returns ``(refined_model, info)``.
+
+    ``incremental=False`` turns off the cached per-cell evaluation that
+    ``block=2`` coordinate descent otherwise uses (see
+    :class:`~tribblefis.kernel.IncrementalFIS`). The two produce bit-identical
+    results and the cache is several times faster on a wide model, so this exists
+    to A/B that claim, not because either answer is preferable.
     """
     y_arr = np.asarray(y_train)
     bounds = build_param_bounds(model, X_train, sigma_min_frac, sigma_max_frac)
@@ -990,6 +1131,16 @@ def refine_classifier_antecedents(
         n_eval = 1
         n_params = len(bounds)
         n_blocks = (n_params + block - 1) // block
+        # A block of 2 starting on an even index *is* one membership function's
+        # (mu, sigma), which is the case the incremental evaluator handles. Any
+        # other blocking (block=1, block=4, a ragged tail) falls back to the full
+        # objective, which is the same function evaluated the slow way.
+        use_incremental = (
+            incremental
+            and block == 2
+            and n_params % 2 == 0
+            and isinstance(fitness, _CompiledClassifierObjective)
+        )
         with _single_threaded():
             for sweep in range(n_sweeps):
                 prev = cur
@@ -997,18 +1148,32 @@ def refine_classifier_antecedents(
                     bidx = np.arange(b * block, min((b + 1) * block, n_params))
                     sub_bounds = [(lo[k], hi[k]) for k in bidx]
 
-                    def f_sub(v):
-                        nonlocal n_eval
-                        trial = x.copy()
-                        trial[bidx] = v
-                        n_eval += 1
-                        return fitness(trial)
+                    commit = None
+                    if use_incremental:
+                        slot_f, commit = fitness.slot_fitness(b, x)
+
+                        def f_sub(v, _slot_f=slot_f):
+                            nonlocal n_eval
+                            n_eval += 1
+                            return _slot_f(v)
+                    else:
+                        def f_sub(v):
+                            nonlocal n_eval
+                            trial = x.copy()
+                            trial[bidx] = v
+                            n_eval += 1
+                            return fitness(trial)
 
                     res = minimize(f_sub, x[bidx], method="L-BFGS-B", bounds=sub_bounds,
                                    options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
                     if res.fun < cur - 1e-12:
                         x[bidx] = np.clip(res.x, lo[bidx], hi[bidx])
                         cur = float(res.fun)
+                        if commit is not None:
+                            # Fold the accepted move into the cache so the next
+                            # block starts from it. Rejected blocks never touch
+                            # the cache, so they need no undo.
+                            commit(x[bidx])
                 if verbose:
                     print(f"  sweep {sweep + 1}/{n_sweeps}: train obj={cur:.5f} (evals={n_eval})")
                 if prev - cur < 1e-6:

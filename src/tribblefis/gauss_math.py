@@ -11,6 +11,7 @@ from sklearn.metrics import silhouette_score
 from sklearn.mixture import GaussianMixture
 from tribbleclustering import IVATMeans, FuzzyCMeans
 
+from . import kernel
 from .gauss_data import *  # noqa: F401, F403
 
 
@@ -498,6 +499,34 @@ def tsk_firing_strengths(
             for name in model.feature_models
             if name in X
         }
+
+    # Fast path: hand the whole class-membership block to the compiled kernel.
+    # It only applies to models the flat layout can hold exactly (all-Gaussian,
+    # every feature carrying every label) and produces bit-identical output, so
+    # it is a pure substitution -- see `tribblefis.kernel`. The anomaly column,
+    # when requested, is still derived here from the class columns exactly as
+    # below, because it is a function of them rather than of the memberships.
+    if kernel.HAVE_CYTHON_KERNEL:
+        n_class_labels = len(unique_labels) - (
+            1 if anomaly_details and anomaly_details.include_anomaly else 0
+        )
+        try:
+            compiled = kernel.compile_model(model, list(feature_arrays))
+        except kernel.NotCompilable:
+            compiled = None
+        if compiled is not None:
+            firing_strengths[:, :n_class_labels] = kernel.firing_strengths(
+                compiled, compiled.feature_matrix(feature_arrays), norms
+            )
+            if n_class_labels < len(unique_labels):
+                boosted = np.clip(
+                    firing_strengths[:, :n_class_labels] + anomaly_details.threshold,
+                    0.0, 1.0,
+                )
+                firing_strengths[:, -1] = t_complement(
+                    t_conorm(boosted, None, norms.t_conorm)
+                )
+            return firing_strengths, unique_labels
 
     for label_idx, label_value in enumerate(unique_labels):
         if anomaly_details and label_value == anomaly_details.label:
