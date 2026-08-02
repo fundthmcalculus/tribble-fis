@@ -5,10 +5,101 @@ from typing import NamedTuple, Literal, Optional
 import numpy as np
 
 # norm/conorm pairings
-NormConorm = Literal["min/max", "probability", "luk", "hamacher"]
+#
+# Each name selects a FAMILY. A family's t-norm and t-conorm are De Morgan duals
+# under the standard negation N(x) = 1 - x, i.e. S(x, y) = 1 - T(1-x, 1-y):
+#
+#   min/max       T = min(x, y)              S = max(x, y)
+#   probability   T = xy                     S = x + y - xy
+#   luk           T = max(0, x + y - 1)      S = min(1, x + y)
+#   hamacher      T = xy / (x + y - xy)      S = (x + y - 2xy) / (1 - xy)
+#   einstein      T = xy / (2 - (x+y-xy))    S = (x + y) / (1 + xy)
+#
+# Taking both operators from one family is the default and the supported case.
+# Mixing families is possible but must be asked for explicitly -- see
+# `resolve_norm_pair`.
+NormConorm = Literal["min/max", "probability", "luk", "hamacher", "einstein"]
 MemberFunction = Literal["gaussian", "triangular", "trap"]
-DefaultNormCornorm: NormConorm = "min/max"
+# The default family. `probability` rather than the textbook `min/max` because
+# min/max measured as the *worst* of the four De Morgan families on classification
+# accuracy -- see docs/norm-family-evaluation.md. Over 18 dataset x split
+# combinations, refined:
+#
+#   min/max      0.7881   (baseline)
+#   hamacher     0.8029   +0.0148 +/- 0.0078
+#   probability  0.8135   +0.0254 +/- 0.0063   <- default
+#   einstein     0.8175   +0.0294 +/- 0.0061
+#
+# Einstein edges it out, but not separably (the gap between the two is well
+# inside their error bars) and it costs two divisions per operation. Probability
+# is the cheapest of the three, is the one family whose objective is smooth
+# everywhere -- which is what makes an exact analytic gradient possible -- and is
+# the most familiar (product / probabilistic sum).
+DefaultNormCornorm: NormConorm = "probability"
 DefaultMemberFunction: MemberFunction = "gaussian"
+
+NORM_FAMILIES: tuple[NormConorm, ...] = (
+    "min/max", "probability", "luk", "hamacher", "einstein",
+)
+
+
+class NormPair(NamedTuple):
+    """A resolved (t-norm, t-conorm) selection.
+
+    ``is_de_morgan`` is True when both halves come from the same family, which is
+    the only configuration in which De Morgan's laws hold. Code that builds a
+    complement out of a conorm -- the anomaly rule is exactly
+    ``1 - S(mu_1, ..., mu_k)`` -- depends on that duality for its interpretation,
+    so a mixed pair silently changes what such a rule means.
+    """
+
+    t_norm: NormConorm
+    t_conorm: NormConorm
+
+    @property
+    def is_de_morgan(self) -> bool:
+        return self.t_norm == self.t_conorm
+
+
+def resolve_norm_pair(
+    norm_conorm: Optional[NormConorm] = None,
+    t_norm: Optional[NormConorm] = None,
+    t_conorm: Optional[NormConorm] = None,
+    allow_mixed_norms: bool = False,
+) -> NormPair:
+    """Resolve the operator selection into an explicit (t-norm, t-conorm) pair.
+
+    ``norm_conorm`` picks a family for both halves and is the ordinary way to
+    configure this. ``t_norm`` / ``t_conorm`` override one half each and are an
+    advanced setting: a pair drawn from two different families is not a De Morgan
+    dual pair, so it is rejected unless ``allow_mixed_norms=True`` says the caller
+    means it. Defaulting to "whatever combination was typed" would let a mismatch
+    reach the anomaly rule -- whose complement construction assumes duality --
+    without anything being said about it.
+    """
+    # `is None` rather than a falsy test: None means "not specified", but an empty
+    # string is a value, and a wrong one. `or` would quietly swap it for the
+    # default and hand back a pair the caller never asked for.
+    base: NormConorm = norm_conorm if norm_conorm is not None else DefaultNormCornorm
+    resolved = NormPair(
+        t_norm=t_norm if t_norm is not None else base,
+        t_conorm=t_conorm if t_conorm is not None else base,
+    )
+
+    for field, value in (("t_norm", resolved.t_norm), ("t_conorm", resolved.t_conorm)):
+        if value not in NORM_FAMILIES:
+            raise ValueError(
+                f"Invalid {field} {value!r}; expected one of {list(NORM_FAMILIES)}"
+            )
+
+    if not resolved.is_de_morgan and not allow_mixed_norms:
+        raise ValueError(
+            f"t_norm={resolved.t_norm!r} and t_conorm={resolved.t_conorm!r} are from "
+            f"different families and so are not De Morgan duals. Pass "
+            f"allow_mixed_norms=True to opt in to a mixed pair, or set "
+            f"norm_conorm={resolved.t_norm!r} to use one family for both."
+        )
+    return resolved
 
 
 class AnomalyParameters(NamedTuple):
@@ -19,6 +110,17 @@ class AnomalyParameters(NamedTuple):
     label: str = "anomaly"
     norm_conorm: NormConorm = DefaultNormCornorm
     member_function: MemberFunction = DefaultMemberFunction
+    # Advanced: override one half of the pair. Leave as None to take both
+    # operators from `norm_conorm`, which is the De Morgan-consistent default.
+    t_norm: Optional[NormConorm] = None
+    t_conorm: Optional[NormConorm] = None
+    allow_mixed_norms: bool = False
+
+    def norms(self) -> NormPair:
+        """The resolved (t-norm, t-conorm) pair for these parameters."""
+        return resolve_norm_pair(
+            self.norm_conorm, self.t_norm, self.t_conorm, self.allow_mixed_norms
+        )
 
 
 class GaussianMembership(NamedTuple):

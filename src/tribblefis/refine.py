@@ -22,14 +22,24 @@ fold, never on the test set, and both guarantee they never return a model worse
 """
 
 import typing
+import warnings
 
 import numpy as np
 import pandas as pd
 from scipy.optimize import differential_evolution, minimize
 
-from .gauss_data import GaussianMembership, LabelModel, FeatureModel, GaussianMixtureModel
-from .gauss_math import tsk_firing_strengths
-from .regression import solve_tsk_consequents, predict_tsk, _mse, _rsquared
+from .gauss_data import (
+    GaussianMembership, LabelModel, FeatureModel, GaussianMixtureModel, NormPair, resolve_norm_pair,
+)
+from .gauss_math import tsk_firing_strengths, firing_strengths_and_mf_grad
+from .kernel import (
+    IncrementalFIS, NotCompilable, compile_model,
+    firing_strengths as kernel_firing_strengths,
+)
+from .regression import (
+    solve_tsk_consequents, predict_tsk, _mse, _rsquared,
+    build_consequent_features, _normalize_firing_strengths,
+)
 
 # The refinement fitness runs thousands of tiny (~O(100)-wide) linear solves. On a
 # multithreaded BLAS those small matrices thrash on thread-spawn overhead and
@@ -115,38 +125,59 @@ def build_param_bounds(
 # Fitness: apply candidate antecedents -> closed-form consequents -> val MSE.
 # ---------------------------------------------------------------------------
 
+def _prepare_folds(X_train: pd.DataFrame, y_train: pd.DataFrame, folds):
+    """Per-fold train/val splits, each with its feature columns pre-extracted once.
+
+    `refine_antecedents_coordinate` (and the other refiners) evaluate the fitness
+    tens of thousands of times against these same frames -- only the candidate
+    Gaussian parameters vary between calls, `X_train` never does. Building each
+    fold's ``{feature_name: ndarray}`` mapping here, instead of inside the fitness
+    closure, turns ~84k x n_features pandas column lookups into a handful of
+    conversions for the whole refinement run. See issue #42.
+    """
+    prepared = []
+    for tr_idx, val_idx in folds:
+        X_tr = X_train.iloc[tr_idx]
+        X_val = X_train.iloc[val_idx]
+        prepared.append((
+            X_tr, y_train.iloc[tr_idx], {c: np.asarray(X_tr[c].to_numpy()) for c in X_tr.columns},
+            X_val, y_train.iloc[val_idx]["y_value"].to_numpy(),
+            {c: np.asarray(X_val[c].to_numpy()) for c in X_val.columns},
+        ))
+    return prepared
+
+
 def _make_kfold_fitness(
     model, X_train, y_train, folds, top_n_todo, n_output_buckets, order, l2_reg, basis, cross_pairs,
+    pin_extremes=False, norms: NormPair | None = None, prepared=None,
 ):
     """Cross-validated fitness: mean held-out MSE over `folds`.
 
     A single validation fold is far too easy to overfit when the search has
     O(100) free antecedent parameters -- the optimizer drives that one fold's MSE
     down while test error rises. Averaging over k folds forces the antecedents to
-    generalize. Each fold pre-slices its train/val DataFrames once (outside the
-    hot loop) so a fitness call is just: apply params -> per-fold solve+predict.
+    generalize. Each fold pre-slices its train/val DataFrames (and pre-extracts
+    their feature arrays -- see `_prepare_folds`) once, outside the hot loop, so a
+    fitness call is just: apply params -> per-fold solve+predict.
     """
-    prepared = []
-    y_bucket_mean_dummy = np.zeros(n_output_buckets)  # solver ignores this arg
-    for tr_idx, val_idx in folds:
-        prepared.append((
-            X_train.iloc[tr_idx], y_train.iloc[tr_idx],
-            X_train.iloc[val_idx], y_train.iloc[val_idx]["y_value"].to_numpy(),
-        ))
+    if prepared is None:
+        prepared = _prepare_folds(X_train, y_train, folds)
+    y_bucket_mean_dummy = np.zeros(n_output_buckets)  # solver ignores this arg when pin_extremes=False
 
     def fitness(vec: np.ndarray) -> float:
         candidate = apply_gaussian_params(model, vec)
         total, n = 0.0, 0
-        for X_tr, y_tr, X_val, y_val_true in prepared:
+        for X_tr, y_tr, fa_tr, X_val, y_val_true, fa_val in prepared:
             try:
                 corr, means = solve_tsk_consequents(
                     X_tr, candidate, top_n_todo, y_bucket_mean_dummy, y_tr,
                     n_output_buckets=n_output_buckets, order=order,
-                    l2_reg=l2_reg, basis=basis, cross_pairs=cross_pairs, verbose=False,
+                    l2_reg=l2_reg, basis=basis, cross_pairs=cross_pairs, pin_extremes=pin_extremes,
+                    norms=norms, feature_arrays=fa_tr, verbose=False,
                 )
                 y_hat = predict_tsk(
                     X_val, candidate, top_n_todo, means, corr,
-                    order=order, basis=basis, cross_pairs=cross_pairs,
+                    order=order, basis=basis, cross_pairs=cross_pairs, norms=norms, feature_arrays=fa_val,
                 )
             except Exception:
                 return 1e6
@@ -280,6 +311,117 @@ def refine_antecedents_local(
 
 
 # ---------------------------------------------------------------------------
+# Analytic gradient of one coordinate-descent block's CV fitness (issue #43).
+#
+# `refine_antecedents_coordinate`'s sub-problem is always exactly one Gaussian's
+# (mu, sigma) when `block == 2` (the default), everything else in the model held
+# fixed. That is a *bilevel* derivative: the consequents `beta*` are re-solved
+# for every candidate theta, so the total derivative of the validation MSE picks
+# up a `dbeta*/dtheta` term as well as the direct `dPhi_val/dtheta` term (the
+# envelope theorem applies to the training objective beta* minimizes, not to the
+# validation loss being differentiated here). See the issue for the derivation;
+# restricted to "probability" norms, where the objective is smooth everywhere
+# (min/max is only piecewise smooth, and FD already finds its subgradient).
+# ---------------------------------------------------------------------------
+
+def _analytic_block_supported(norms: NormPair, pin_extremes: bool, block: int) -> bool:
+    return (
+        block == 2
+        and not pin_extremes
+        and norms.t_norm == "probability"
+        and norms.t_conorm == "probability"
+    )
+
+
+def _design_matrix(feature_arrays, top_n_todo, F, order, basis, cross_pairs):
+    """Stacked per-rule design ``[norm_fs_r * [1 | basis(X)]]_r``, plus the
+    ingredients (`phi`, `norm_fs`) the gradient needs to reuse."""
+    X_rule = np.column_stack([feature_arrays[c] for c in top_n_todo]) if top_n_todo \
+        else np.empty((F.shape[0], 0))
+    feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs)
+    phi = np.hstack([np.ones((X_rule.shape[0], 1)), feats])
+    norm_fs = _normalize_firing_strengths(F)
+    n_rules = F.shape[1]
+    design = (norm_fs[:, :, np.newaxis] * phi[:, np.newaxis, :]).reshape(X_rule.shape[0], n_rules * phi.shape[1])
+    return design, phi, norm_fs
+
+
+def _norm_fs_grad(F: np.ndarray, r0: int, dF_r0: np.ndarray) -> np.ndarray:
+    """d(row-normalized firing strengths)/dtheta given the derivative of only the
+    target rule's raw firing-strength column.
+
+    Every other raw column is a constant in theta (each output label owns
+    independent Gaussian antecedents -- see `firing_strengths_and_mf_grad`); only
+    the shared row-sum denominator couples ``norm_fs[:, r0]``'s change into every
+    other column. Zero-firing rows keep the same all-zero convention as
+    `_normalize_firing_strengths` (their derivative is likewise zero).
+    """
+    row_sums = F.sum(axis=1)
+    valid = row_sums > 1e-6
+    safe_s = np.where(row_sums > 0, row_sums, 1.0)
+    d_norm = -F * dF_r0[:, np.newaxis] / safe_s[:, np.newaxis] ** 2
+    d_norm[:, r0] += dF_r0 / safe_s
+    d_norm[~valid, :] = 0.0
+    return d_norm
+
+
+def _fold_mse_and_grad(
+    fa_tr, y_tr, fa_val, y_val_true, candidate, top_n_todo, order, l2_reg, basis, cross_pairs,
+    target_feature, target_label, target_mf_index,
+):
+    """(val MSE, [d(val MSE)/d(mu), d(val MSE)/d(sigma)]) for one fold, at
+    `candidate`'s current parameters for the targeted Gaussian.
+
+    ``beta* = argmin_beta ||Phi_tr @ beta - y_tr||^2 + l2_reg * ||D^(1/2) beta||^2``
+    is solved once here (mirroring `solve_tsk_consequents`'s unconstrained ridge
+    branch -- this path only ever runs with `pin_extremes=False`), then
+    differentiated via the normal-equation identity
+    ``dbeta*/dtheta = A^-1 [(dPhi_tr/dtheta)^T r - Phi_tr^T (dPhi_tr/dtheta) beta*]``
+    with ``A = Phi_tr^T Phi_tr + l2_reg * D`` and ``r = y_tr - Phi_tr @ beta*``.
+    """
+    F_tr, labels, dF_tr_mu, dF_tr_sigma = firing_strengths_and_mf_grad(
+        fa_tr, candidate, target_feature, target_label, target_mf_index
+    )
+    r0 = labels.index(target_label)
+    design_tr, phi_tr, norm_fs_tr = _design_matrix(fa_tr, top_n_todo, F_tr, order, basis, cross_pairs)
+    n_rules, n_coeffs = F_tr.shape[1], phi_tr.shape[1]
+
+    y = np.asarray(y_tr["y_value"].values, dtype=float)
+    penalty = np.ones(n_rules * n_coeffs)
+    penalty[::n_coeffs] = 0.0  # never penalize each rule's intercept/bucket-mean column
+    if l2_reg > 0:
+        sqrt_pen = np.sqrt(l2_reg * penalty)
+        beta = np.linalg.lstsq(
+            np.vstack([design_tr, np.diag(sqrt_pen)]), np.hstack([y, np.zeros_like(sqrt_pen)]), rcond=None
+        )[0]
+    else:
+        beta = np.linalg.lstsq(design_tr, y, rcond=None)[0]
+    resid = y - design_tr @ beta
+    A = design_tr.T @ design_tr + l2_reg * np.diag(penalty)
+
+    F_val, _, dF_val_mu, dF_val_sigma = firing_strengths_and_mf_grad(
+        fa_val, candidate, target_feature, target_label, target_mf_index
+    )
+    design_val, phi_val, norm_fs_val = _design_matrix(fa_val, top_n_todo, F_val, order, basis, cross_pairs)
+    y_hat_val = design_val @ beta
+    if not np.all(np.isfinite(y_hat_val)):
+        raise FloatingPointError("non-finite prediction")
+    mse = float(np.mean((y_val_true - y_hat_val) ** 2))
+
+    grads = []
+    for dF_tr, dF_val in ((dF_tr_mu, dF_val_mu), (dF_tr_sigma, dF_val_sigma)):
+        dPhi_tr = (_norm_fs_grad(F_tr, r0, dF_tr)[:, :, np.newaxis] * phi_tr[:, np.newaxis, :]).reshape(design_tr.shape)
+        rhs = dPhi_tr.T @ resid - design_tr.T @ (dPhi_tr @ beta)
+        dbeta = np.linalg.lstsq(A, rhs, rcond=None)[0]
+
+        dPhi_val = (_norm_fs_grad(F_val, r0, dF_val)[:, :, np.newaxis] * phi_val[:, np.newaxis, :]).reshape(design_val.shape)
+        dyhat = dPhi_val @ beta + design_val @ dbeta
+        grads.append(float(np.mean(2.0 * (y_hat_val - y_val_true) * dyhat)))
+
+    return mse, np.array(grads)
+
+
+# ---------------------------------------------------------------------------
 # Per-variable (block) coordinate descent.
 # ---------------------------------------------------------------------------
 
@@ -300,6 +442,7 @@ def refine_antecedents_coordinate(
     sub_maxfun: int = 25,
     tol: float = 1e-5,
     seed: int = 42,
+    norms: NormPair | None = None,
 ) -> tuple[GaussianMixtureModel, dict]:
     """Refine antecedents by *sequential* per-variable (block) coordinate descent.
 
@@ -319,12 +462,22 @@ def refine_antecedents_coordinate(
     low-dimensional local solve, so the total number of fitness evaluations is far
     smaller for comparable quality. `block=1` gives pure scalar coordinate descent.
 
+    ``norms``: when both halves resolve to "probability", each `block=2`
+    sub-problem is solved with the analytic bilevel gradient (issue #43) instead
+    of L-BFGS-B's default finite-difference estimate, so `sub_maxfun` buys more
+    optimizer iterations per fitness evaluation rather than more finite-difference
+    evaluations. `None` (the default family, "min/max") keeps the previous
+    finite-difference behavior unchanged -- the analytic gradient is only valid
+    for a norm family that is smooth everywhere.
+
     Never returns a model worse than the heuristic start on the CV fitness (the
     running best is only ever updated on a strict improvement).
     """
     folds = _make_folds(len(X_train), n_folds, val_fraction, seed)
+    prepared = _prepare_folds(X_train, y_train, folds)
     fitness = _make_kfold_fitness(model, X_train, y_train, folds, top_n_todo,
-                                  n_output_buckets, order, l2_reg, basis, cross_pairs)
+                                  n_output_buckets, order, l2_reg, basis, cross_pairs,
+                                  norms=norms, prepared=prepared)
     bounds = build_param_bounds(model, X_train)
     lo = np.array([b[0] for b in bounds])
     hi = np.array([b[1] for b in bounds])
@@ -335,10 +488,14 @@ def refine_antecedents_coordinate(
     cur = init_fit
     n_eval = [1]  # count fitness calls for reporting
 
+    resolved_norms = norms if norms is not None else resolve_norm_pair()
+    slots = list(_iter_gaussian_slots(model))
+    analytic_ok = _analytic_block_supported(resolved_norms, pin_extremes=False, block=block)
+
     n_blocks = (n_params + block - 1) // block
     print(f"\nCoordinate-descent antecedent refinement: {n_params} params "
           f"({n_blocks} blocks of {block}), order={order}, {n_folds}-fold "
-          f"init val MSE={init_fit:.5f}")
+          f"init val MSE={init_fit:.5f}" + (" (analytic gradient)" if analytic_ok else ""))
 
     with _single_threaded():
         for sweep in range(n_sweeps):
@@ -347,14 +504,41 @@ def refine_antecedents_coordinate(
                 idx = np.arange(b * block, min((b + 1) * block, n_params))
                 sub_bounds = [(lo[k], hi[k]) for k in idx]
 
-                def f_sub(v):
-                    trial = x.copy()
-                    trial[idx] = v
-                    n_eval[0] += 1
-                    return fitness(trial)
+                if analytic_ok and b < len(slots):
+                    target_feature, target_label, target_mf_index, _mf = slots[b]
 
-                res = minimize(f_sub, x[idx], method="L-BFGS-B", bounds=sub_bounds,
-                               options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
+                    def f_sub_grad(v, idx=idx, target_feature=target_feature,
+                                    target_label=target_label, target_mf_index=target_mf_index):
+                        trial = x.copy()
+                        trial[idx] = v
+                        n_eval[0] += 1
+                        candidate = apply_gaussian_params(model, trial)
+                        total_f, total_g, n_ok = 0.0, np.zeros(2), 0
+                        for X_tr, y_tr, fa_tr, X_val, y_val_true, fa_val in prepared:
+                            try:
+                                f_i, g_i = _fold_mse_and_grad(
+                                    fa_tr, y_tr, fa_val, y_val_true, candidate, top_n_todo,
+                                    order, l2_reg, basis, cross_pairs,
+                                    target_feature, target_label, target_mf_index,
+                                )
+                            except Exception:
+                                return 1e6, np.zeros(2)
+                            total_f += f_i
+                            total_g += g_i
+                            n_ok += 1
+                        return total_f / max(n_ok, 1), total_g / max(n_ok, 1)
+
+                    res = minimize(f_sub_grad, x[idx], method="L-BFGS-B", jac=True, bounds=sub_bounds,
+                                   options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
+                else:
+                    def f_sub(v, idx=idx):
+                        trial = x.copy()
+                        trial[idx] = v
+                        n_eval[0] += 1
+                        return fitness(trial)
+
+                    res = minimize(f_sub, x[idx], method="L-BFGS-B", bounds=sub_bounds,
+                                   options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
                 if res.fun < cur - 1e-12:
                     x[idx] = np.clip(res.x, lo[idx], hi[idx])
                     cur = float(res.fun)
@@ -682,16 +866,173 @@ def refine_antecedents_optimizers(
 # model does not improve validation loss.
 
 
-def _classifier_proba(X: pd.DataFrame, model: GaussianMixtureModel):
+def _normalize_proba(fs: np.ndarray, n_labels: int) -> np.ndarray:
+    """Row-normalise firing strengths, with zero-firing rows falling back to
+    uniform -- the same rule as ``MixtureOfGaussiansFuzzyClassifier.predict_proba``.
+
+    Written as a masked ``divide`` rather than boolean fancy-indexing
+    (``proba[nz] = fs[nz] / row[nz]``), which materialised three whole-array
+    temporaries and made two index passes. Identical arithmetic, and it profiled
+    at a third of the wide refinement's total runtime before the change.
+    """
+    row = fs.sum(axis=1, keepdims=True)
+    proba = np.full_like(fs, 1.0 / max(n_labels, 1))
+    np.divide(fs, row, out=proba, where=row > 0)
+    return proba
+
+
+def _cross_entropy_from_strengths(fs: np.ndarray, y_idx: np.ndarray, n_labels: int) -> float:
+    """``_cross_entropy(_normalize_proba(fs, n_labels), y_idx)`` without the matrix.
+
+    The cross-entropy only ever reads one probability per row -- the true
+    class's -- so normalising all ``n * L`` of them to throw away all but ``n`` is
+    wasted work in a function called thousands of times per refinement. Each
+    step is the same floating-point operation on the same operands as the two-call
+    form, so the value is bit-identical.
+
+    For the refinement hot loop use :class:`_CrossEntropy` instead, which hoists
+    the row-index gather and the scratch buffers out of the call.
+    """
+    return _CrossEntropy(y_idx, n_labels, fs.shape)(fs)
+
+
+# Per-solver option spelling and gradient support for the two-parameter
+# sub-problem. All of these honour box bounds; COBYLA and trust-constr are left
+# out because the first needs constraints rather than bounds and the second's
+# setup cost dwarfs a 2-D problem.
+_SUB_SOLVERS: dict[str, dict[str, typing.Any]] = {
+    # `maxfun` and `maxiter` mean different things to different solvers, and a
+    # gradient-free method silently ignores `jac`, so the differences are spelled
+    # out here rather than guessed at the call site.
+    "L-BFGS-B":    {"budget": ("maxfun", "maxiter"), "jac": True},
+    "SLSQP":       {"budget": ("maxiter",),          "jac": True},
+    "TNC":         {"budget": ("maxfun",),           "jac": True},
+    "Powell":      {"budget": ("maxfev",),           "jac": False},
+    "Nelder-Mead": {"budget": ("maxfev",),           "jac": False},
+}
+
+
+def _sub_solve(method: str, fun, x0, bounds, budget: int, jac: bool):
+    """Run one bounded sub-problem with `method`, spelling its options correctly."""
+    try:
+        spec = _SUB_SOLVERS[method]
+    except KeyError:
+        raise ValueError(
+            f"sub_method={method!r} not in {sorted(_SUB_SOLVERS)}"
+        ) from None
+    options = {name: budget for name in spec["budget"]}
+    with warnings.catch_warnings():
+        # SLSQP steps outside the box before projecting back, and SciPy warns
+        # once per occurrence -- about seven times per fit, hundreds per
+        # cross-validation. It is noise, not a defect: SciPy clips, the objective
+        # is defined outside the box anyway (sigma is floored independently), and
+        # the accepted point is clipped again by the caller. Silencing it is a
+        # precondition for making SLSQP a default.
+        warnings.filterwarnings(
+            "ignore", message="Values in x were outside bounds",
+            category=RuntimeWarning,
+        )
+        return minimize(fun, x0, method=method, bounds=bounds,
+                        jac=jac and spec["jac"], options=options)
+
+
+#: Families whose classifier objective is differentiable everywhere, so a
+#: closed-form gradient is the *actual* derivative rather than a subgradient.
+#: Only `probability` qualifies among the pairs the kernel has partials for:
+#: min/max is piecewise smooth, with a kink wherever the arg-min or arg-max
+#: switches. This distinction is not academic -- measured, the analytic gradient
+#: is accuracy-neutral under probability (+0.0012 +/- 0.0026) and an accuracy
+#: lottery under min/max (mean -0.0091, worst -0.0967).
+_SMOOTH_FAMILIES = frozenset({"probability"})
+
+
+def _smooth_objective(norms: NormPair) -> bool:
+    """Whether `norms` makes the objective differentiable everywhere."""
+    return (norms.t_norm in _SMOOTH_FAMILIES
+            and norms.t_conorm in _SMOOTH_FAMILIES)
+
+
+class _CrossEntropy:
+    """``_cross_entropy_from_strengths`` with its per-call setup hoisted out.
+
+    Profiling the wide refinement after the incremental-fold work put this
+    function at roughly *twice* the cost of the forward pass it consumes, which
+    was not where the time was supposed to be. Almost none of it was arithmetic:
+    every call rebuilt ``np.arange(n)`` for the fancy index, allocated a fresh
+    probability buffer, and did a two-array gather. The labels and the shape are
+    fixed for a whole refinement, so all of that hoists into the constructor and
+    the flat gather becomes a single take.
+
+    Bit-identical to the function form -- the same operations on the same
+    operands, only allocated once.
+    """
+
+    def __init__(self, y_idx: np.ndarray, n_labels: int, shape: tuple[int, int]):
+        n, n_cols = shape
+        self.n_labels = n_labels
+        self.y_idx = np.asarray(y_idx)
+        self.uniform = 1.0 / max(n_labels, 1)
+        # Flat indices of the true-class entry of each row, so the per-call
+        # gather is one `take` on a ravelled view instead of a two-array
+        # fancy-index plus a fresh `arange`.
+        self.flat_idx = np.arange(n, dtype=np.intp) * n_cols + np.asarray(y_idx, dtype=np.intp)
+        self._p = np.empty(n, dtype=float)
+        self._num = np.empty(n, dtype=float)
+
+    def __call__(self, fs: np.ndarray) -> float:
+        row = fs.sum(axis=1)
+        np.take(fs.reshape(-1), self.flat_idx, out=self._num)
+        p = self._p
+        p.fill(self.uniform)
+        np.divide(self._num, row, out=p, where=row > 0)
+        np.clip(p, 1e-12, 1.0, out=p)
+        np.log(p, out=p)
+        return float(-np.mean(p))
+
+    def with_column_grad(self, fs: np.ndarray, col: int, d_col) -> tuple[float, np.ndarray]:
+        """Cross-entropy, and its derivative w.r.t. parameters that move only
+        column `col` of `fs`.
+
+        With ``p_i = fs[i, y_i] / S_i`` and only column ``c`` depending on the
+        parameter,
+
+            d(-log p_i)/dtheta = -( [y_i == c] / fs[i, c] - 1 / S_i ) * dfs[i, c]/dtheta
+
+        -- the first term appears only for rows whose true class *is* the moved
+        column, the second for every row, through the normaliser. Rows that are
+        clipped, or whose strengths are all zero (uniform fallback), contribute
+        nothing and are masked out.
+
+        `d_col` is a sequence of ``(n,)`` derivative arrays; one output per entry.
+        """
+        row = fs.sum(axis=1)
+        np.take(fs.reshape(-1), self.flat_idx, out=self._num)
+        p = self._p
+        p.fill(self.uniform)
+        np.divide(self._num, row, out=p, where=row > 0)
+        np.clip(p, 1e-12, 1.0, out=p)
+
+        fs_c = fs[:, col]
+        live = (row > 0) & (p > 1e-12) & (fs_c > 0)
+        coef = np.zeros(len(row))
+        np.divide(-1.0, row, out=coef, where=live)
+        target = live & (self.y_idx == col)
+        coef[target] += 1.0 / fs_c[target]
+
+        n = len(row)
+        grads = np.array([-float(np.dot(coef, d)) / n for d in d_col])
+
+        np.log(p, out=p)
+        return float(-np.mean(p)), grads
+
+
+def _classifier_proba(X: pd.DataFrame, model: GaussianMixtureModel,
+                      norms: NormPair | None = None):
     """Row-normalised firing strengths -> class probabilities, plus the label
     order. Mirrors ``MixtureOfGaussiansFuzzyClassifier.predict_proba`` (zero-firing
     rows fall back to uniform) so the fitness matches the deployed forward pass."""
-    fs, labels = tsk_firing_strengths(X, model)
-    row = fs.sum(axis=1, keepdims=True)
-    proba = np.full_like(fs, 1.0 / max(len(labels), 1))
-    nz = row.flatten() > 0
-    proba[nz] = fs[nz] / row[nz]
-    return proba, labels
+    fs, labels = tsk_firing_strengths(X, model, norms=norms)
+    return _normalize_proba(fs, len(labels)), labels
 
 
 def _cross_entropy(proba: np.ndarray, y_idx: np.ndarray) -> float:
@@ -700,7 +1041,8 @@ def _cross_entropy(proba: np.ndarray, y_idx: np.ndarray) -> float:
     return float(-np.mean(np.log(p)))
 
 
-def _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi):
+def _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi,
+                             norms: NormPair | None = None):
     """Ridge-regularised training cross-entropy for a candidate antecedent vector.
 
     ``fitness(vec) = CE(train) + l2_shrink * mean(((vec - x0) / width) ** 2)``.
@@ -709,6 +1051,10 @@ def _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi):
     dimensionless) is the real overfitting control: it keeps the tuned antecedents
     close to the data-driven heuristic unless the classification loss strongly
     favours moving them.
+
+    `norms` must be the pair the *deployed* model will use. Refining against a
+    different pair optimises a model nobody runs: the firing strengths, and
+    therefore the cross-entropy surface, are a function of the operators.
     """
     labels = list(next(iter(model.feature_models.values())).ordered_keys)
     label_to_col = {lab: i for i, lab in enumerate(labels)}
@@ -717,11 +1063,34 @@ def _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi):
     y_idx_tr = y_idx_tr[valid_tr]
     X_tr = X_tr.iloc[np.where(valid_tr)[0]] if not valid_tr.all() else X_tr
     width = np.where((hi - lo) > 0, hi - lo, 1.0)
+    n_labels = len(labels)
+    norms = norms if norms is not None else resolve_norm_pair()
+
+    # Compile the model once, if its shape allows (all-Gaussian, every feature
+    # carrying every label). A candidate evaluation is then an in-place write of
+    # 2*n_MF floats instead of a full reconstruction of the immutable model tree,
+    # and the feature columns are extracted once instead of per call. Profiled at
+    # baseline, those two costs were ~17% and ~5% of a refinement respectively.
+    # The kernel is bit-exact against `tsk_firing_strengths`, so this changes the
+    # cost of the search and not its trajectory.
+    compiled = None
+    try:
+        compiled = compile_model(model, list(X_tr.columns))
+    except NotCompilable:
+        pass
+
+    if compiled is not None:
+        feature_matrix = compiled.feature_matrix(
+            {name: X_tr[name].to_numpy() for name in compiled.feature_names}
+        )
+        return _CompiledClassifierObjective(
+            compiled, feature_matrix, norms, y_idx_tr, n_labels, l2_shrink, x0, width
+        )
 
     def fitness(vec: np.ndarray) -> float:
         candidate = apply_gaussian_params(model, vec)
         try:
-            proba, cand_labels = _classifier_proba(X_tr, candidate)
+            proba, cand_labels = _classifier_proba(X_tr, candidate, norms)
         except Exception:
             return 1e6
         # cand_labels order matches `labels` (same model structure), so columns align.
@@ -732,15 +1101,146 @@ def _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi):
     return fitness
 
 
-def _classifier_accuracy(X, y, model) -> float:
-    proba, labels = _classifier_proba(X, model)
+class _CompiledClassifierObjective:
+    """The ridge-shrunk cross-entropy objective over a compiled model.
+
+    Callable like the plain closure it replaces, so every existing caller is
+    unaffected. What it adds is :meth:`slot_fitness`: block coordinate descent
+    knows it is moving one membership function's ``(mu, sigma)``, and that lets
+    the evaluation reuse :class:`~tribblefis.kernel.IncrementalFIS`'s cached
+    per-cell folds instead of recomputing the forward pass. Same number, ~15x
+    less arithmetic on a wide model.
+    """
+
+    def __init__(self, compiled, feature_matrix, norms, y_idx, n_labels,
+                 l2_shrink, x0, width):
+        self.compiled = compiled
+        self.feature_matrix = feature_matrix
+        self.norms = norms
+        self.y_idx = y_idx
+        self.n_labels = n_labels
+        self.l2_shrink = l2_shrink
+        self.x0 = x0
+        self.width = width
+        self._incremental: IncrementalFIS | None = None
+        self._ce = _CrossEntropy(y_idx, n_labels, (len(y_idx), n_labels))
+
+    def _reg(self, vec: np.ndarray) -> float:
+        if not self.l2_shrink:
+            return 0.0
+        return self.l2_shrink * float(np.mean(((vec - self.x0) / self.width) ** 2))
+
+    def _loss(self, fs: np.ndarray, vec: np.ndarray) -> float:
+        return self._ce(fs) + self._reg(vec)
+
+    def __call__(self, vec: np.ndarray) -> float:
+        try:
+            self.compiled.set_params(vec)
+            fs = kernel_firing_strengths(self.compiled, self.feature_matrix, self.norms)
+        except Exception:
+            return 1e6
+        # A full evaluation moved parameters behind the incremental cache's back,
+        # so the cache is stale until it is rebuilt.
+        if self._incremental is not None:
+            self._incremental.refresh()
+        return self._loss(fs, vec)
+
+    def _reg_grad(self, vec: np.ndarray, indices) -> np.ndarray:
+        """d(reg)/d(vec[indices]) for ``reg = l2 * mean(((vec - x0)/width)**2)``."""
+        if not self.l2_shrink:
+            return np.zeros(len(indices))
+        scale = 2.0 * self.l2_shrink / vec.size
+        idx = np.asarray(indices)
+        return scale * (vec[idx] - self.x0[idx]) / self.width[idx] ** 2
+
+    def supports_gradient(self) -> bool:
+        inc = self._ensure_incremental()
+        return inc.supports_gradient()
+
+    def _ensure_incremental(self) -> IncrementalFIS:
+        if self._incremental is None:
+            self._incremental = IncrementalFIS(
+                self.compiled, self.feature_matrix, self.norms
+            )
+        return self._incremental
+
+    def slot_fitness_with_grad(self, slot: int, template: np.ndarray):
+        """Like :meth:`slot_fitness`, but the objective also returns its gradient.
+
+        L-BFGS-B otherwise finite-differences a two-parameter block, which costs
+        two extra whole evaluations per gradient -- two thirds of all evaluations
+        in a refinement. Here the derivative rides along inside the same fold
+        that computes the value.
+
+        Under ``min/max`` this is a subgradient and the search therefore takes a
+        *different* path than the finite-difference version; it is not a
+        bit-exact substitution, and measurably it is not reliably a better one.
+        See ``analytic_gradient`` in :func:`refine_classifier_antecedents` and
+        ``docs/analytic-gradient-evaluation.md``.
+        """
+        inc = self._ensure_incremental()
+        vec = template.copy()
+        i_mu, i_sigma = 2 * slot, 2 * slot + 1
+        col = inc.target_label_index(slot)
+
+        reg_grad = self._reg_grad
+
+        def f_sub(v):
+            vec[i_mu] = v[0]
+            vec[i_sigma] = v[1]
+            try:
+                fs, d_mu, d_sigma = inc.evaluate_slot_with_grad(
+                    slot, float(v[0]), float(v[1])
+                )
+            except Exception:
+                return 1e6, np.zeros(2)
+            ce, grad = self._ce.with_column_grad(fs, col, (d_mu, d_sigma))
+            return ce + self._reg(vec), grad + reg_grad(vec, (i_mu, i_sigma))
+
+        def commit(v) -> None:
+            inc.evaluate_slot(slot, float(v[0]), float(v[1]))
+            inc.commit()
+
+        return f_sub, commit
+
+    def slot_fitness(self, slot: int, template: np.ndarray):
+        """A two-argument objective for membership `slot`'s ``(mu, sigma)``.
+
+        `template` is the current full parameter vector; only the shrinkage term
+        needs it, and only the two entries this slot owns ever differ from it.
+        Returns ``(f_sub, commit)``: call ``commit(v)`` to fold an accepted
+        ``v`` into the cache. Nothing is mutated until then, so an L-BFGS-B
+        sub-problem that ends up rejecting every trial leaves no trace.
+        """
+        inc = self._ensure_incremental()
+        vec = template.copy()
+        i_mu, i_sigma = 2 * slot, 2 * slot + 1
+
+        def f_sub(v) -> float:
+            vec[i_mu] = v[0]
+            vec[i_sigma] = v[1]
+            try:
+                fs = inc.evaluate_slot(slot, float(v[0]), float(v[1]))
+            except Exception:
+                return 1e6
+            return self._loss(fs, vec)
+
+        def commit(v) -> None:
+            inc.evaluate_slot(slot, float(v[0]), float(v[1]))
+            inc.commit()
+
+        return f_sub, commit
+
+
+def _classifier_accuracy(X, y, model, norms: NormPair | None = None) -> float:
+    proba, labels = _classifier_proba(X, model, norms)
     pred = np.array([labels[i] for i in np.argmax(proba, axis=1)], dtype=object)
     return float(np.mean(pred == np.asarray(y, dtype=object)))
 
 
-def _classifier_val_ce(X, y, model) -> float:
+def _classifier_val_ce(X, y, model, norms: NormPair | None = None) -> float:
     """Held-out cross-entropy, mapping each true label to its firing-strength column."""
-    proba, labels = _classifier_proba(X, model)
+    proba, labels = _classifier_proba(X, model, norms)
     col = {lab: i for i, lab in enumerate(labels)}
     y_idx = np.array([col.get(v, 0) for v in np.asarray(y, dtype=object)])
     return _cross_entropy(proba, y_idx)
@@ -756,6 +1256,10 @@ def refine_classifier_antecedents(
     val_fraction: float = 0.25,
     n_sweeps: int = 3,
     block: int = 2,
+    norms: NormPair | None = None,
+    incremental: bool = True,
+    analytic_gradient: bool | None = None,
+    sub_method: str = "SLSQP",
     sub_maxfun: int = 25,
     population_size: int = 40,
     num_generations: int = 20,
@@ -775,8 +1279,38 @@ def refine_classifier_antecedents(
     cross-entropy and the result is accepted only if it does not worsen a held-out
     validation split's accuracy *and* cross-entropy (otherwise the heuristic model
     is returned unchanged). Returns ``(refined_model, info)``.
+
+    ``norms`` selects the (t-norm, t-conorm) pair the objective is evaluated
+    under, and must match what the deployed model uses -- the firing strengths,
+    and so the entire loss surface, depend on it. Callers that hold an operator
+    choice (``MixtureOfGaussiansFuzzyClassifier.norm_conorm``) must pass it; the
+    default reproduces the library-wide default pair.
+
+    ``incremental=False`` turns off the cached per-cell evaluation that
+    ``block=2`` coordinate descent otherwise uses (see
+    :class:`~tribblefis.kernel.IncrementalFIS`). The two produce bit-identical
+    results and the cache is several times faster on a wide model, so this exists
+    to A/B that claim, not because either answer is preferable.
+
+    ``analytic_gradient`` hands the solver a closed-form gradient instead of
+    letting it finite-difference each two-parameter block, removing two thirds of
+    the evaluations. The default, ``None``, enables it exactly when the operator
+    pair makes the objective differentiable everywhere -- which is what the
+    default ``probability`` family does. Under a piecewise-smooth pair such as
+    ``min/max`` the closed form is only a *subgradient*, and measured it turns
+    the search into an accuracy lottery (mean -0.0091, worst -0.0967), so ``None``
+    leaves it off there. ``True``/``False`` override the rule. See
+    ``docs/analytic-gradient-evaluation.md``.
+
+    ``sub_method`` selects the solver for each block. Measured under the default
+    family: SLSQP 1.14x over L-BFGS-B at equal accuracy, and 1.95x with the
+    gradient; Powell is slightly more accurate but 1.5x slower; TNC is 3x slower.
     """
     y_arr = np.asarray(y_train)
+    # The operators the deployed model will use. Refining against a different
+    # pair optimises a model nobody runs, because the firing strengths -- and so
+    # the whole loss surface -- are a function of them.
+    resolved_norms = norms if norms is not None else resolve_norm_pair()
     bounds = build_param_bounds(model, X_train, sigma_min_frac, sigma_max_frac)
     if not bounds:                          # no Gaussian memberships -> nothing to do
         return model, {"refined": False, "reason": "no_gaussian_memberships"}
@@ -796,9 +1330,10 @@ def refine_classifier_antecedents(
     X_tr, y_tr = X_train.iloc[tr_idx], y_arr[tr_idx]
     X_val, y_val = X_train.iloc[val_idx], y_arr[val_idx]
 
-    fitness = _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi)
+    fitness = _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi,
+                                       resolved_norms)
     init_fit = fitness(x0)
-    init_val_acc = _classifier_accuracy(X_val, y_val, model)
+    init_val_acc = _classifier_accuracy(X_val, y_val, model, resolved_norms)
 
     if verbose:
         print(f"\nClassifier antecedent refinement ({method}): {len(bounds)} params, "
@@ -811,6 +1346,25 @@ def refine_classifier_antecedents(
         n_eval = 1
         n_params = len(bounds)
         n_blocks = (n_params + block - 1) // block
+        # A block of 2 starting on an even index *is* one membership function's
+        # (mu, sigma), which is the case the incremental evaluator handles. Any
+        # other blocking (block=1, block=4, a ragged tail) falls back to the full
+        # objective, which is the same function evaluated the slow way.
+        use_incremental = (
+            incremental
+            and block == 2
+            and n_params % 2 == 0
+            and isinstance(fitness, _CompiledClassifierObjective)
+        )
+        want_grad = (
+            _smooth_objective(resolved_norms)
+            if analytic_gradient is None else analytic_gradient
+        )
+        use_analytic_grad = (
+            use_incremental and want_grad
+            and _SUB_SOLVERS.get(sub_method, {}).get("jac", False)
+            and fitness.supports_gradient()
+        )
         with _single_threaded():
             for sweep in range(n_sweeps):
                 prev = cur
@@ -818,18 +1372,37 @@ def refine_classifier_antecedents(
                     bidx = np.arange(b * block, min((b + 1) * block, n_params))
                     sub_bounds = [(lo[k], hi[k]) for k in bidx]
 
-                    def f_sub(v):
-                        nonlocal n_eval
-                        trial = x.copy()
-                        trial[bidx] = v
-                        n_eval += 1
-                        return fitness(trial)
+                    commit = None
+                    jac = False
+                    if use_incremental:
+                        if use_analytic_grad:
+                            slot_f, commit = fitness.slot_fitness_with_grad(b, x)
+                            jac = True
+                        else:
+                            slot_f, commit = fitness.slot_fitness(b, x)
 
-                    res = minimize(f_sub, x[bidx], method="L-BFGS-B", bounds=sub_bounds,
-                                   options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
+                        def f_sub(v, _slot_f=slot_f):
+                            nonlocal n_eval
+                            n_eval += 1
+                            return _slot_f(v)
+                    else:
+                        def f_sub(v):
+                            nonlocal n_eval
+                            trial = x.copy()
+                            trial[bidx] = v
+                            n_eval += 1
+                            return fitness(trial)
+
+                    res = _sub_solve(sub_method, f_sub, x[bidx], sub_bounds,
+                                     sub_maxfun, jac)
                     if res.fun < cur - 1e-12:
                         x[bidx] = np.clip(res.x, lo[bidx], hi[bidx])
                         cur = float(res.fun)
+                        if commit is not None:
+                            # Fold the accepted move into the cache so the next
+                            # block starts from it. Rejected blocks never touch
+                            # the cache, so they need no undo.
+                            commit(x[bidx])
                 if verbose:
                     print(f"  sweep {sweep + 1}/{n_sweeps}: train obj={cur:.5f} (evals={n_eval})")
                 if prev - cur < 1e-6:
@@ -848,9 +1421,9 @@ def refine_classifier_antecedents(
     refined = apply_gaussian_params(model, best_x)
 
     # Accept only on a genuine held-out improvement (accuracy first, CE tiebreak).
-    val_acc = _classifier_accuracy(X_val, y_val, refined)
-    val_ce = _classifier_val_ce(X_val, y_val, refined)
-    init_val_ce = _classifier_val_ce(X_val, y_val, model)
+    val_acc = _classifier_accuracy(X_val, y_val, refined, resolved_norms)
+    val_ce = _classifier_val_ce(X_val, y_val, refined, resolved_norms)
+    init_val_ce = _classifier_val_ce(X_val, y_val, model, resolved_norms)
     accept = (val_acc > init_val_acc) or (val_acc == init_val_acc and val_ce < init_val_ce)
     out_model = refined if accept else model
     if verbose:

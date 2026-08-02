@@ -3,6 +3,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.utils.validation import check_X_y, check_is_fitted
 
+from .gauss_data import DefaultNormCornorm, NormPair, resolve_norm_pair
 from .gauss_math import (
     calculate_gaussian_correlation,
     take_top_features,
@@ -32,7 +33,12 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         tsk_order="1st",
         optimize_coefficients=True,
         consequent_basis="raw",
-        l2_reg=0.0,
+        l2_reg=1e-6,
+        pin_extremes=True,
+        norm_conorm=DefaultNormCornorm,
+        t_norm=None,
+        t_conorm=None,
+        allow_mixed_norms=False,
         random_state=42,
     ):
         """
@@ -41,7 +47,9 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         Args:
             top_n: Number of top features to select based on differentiation score.
                    If > 0, top_p is ignored.
-            top_p: Percentage of cumulative differentiation score to cover.
+            top_p: Per-feature score threshold, not cumulative coverage: a feature
+                   is kept when its own normalized differentiation score is
+                   >= (1 - top_p). Ignored if top_n > 0.
             n_gaussians: Number of Gaussians per feature per label (0 for automatic).
             log_transform: Whether to automatically apply log-transformation to features.
             n_output_buckets: Number of output buckets for partitioning y during training.
@@ -55,6 +63,18 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
                 higher orders.
             l2_reg: Ridge penalty on the correction coefficients (constants are not
                 penalized). 0 disables regularization.
+            pin_extremes: If True (default), the first and last bucket means are pinned
+                to the observed min and max of the target, ensuring the model's output
+                range exactly matches the training range.
+            norm_conorm: Fuzzy operator family used to combine memberships -- the
+                t-norm for the rule AND and its De Morgan dual conorm for the
+                per-feature OR. Previously the regressor had no way to express
+                this and was fixed at the "min/max" default.
+            t_norm, t_conorm: Advanced. Override one half of the pair. Leaving both
+                None takes both operators from `norm_conorm`, which keeps the pair
+                De Morgan-consistent.
+            allow_mixed_norms: Advanced. Required to opt in to a t-norm and t-conorm
+                from different families, which are not De Morgan duals.
             random_state: Seed for reproducibility.
         """
         self.is_fitted_ = False
@@ -77,7 +97,23 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         self.optimize_coefficients = optimize_coefficients
         self.consequent_basis = consequent_basis
         self.l2_reg = l2_reg
+        self.pin_extremes = pin_extremes
+        self.norm_conorm = norm_conorm
+        self.t_norm = t_norm
+        self.t_conorm = t_conorm
+        self.allow_mixed_norms = allow_mixed_norms
         self.random_state = random_state
+
+    def _norms(self) -> NormPair:
+        """Resolved (t-norm, t-conorm) for this estimator.
+
+        Derived on demand rather than cached in __init__: sklearn requires that
+        __init__ only assign its arguments unmodified, so that get_params /
+        set_params round-trips and clone() reproduces the estimator exactly.
+        """
+        return resolve_norm_pair(
+            self.norm_conorm, self.t_norm, self.t_conorm, self.allow_mixed_norms
+        )
 
     def _apply_log_transform(self, X):
         """Check if features need log-transformation and apply it."""
@@ -150,6 +186,8 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
             self.y_bucket_mean_, y_partitioned,
             n_output_buckets=self.n_output_buckets,
             order=self.tsk_order, l2_reg=self.l2_reg, basis=self.consequent_basis,
+            pin_extremes=self.pin_extremes,
+            norms=self._norms(),
             verbose=False,
         )
 
@@ -181,6 +219,7 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
             X_df, self.model_, self.top_features_,
             self.y_bucket_mean_, self.corr_terms_,
             order=self.tsk_order, basis=self.consequent_basis,
+            norms=self._norms(),
         )
 
 

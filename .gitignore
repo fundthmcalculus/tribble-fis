@@ -11,9 +11,20 @@
 /gaussian_mixture/Concrete_Data.csv
 /double_pendulum_with_training.gif
 /double_pendulum_comparison.gif
+
+# Fuzzy language model experiment outputs
 /flm/exp_b/cache
 /flm/exp_b/results_*.json
-__pycache__/
-*.pyc
-
 /flm/**/__pycache__
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+.venv/
+build/
+
+# Outputs of `python setup_cython.py build_ext --inplace`. The .pyx is the
+# source; the generated C and the compiled extension are per-platform artifacts.
+/src/tribblefis/_fis_kernel.c
+*.so
+*.pyd

@@ -46,6 +46,7 @@ from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
 from tribblefis.regression import partition_output
 
 from .builder import build_tree
+from .firing import DEFAULT_T_NORM
 from .plan import VariablePlan
 
 _EPS = 1e-12
@@ -94,7 +95,16 @@ class _AlignedClassifier:
 # --------------------------------------------------------------------------
 def compute_responsibilities(root, X_df: pd.DataFrame, n_leaves: int) -> np.ndarray:
     """(n_samples, n_leaves) leaf responsibilities = product of partition-of-unity
-    gate weights along each root->leaf path. Rows sum to 1."""
+    gate weights along each root->leaf path. Rows sum to 1.
+
+    The product here is deliberate and is NOT a configurable t-norm. Each node
+    normalises its gates to sum to 1, and a product of such factors along a path
+    keeps the leaf responsibilities summing to 1 -- that partition of unity is
+    precisely what makes this a mixture of experts rather than an arbitrary
+    weighting. min, Lukasiewicz or Hamacher would each break the normalisation
+    and the leaves would stop being mixture weights. So unlike the fuzzy tree,
+    the HME gate is not a sweepable axis; it is fixed by the model's semantics.
+    """
     n = len(X_df)
     R = np.zeros((n, n_leaves), dtype=float)
 
@@ -208,7 +218,6 @@ class _BaseHierarchicalExperts(BaseEstimator):
             y_value,
             y_bucket,
             plan,
-            t_norm_name="probability",
             min_soft_count=self.min_soft_count,
             min_gain=self.min_gain,
             max_leaves=self.max_leaves,

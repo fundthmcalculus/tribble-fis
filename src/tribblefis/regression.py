@@ -6,10 +6,10 @@ import pandas as pd
 from itertools import combinations
 from matplotlib import pyplot as plt
 from numpy import ndarray
-from numpy.linalg import LinAlgError
 from scipy.optimize import minimize
 
 from tribblefis.gauss_data import GaussianMixtureModel
+from tribblefis.gauss_data import NormPair
 from tribblefis.gauss_math import tsk_firing_strengths
 
 
@@ -223,7 +223,8 @@ def optimize_tsk_coefficients(
     n_output_buckets: int,
     initial_corr_terms: ndarray | None = None,
     order: typing.Literal["0th", "1st", "2nd", "3rd", "full-2nd"] = "2nd",
-    l2_reg: float = 0.0,
+    norms: NormPair | None = None,
+    l2_reg: float = 1e-6,
 ) -> tuple[typing.Any, typing.Any]:
     """
     Optimize TSK coefficients for different polynomial orders.
@@ -246,7 +247,9 @@ def optimize_tsk_coefficients(
     print("=" * 80)
 
     # Compute training firing strengths
-    firing_strengths_train, labels_train = tsk_firing_strengths(X_train[top_n_todo], gaussian_memberships)
+    firing_strengths_train, labels_train = tsk_firing_strengths(
+        X_train[top_n_todo], gaussian_memberships, norms=norms
+    )
     # Create mask for rows where sum > 1e-6
     row_sums = firing_strengths_train.sum(axis=1)
     valid_rows = row_sums > 1e-6
@@ -466,10 +469,13 @@ def solve_tsk_consequents(
     y_train: pd.DataFrame,
     n_output_buckets: int,
     order: typing.Literal["0th", "1st", "2nd", "3rd", "full-2nd"] = "2nd",
-    l2_reg: float = 0.0,
+    l2_reg: float = 1e-6,
     basis: str = "raw",
     cross_pairs: list[tuple[int, int]] | None = None,
+    pin_extremes: bool = True,
+    norms: NormPair | None = None,
     verbose: bool = True,
+    feature_arrays: dict[str, np.ndarray] | None = None,
 ) -> tuple[ndarray, ndarray]:
     """Solve for the globally optimal TSK consequent coefficients in closed form.
 
@@ -481,17 +487,44 @@ def solve_tsk_consequents(
     the intercept/bucket-mean columns) yields the exact minimizer of the
     firing-weighted MSE + ridge penalty -- no iterative optimizer needed.
 
+    ``pin_extremes`` holds the first and last rules' bucket means fixed at the
+    values supplied in ``y_bucket_mean`` -- normally the observed min and max set
+    by :func:`partition_output` -- instead of letting the solve re-derive them.
+    Without it those pinned values are silently discarded, since this function
+    returns its own ``y_bucket_mean_opt`` and the prediction path uses that; the
+    model is then free to shrink its output range inward and can no longer reach
+    the extremes of the target. The constraint is applied exactly, not as a
+    penalty: the pinned columns are moved to the right-hand side and the
+    remaining coefficients are solved against the residual, so the result is the
+    exact minimizer subject to the constraint.
+
+    The pin is skipped where it cannot be stated well-posedly: fewer than two
+    rules (the two extremes are then the same coefficient), or a
+    ``y_bucket_mean`` too short to index by rule, both of which fall back to the
+    unconstrained solve. A non-finite value at one extreme skips only that end;
+    the other stays pinned.
+
+    ``feature_arrays``: optional pre-extracted ``{feature_name: ndarray}``
+    mapping (see `tsk_firing_strengths`), also reused here to build `X_rule`
+    without a pandas round-trip. `None` reproduces the previous behavior exactly.
+
     Returns (corr_terms_opt, y_bucket_mean_opt), matching
     `optimize_tsk_coefficients`.
     """
     if verbose:
         print(f"\nSolving {order} consequents in closed form (basis={basis}, l2={l2_reg:g})...")
 
-    firing_strengths_train, labels_train = tsk_firing_strengths(X_train[top_n_todo], gaussian_memberships)
+    firing_strengths_train, labels_train = tsk_firing_strengths(
+        X_train[top_n_todo], gaussian_memberships, norms=norms, feature_arrays=feature_arrays
+    )
     norm_fs = _normalize_firing_strengths(firing_strengths_train)
     n_rules = norm_fs.shape[1]
 
-    X_rule = X_train[top_n_todo].to_numpy()
+    if feature_arrays is not None:
+        X_rule = np.column_stack([feature_arrays[c] for c in top_n_todo]) if top_n_todo \
+            else np.empty((len(X_train), 0))
+    else:
+        X_rule = X_train[top_n_todo].to_numpy()
     feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs)
     n_terms = feats.shape[1]
     n_coeffs_per_rule = 1 + n_terms
@@ -508,22 +541,71 @@ def solve_tsk_consequents(
     # Ridge diagonal: never penalize the intercept (column 0 of each rule block).
     penalty = np.ones(n_rules * n_coeffs_per_rule)
     penalty[::n_coeffs_per_rule] = 0.0
-    gram = design.T @ design + l2_reg * np.diag(penalty)
-    rhs = design.T @ y
 
-    # Regularized system is generally well-posed; fall back to lstsq if singular.
-    try:
-        beta = np.linalg.solve(gram, rhs)
-    except LinAlgError:
-        beta = np.linalg.lstsq(design, y, rcond=None)[0]
+    # Which columns, if any, are held fixed. Each rule block's column 0 IS that
+    # rule's bucket mean, so pinning is a linear equality constraint on those
+    # columns. Everything that could make the constraint ill-defined -- a single
+    # rule (where "first" and "last" are the same column), a short or non-finite
+    # y_bucket_mean -- drops out here, leaving the solve below to handle the
+    # empty case as the ordinary unconstrained problem.
+    pinned_cols: list[int] = []
+    pinned_vals: list[float] = []
+    if pin_extremes and n_rules >= 2 and y_bucket_mean is not None:
+        ybm = np.asarray(y_bucket_mean, dtype=float).ravel()
+        if ybm.size >= n_rules:
+            for rule_idx in (0, n_rules - 1):
+                value = float(ybm[rule_idx])
+                if np.isfinite(value):
+                    pinned_cols.append(rule_idx * n_coeffs_per_rule)
+                    pinned_vals.append(value)
+
+    if pinned_cols:
+        # Move the pinned columns' known contribution to the right-hand side and
+        # solve the reduced system for the rest. That is exact -- the result is
+        # the true minimizer subject to the constraint, not a penalty
+        # approximation -- and it needs no iteration.
+        pinned = np.asarray(pinned_cols, dtype=int)
+        values = np.asarray(pinned_vals, dtype=float)
+        free = np.setdiff1d(np.arange(design.shape[1]), pinned)
+        residual = y - design[:, pinned] @ values
+        design_free = design[:, free]
+
+        # Use lstsq on the augmented design (with ridge penalty as rows) for better
+        # conditioning. Near-singular designs return finite but huge coefficients
+        # when solved via normal equations; lstsq on the design matrix has condition
+        # number that is the square root of the Gram's and handles ill-conditioning
+        # gracefully by truncating small singular values instead of inverting them.
+        if l2_reg > 0:
+            # Augment the design with ridge penalty rows: sqrt(l2_reg) * sqrt(D)
+            sqrt_penalty = np.sqrt(l2_reg * penalty[free])
+            design_aug = np.vstack([design_free, np.diag(sqrt_penalty)])
+            residual_aug = np.hstack([residual, np.zeros_like(sqrt_penalty)])
+            beta_free = np.linalg.lstsq(design_aug, residual_aug, rcond=None)[0]
+        else:
+            beta_free = np.linalg.lstsq(design_free, residual, rcond=None)[0]
+
+        beta = np.zeros(design.shape[1])
+        beta[pinned] = values
+        beta[free] = beta_free
+    else:
+        # Use lstsq on the augmented design (with ridge penalty as rows) for better
+        # conditioning. See comment above about why this is necessary.
+        if l2_reg > 0:
+            sqrt_penalty = np.sqrt(l2_reg * penalty)
+            design_aug = np.vstack([design, np.diag(sqrt_penalty)])
+            y_aug = np.hstack([y, np.zeros_like(sqrt_penalty)])
+            beta = np.linalg.lstsq(design_aug, y_aug, rcond=None)[0]
+        else:
+            beta = np.linalg.lstsq(design, y, rcond=None)[0]
 
     coeffs = beta.reshape(n_rules, n_coeffs_per_rule)
     y_bucket_mean_opt = coeffs[:, 0].copy()
     corr_terms_opt = coeffs[:, 1:].copy() if n_terms > 0 else np.zeros((n_rules, 0))
 
     if verbose:
-        y_pred = design @ beta
-        print(f"  Training MSE: {_mse(y, y_pred):.4f}")
+        # beta carries the pinned entries, so this is the fitted prediction in
+        # both cases -- no need to reassemble it from the reduced solve.
+        print(f"  Training MSE: {_mse(y, design @ beta):.4f}")
     return corr_terms_opt, y_bucket_mean_opt
 
 
@@ -536,19 +618,31 @@ def predict_tsk(
     order: str = "2nd",
     basis: str = "raw",
     cross_pairs: list[tuple[int, int]] | None = None,
+    norms: NormPair | None = None,
+    feature_arrays: dict[str, np.ndarray] | None = None,
 ) -> ndarray:
     """Shared TSK prediction path used by the solver's callers and CV.
 
     Uses the same firing-strength normalization and feature basis as
     `solve_tsk_consequents`, so fit and predict cannot silently diverge.
+
+    ``feature_arrays``: optional pre-extracted ``{feature_name: ndarray}``
+    mapping (see `tsk_firing_strengths`); `None` reproduces the previous
+    behavior exactly.
     """
-    firing_strengths, labels = tsk_firing_strengths(X[top_n_todo], model)
+    firing_strengths, labels = tsk_firing_strengths(
+        X[top_n_todo], model, norms=norms, feature_arrays=feature_arrays
+    )
     norm_fs = _normalize_firing_strengths(firing_strengths)
 
     if order == "0th":
         return norm_fs @ np.asarray(y_bucket_mean)
 
-    X_rule = X[top_n_todo].to_numpy()
+    if feature_arrays is not None:
+        X_rule = np.column_stack([feature_arrays[c] for c in top_n_todo]) if top_n_todo \
+            else np.empty((len(X), 0))
+    else:
+        X_rule = X[top_n_todo].to_numpy()
     feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs)
     y_pred = np.zeros(len(X))
     for ij, rule_id in enumerate(labels):
@@ -612,6 +706,7 @@ def select_consequent_hyperparams(
     candidate_bases: typing.Sequence[str] = ("raw", "orthogonal"),
     candidate_l2: typing.Sequence[float] = (0.0, 1e-4, 1e-3, 1e-2, 1e-1),
     n_folds: int = 5,
+    pin_extremes: bool = True,
     random_state: int = 42,
 ) -> dict[str, typing.Any]:
     """Pick (order, basis, l2_reg) by k-fold cross-validated R² on X_train.
@@ -644,6 +739,7 @@ def select_consequent_hyperparams(
                     corr, means = solve_tsk_consequents(
                         X_tr, gaussian_memberships, top_n_todo, y_bucket_mean, y_tr,
                         n_output_buckets=n_output_buckets, order=order, l2_reg=l2, basis=basis,
+                        pin_extremes=pin_extremes,
                         verbose=False,
                     )
                     y_hat = predict_tsk(X_val, gaussian_memberships, top_n_todo, means, corr,

@@ -17,7 +17,7 @@ import unittest
 import time
 import numpy as np
 import pandas as pd
-from src.tribblefis.trapz_math import (
+from tribblefis.trapz_math import (
     trapz_pdf,
     TrapzMixtureModel,
     fit_trapezoids_em,
@@ -25,11 +25,11 @@ from src.tribblefis.trapz_math import (
     fit_trapezoids,
     create_trapz_membership_dict,
 )
-from src.tribblefis.trapz_math_fast import (
+from tribblefis.trapz_math_fast import (
     fit_trapezoids_fast,
     trapz_pdf_fast,
 )
-from src.tribblefis.gauss_data import TrapezoidMembership, GaussianMixtureModel
+from tribblefis.gauss_data import TrapezoidMembership, GaussianMixtureModel
 
 
 class TestTrapzPDF(unittest.TestCase):

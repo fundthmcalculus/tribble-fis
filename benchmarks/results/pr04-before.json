@@ -1,0 +1,36 @@
+{
+  "label": "before PR4 (at PR3 code)",
+  "environment": {
+    "python": "3.12.3",
+    "numpy": "2.4.6",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+    "git_rev": "b8e3052"
+  },
+  "results": [
+    {
+      "name": "refine-classifier-wide",
+      "description": "refine_classifier_antecedents(coordinate): 4000x20, 6 labels, 3 MF, 1 sweeps (720 free params)",
+      "tags": [
+        "train"
+      ],
+      "repeats": 2,
+      "min_s": 3.7010220999945886,
+      "median_s": 4.077963650001038,
+      "max_s": 4.454905200007488,
+      "checksum": 189.51832088571766
+    },
+    {
+      "name": "refine-classifier",
+      "description": "refine_classifier_antecedents(coordinate): 1000x8, 3 labels, 2 MF, 2 sweeps (96 free params)",
+      "tags": [
+        "train"
+      ],
+      "repeats": 3,
+      "min_s": 0.2471224000037182,
+      "median_s": 0.2657087999978103,
+      "max_s": 0.2765421999938553,
+      "checksum": 30.049766138317732
+    }
+  ]
+}

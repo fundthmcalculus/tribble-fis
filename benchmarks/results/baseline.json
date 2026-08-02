@@ -1,0 +1,84 @@
+{
+  "label": "baseline @ origin/main",
+  "environment": {
+    "python": "3.12.3",
+    "numpy": "2.4.6",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+    "git_rev": "b7d25c5"
+  },
+  "results": [
+    {
+      "name": "forward-small",
+      "description": "tsk_firing_strengths: 1000 samples x 8 features x 3 labels x 3 MF, min/max norms",
+      "tags": [
+        "forward"
+      ],
+      "repeats": 20,
+      "min_s": 0.0004724000027636066,
+      "median_s": 0.00048504999722354114,
+      "max_s": 0.0006359000108204782,
+      "checksum": 148.56504563887765
+    },
+    {
+      "name": "forward-wide",
+      "description": "tsk_firing_strengths: 2000 samples x 40 features x 6 labels x 4 MF, min/max norms",
+      "tags": [
+        "forward"
+      ],
+      "repeats": 10,
+      "min_s": 0.00990530000126455,
+      "median_s": 0.010497449999093078,
+      "max_s": 0.011772400001063943,
+      "checksum": 9.178950158443259
+    },
+    {
+      "name": "forward-large",
+      "description": "tsk_firing_strengths: 50000 samples x 20 features x 8 labels x 4 MF, min/max norms",
+      "tags": [
+        "forward"
+      ],
+      "repeats": 5,
+      "min_s": 0.16498180000053253,
+      "median_s": 0.17780520000087563,
+      "max_s": 0.19106070000270847,
+      "checksum": 2912.4509604453706
+    },
+    {
+      "name": "forward-prob",
+      "description": "tsk_firing_strengths: 20000 samples x 20 features x 8 labels x 4 MF, probability norms",
+      "tags": [
+        "forward"
+      ],
+      "repeats": 5,
+      "min_s": 0.07132439999259077,
+      "median_s": 0.07328309999138582,
+      "max_s": 0.07503909998922609,
+      "checksum": 23.828259355810527
+    },
+    {
+      "name": "predict-large",
+      "description": "MixtureOfGaussiansFuzzyClassifier.predict_proba: 50000 samples x 20 features x 8 labels x 3 MF",
+      "tags": [
+        "predict"
+      ],
+      "repeats": 5,
+      "min_s": 0.09990979998838156,
+      "median_s": 0.10114960001374129,
+      "max_s": 0.1040361000050325,
+      "checksum": 25000.125478105812
+    },
+    {
+      "name": "refine-classifier",
+      "description": "refine_classifier_antecedents(coordinate): 1000x8, 3 labels, 2 MF, 2 sweeps (96 free params)",
+      "tags": [
+        "train"
+      ],
+      "repeats": 3,
+      "min_s": 0.6250836999970488,
+      "median_s": 0.634396099994774,
+      "max_s": 0.8651245000073686,
+      "checksum": 30.049766138317732
+    }
+  ]
+}

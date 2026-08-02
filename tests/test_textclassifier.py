@@ -3,7 +3,10 @@ import sqlite3
 import sys
 import time
 
+import pytest
 import pandas as pd
+
+pytest.importorskip("sentence_transformers")
 from sentence_transformers import SentenceTransformer
 
 # Add the directory to sys.path to import gauss_math and gauss_data

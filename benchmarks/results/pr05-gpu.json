@@ -1,0 +1,174 @@
+{
+  "label": "PR5 GPU backend",
+  "environment": {
+    "python": "3.12.3",
+    "numpy": "2.4.6",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+    "git_rev": "582188c"
+  },
+  "results": [
+    {
+      "name": "forward-small",
+      "description": "tsk_firing_strengths: 1000 samples x 8 features x 3 labels x 3 MF, min/max norms",
+      "tags": [
+        "forward"
+      ],
+      "repeats": 300,
+      "min_s": 0.00011829999857582152,
+      "median_s": 0.00013064999075140804,
+      "max_s": 0.0004456000024219975,
+      "checksum": 148.56504563887765
+    },
+    {
+      "name": "forward-wide",
+      "description": "tsk_firing_strengths: 2000 samples x 40 features x 6 labels x 4 MF, min/max norms",
+      "tags": [
+        "forward"
+      ],
+      "repeats": 10,
+      "min_s": 0.001998400010052137,
+      "median_s": 0.002057400000921916,
+      "max_s": 0.003273900001659058,
+      "checksum": 9.178950158443259
+    },
+    {
+      "name": "forward-large",
+      "description": "tsk_firing_strengths: 50000 samples x 20 features x 8 labels x 4 MF, min/max norms",
+      "tags": [
+        "forward"
+      ],
+      "repeats": 5,
+      "min_s": 0.024846900007105432,
+      "median_s": 0.027202600002055988,
+      "max_s": 0.030045200008316897,
+      "checksum": 2912.4509604453706
+    },
+    {
+      "name": "forward-prob",
+      "description": "tsk_firing_strengths: 20000 samples x 20 features x 8 labels x 4 MF, probability norms",
+      "tags": [
+        "forward"
+      ],
+      "repeats": 5,
+      "min_s": 0.008217599999625236,
+      "median_s": 0.008571200000005774,
+      "max_s": 0.010096699988935143,
+      "checksum": 23.828259355810527
+    },
+    {
+      "name": "predict-large",
+      "description": "MixtureOfGaussiansFuzzyClassifier.predict_proba: 50000 samples x 20 features x 8 labels x 3 MF",
+      "tags": [
+        "predict"
+      ],
+      "repeats": 5,
+      "min_s": 0.030639899996458553,
+      "median_s": 0.031130899995332584,
+      "max_s": 0.04156169999623671,
+      "checksum": 25000.125478105812
+    },
+    {
+      "name": "refine-classifier",
+      "description": "refine_classifier_antecedents(coordinate): 1000x8, 3 labels, 2 MF, 2 sweeps (96 free params)",
+      "tags": [
+        "train"
+      ],
+      "repeats": 3,
+      "min_s": 0.1701515000022482,
+      "median_s": 0.197689900000114,
+      "max_s": 0.432140699995216,
+      "checksum": 30.049766138317732
+    },
+    {
+      "name": "refine-classifier-wide",
+      "description": "refine_classifier_antecedents(coordinate): 4000x20, 6 labels, 3 MF, 1 sweeps (720 free params)",
+      "tags": [
+        "train"
+      ],
+      "repeats": 2,
+      "min_s": 0.6751302999909967,
+      "median_s": 0.6756295499944827,
+      "max_s": 0.6761287999979686,
+      "checksum": 189.51832088571766
+    },
+    {
+      "name": "forward-huge-cpu",
+      "description": "kernel.firing_strengths (resident data): 1000000 samples x 20 features x 8 labels x 4 MF",
+      "tags": [
+        "forward",
+        "resident"
+      ],
+      "repeats": 3,
+      "min_s": 0.3635264000040479,
+      "median_s": 0.3742584999999963,
+      "max_s": 0.3822409999993397,
+      "checksum": 58282.051188987745
+    },
+    {
+      "name": "forward-huge-gpu64",
+      "description": "TorchFIS.firing_strengths (float64, resident data): 1000000 samples x 20 features x 8 labels x 4 MF",
+      "tags": [
+        "forward",
+        "gpu"
+      ],
+      "repeats": 3,
+      "min_s": 0.1885550000006333,
+      "median_s": 0.19400230000610463,
+      "max_s": 0.19677900000533555,
+      "checksum": 58282.051188987745
+    },
+    {
+      "name": "forward-huge-gpu32",
+      "description": "TorchFIS.firing_strengths (float32, resident data): 1000000 samples x 20 features x 8 labels x 4 MF",
+      "tags": [
+        "forward",
+        "gpu"
+      ],
+      "repeats": 3,
+      "min_s": 0.0909613999974681,
+      "median_s": 0.0975347000057809,
+      "max_s": 0.09971469998708926,
+      "checksum": 58282.0490587749
+    },
+    {
+      "name": "batch-candidates-cpu",
+      "description": "kernel.firing_strengths x 64 candidates (float64): 4000 samples x 20 features x 6 labels x 3 MF",
+      "tags": [
+        "batch",
+        "resident"
+      ],
+      "repeats": 3,
+      "min_s": 0.08542200000374578,
+      "median_s": 0.08605070000339765,
+      "max_s": 0.09516789999906905,
+      "checksum": 9345.074080481783
+    },
+    {
+      "name": "batch-candidates-gpu",
+      "description": "TorchFIS.firing_strengths_batch (float32): 64 candidates x 4000 samples x 20 features x 6 labels x 3 MF",
+      "tags": [
+        "gpu",
+        "batch"
+      ],
+      "repeats": 3,
+      "min_s": 0.013906899999710731,
+      "median_s": 0.01575960000627674,
+      "max_s": 0.01619399999617599,
+      "checksum": 9345.074224224425
+    },
+    {
+      "name": "batch-candidates-gpu-seq",
+      "description": "TorchFIS.firing_strengths in a loop (float32): 64 candidates x 4000 samples x 20 features x 6 labels x 3 MF",
+      "tags": [
+        "gpu",
+        "batch"
+      ],
+      "repeats": 3,
+      "min_s": 0.016812900008517317,
+      "median_s": 0.017072700007702224,
+      "max_s": 0.017481600007158704,
+      "checksum": 9345.074224224425
+    }
+  ]
+}

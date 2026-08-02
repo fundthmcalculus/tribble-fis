@@ -33,7 +33,7 @@ def solve_leaf_consequents(
     leaf_firing: np.ndarray,
     order: str = "0th",
     basis: str = "raw",
-    l2_reg: float = 0.0,
+    l2_reg: float = 1e-6,
     cross_pairs: list[tuple[int, int]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Solve every leaf's TSK consequent in one closed-form ridge least squares.
@@ -68,12 +68,18 @@ def solve_leaf_consequents(
 
     penalty = np.ones(n_leaves * n_coeffs)
     penalty[::n_coeffs] = 0.0  # never penalise the intercept of each leaf block
-    gram = design.T @ design + l2_reg * np.diag(penalty)
-    rhs = design.T @ y
 
-    try:
-        beta = np.linalg.solve(gram, rhs)
-    except np.linalg.LinAlgError:
+    # Use lstsq on the augmented design (with ridge penalty as rows) for better
+    # conditioning. Near-singular designs return finite but huge coefficients
+    # when solved via normal equations; lstsq on the design matrix has condition
+    # number that is the square root of the Gram's and handles ill-conditioning
+    # gracefully by truncating small singular values instead of inverting them.
+    if l2_reg > 0:
+        sqrt_penalty = np.sqrt(l2_reg * penalty)
+        design_aug = np.vstack([design, np.diag(sqrt_penalty)])
+        y_aug = np.hstack([y, np.zeros_like(sqrt_penalty)])
+        beta = np.linalg.lstsq(design_aug, y_aug, rcond=None)[0]
+    else:
         beta = np.linalg.lstsq(design, y, rcond=None)[0]
 
     coeffs = beta.reshape(n_leaves, n_coeffs)

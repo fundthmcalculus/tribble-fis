@@ -5,11 +5,13 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from scipy.spatial.distance import jensenshannon
+from scipy.stats import wasserstein_distance
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from sklearn.mixture import GaussianMixture
 from tribbleclustering import IVATMeans, FuzzyCMeans
 
+from . import kernel
 from .gauss_data import *  # noqa: F401, F403
 
 
@@ -149,8 +151,42 @@ def fit_gaussians(X, y, column: str, label_value: int, n_gaussians: int = 0, max
     return gaussians
 
 
-def calculate_gaussian_correlation(X, y):
-    """Calculate correlation coefficient between Gaussian distributions for each feature across different labels"""
+def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tuple[Any, Any]]:
+    """Calculate distance metric between distributions for each feature across different labels.
+
+    Args:
+        X: Feature dataframe
+        y: Label series
+        method: Distance metric to use. Options:
+            - "wasserstein" (default): non-parametric, makes no distributional assumption.
+              Preferred: a Gaussian-fit divergence silently mismeasures non-Gaussian
+              features, and the classifier keeps only the top-ranked few, so a
+              mis-ranked feature is simply never seen.
+            - "bhattacharyya": parametric (Gaussian fit per class). Cheaper, and fine
+              when features are approximately Gaussian.
+            - "composite": blend of four measures -- three Gaussian-fit
+              (Bhattacharyya, Jensen-Shannon, overlap coefficient) plus
+              wasserstein, the one non-parametric view -- via the average of
+              their arithmetic and geometric means. The geometric-mean term
+              requires every measure to agree, so a feature can't score high
+              on the strength of a single measure's blind spot; without
+              wasserstein the other three all share the same Gaussian-fit
+              blind spot and don't actually diversify against it. Costs ~4x
+              bhattacharyya. Does not include the histogram-correlation term
+              the pre-#34 blend had; that measure was on a different scale,
+              crashed on zero-variance features, and was the worst performing
+              of the four.
+
+    Returns:
+        List of tuples (feature_name, differentiation_score) sorted by score descending
+
+    Raises:
+        ValueError: If method is not recognized
+    """
+    valid_methods = {"bhattacharyya", "wasserstein", "composite"}
+    if method not in valid_methods:
+        raise ValueError(f"method must be one of {valid_methods}, got {method!r}")
+
     unique_labels = y.unique()
 
     def process_column(column):
@@ -173,59 +209,72 @@ def calculate_gaussian_correlation(X, y):
         for ij in range(len(unique_labels)):
             for jk in range(ij + 1, len(unique_labels)):
                 # Get data for each label
-                data_label_ij = data[y == unique_labels[ij]]
-                data_label_jk = data[y == unique_labels[jk]]
+                data_label_ij = data[y == unique_labels[ij]].values
+                data_label_jk = data[y == unique_labels[jk]].values
 
-                # Fit Gaussian distributions
-                mu_ij, std_ij = stats.norm.fit(data_label_ij)
-                mu_jk, std_jk = stats.norm.fit(data_label_jk)
+                if method in ("bhattacharyya", "composite"):
+                    # Fit Gaussian distributions
+                    mu_ij, std_ij = stats.norm.fit(data_label_ij)
+                    mu_jk, std_jk = stats.norm.fit(data_label_jk)
 
-                # Create probability distributions over same range
-                x_range = np.linspace(data.min(), data.max(), 100)
-                pdf_ij = stats.norm.pdf(x_range, mu_ij, std_ij)
-                pdf_jk = stats.norm.pdf(x_range, mu_jk, std_jk)
+                    # Create probability distributions over same range
+                    x_range = np.linspace(data.min(), data.max(), 100)
+                    pdf_ij = stats.norm.pdf(x_range, mu_ij, std_ij)
+                    pdf_jk = stats.norm.pdf(x_range, mu_jk, std_jk)
 
-                # Normalize PDFs to sum to 1 for proper probability distributions
-                pdf_ij = pdf_ij / np.sum(pdf_ij)
-                pdf_jk = pdf_jk / np.sum(pdf_jk)
+                    # Normalize PDFs to sum to 1 for proper probability distributions
+                    pdf_ij = pdf_ij / np.sum(pdf_ij)
+                    pdf_jk = pdf_jk / np.sum(pdf_jk)
 
-                # Calculate Bhattacharyya coefficient (correlation between distributions)
-                bhattacharyya_coeff = np.sum(np.sqrt(pdf_ij * pdf_jk))
+                    # Bhattacharyya distance = 1 - Bhattacharyya coefficient
+                    bhattacharyya_coeff = np.sum(np.sqrt(pdf_ij * pdf_jk))
+                    bhatta_diff = 1 - bhattacharyya_coeff
 
-                # Calculate Jensen-Shannon distance (0 = identical, 1 = completely different)
-                js_distance = jensenshannon(pdf_ij, pdf_jk)
+                if method in ("wasserstein", "composite"):
+                    # Wasserstein distance (non-parametric, no distribution assumption)
+                    w_distance = wasserstein_distance(data_label_ij, data_label_jk)
+                    # Normalize by pooled standard deviation for scale invariance
+                    pooled_std = np.sqrt((np.var(data_label_ij) + np.var(data_label_jk)) / 2)
+                    if pooled_std > 1e-10:
+                        w_distance = w_distance / pooled_std
 
-                # Calculate overlap coefficient (simpler measure)
-                overlap = np.sum(np.minimum(pdf_ij, pdf_jk))
+                if method == "bhattacharyya":
+                    distance = bhatta_diff
 
-                # Calculate differentiation score
-                # Convert metrics to "higher = more different" scale
-                bhatta_diff = 1 - bhattacharyya_coeff  # 1=completely different, 0=identical
-                js_diff = js_distance  # already 1=completely different, 0=identical
-                overlap_diff = 1 - overlap  # 1=completely different, 0=identical
+                elif method == "wasserstein":
+                    distance = w_distance
 
-                # Compute histogram in 1000 bins for each dataset
-                hist_ij, _ = np.histogram(data_label_ij, bins=100, range=(data.min(), data.max()), density=True)
-                hist_jk, _ = np.histogram(data_label_jk, bins=100, range=(data.min(), data.max()), density=True)
-                hist_corr = np.corrcoef(hist_ij, hist_jk)[0, 1]
-                corr_diff = 1 - hist_corr
+                elif method == "composite":
+                    # Jensen-Shannon distance (0 = identical, 1 = completely different)
+                    js_diff = jensenshannon(pdf_ij, pdf_jk)
+                    # Overlap coefficient, converted to a "higher = more different" scale
+                    overlap_diff = 1 - np.sum(np.minimum(pdf_ij, pdf_jk))
+                    # Squash the unbounded pooled-std-normalized wasserstein distance
+                    # onto the same [0, 1) scale as the other three measures so it
+                    # doesn't dominate or get drowned out in the blend.
+                    wasserstein_diff = w_distance / (1 + w_distance)
 
-                # Arithmetic mean
-                diff_vals = np.array([bhatta_diff, js_diff, overlap_diff, corr_diff])
-                diff_vals = diff_vals[np.isfinite(diff_vals)]
+                    # Deliberately excludes the removed histogram-correlation term
+                    # (different scale, crashed on zero-variance features).
+                    diff_vals = np.array([bhatta_diff, js_diff, overlap_diff, wasserstein_diff])
+                    diff_vals = diff_vals[np.isfinite(diff_vals)]
 
-                arithmetic_mean = np.mean(diff_vals)
+                    if len(diff_vals) == 0:
+                        distance = 0.0
+                    else:
+                        arithmetic_mean = np.mean(diff_vals)
+                        geometric_mean = np.prod(diff_vals) ** (1 / len(diff_vals))
+                        # Average of both means: geometric term requires every
+                        # measure to agree, so one measure's blind spot can't
+                        # alone drive the score high.
+                        distance = (arithmetic_mean + geometric_mean) / 2
 
-                # Geometric mean
-                geometric_mean = np.prod(diff_vals) ** (1 / len(diff_vals))
-
-                # Combined differentiation score (average of both means)
-                differentiation_score += (arithmetic_mean + geometric_mean) / 2
+                differentiation_score += distance
 
         return column, differentiation_score
 
     # Use ThreadPoolExecutor to process columns in parallel
-    with ThreadPoolExecutor() as executor:
+    with ThreadPoolExecutor(max_workers=1) as executor:
         feature_differentiators = list(executor.map(process_column, X.columns))
 
     # Remove nan and inf
@@ -293,22 +342,33 @@ def create_gaussian_membership_dict(
     # TODO - This hangs on some linux machines without max_workers=1!
     with ThreadPoolExecutor(max_workers=1) as executor:
         # Submit all tasks
-        result = executor.map(process_feature, top_n_var_names)
-
-        for r in result:
-            feature_models[r[0]] = r[1]
+        futures = [executor.submit(process_feature, name) for name in top_n_var_names]
+        
+        # Collect results as they complete
+        from concurrent.futures import as_completed
+        for future in as_completed(futures):
+            try:
+                feature_name, feature_model = future.result()
+                feature_models[feature_name] = feature_model
+            except Exception as e:
+                # Log the error but continue processing other features
+                print(f"Error processing feature: {e}")
+                import traceback
+                traceback.print_exc()
 
     return GaussianMixtureModel(feature_models=feature_models)
 
 
 def t_norm(x, y, selected_norm: NormConorm | None = None):
     """T-norm (AND) function for fuzzy logic operations."""
-    selected_norm = selected_norm or DefaultNormCornorm
+    # None means "unspecified"; any other value is validated below rather than
+    # being swapped for the default by a falsy test.
+    selected_norm = selected_norm if selected_norm is not None else DefaultNormCornorm
 
     if y is None:
         z = np.ones(x.shape[0])
         for ij in range(0, x.shape[1]):
-            z = t_norm(z, x[:, ij])
+            z = t_norm(z, x[:, ij], selected_norm)
         return z
 
     if selected_norm == "min/max":
@@ -318,19 +378,28 @@ def t_norm(x, y, selected_norm: NormConorm | None = None):
     elif selected_norm == "luk":
         return np.maximum(0, x + y - 1)
     elif selected_norm == "hamacher":
-        return (x * y) / (x + y - x * y)
+        den = x + y - x * y
+        out = np.zeros_like(np.asarray(x, dtype=float))
+        ok = np.abs(den) > 1e-12
+        np.divide(x * y, den, out=out, where=ok)
+        return out
+    elif selected_norm == "einstein":
+        # Einstein product. x + y - xy = 1 - (1-x)(1-y) lies in [0, 1] for inputs
+        # in [0, 1], so the denominator lies in [1, 2] and never vanishes -- no
+        # singularity to guard, unlike the Hamacher product.
+        return (x * y) / (2.0 - (x + y - x * y))
     else:
         raise ValueError(f"Invalid NORM_CORNOM value: {selected_norm}")
 
 
 def t_conorm(x, y, selected_norm: NormConorm | None = None):
     """T-conorm (OR) function for fuzzy logic operations."""
-    selected_norm = selected_norm or DefaultNormCornorm
+    selected_norm = selected_norm if selected_norm is not None else DefaultNormCornorm
 
     if y is None:
         z = np.zeros(x.shape[0])
         for ij in range(0, x.shape[1]):
-            z = t_conorm(z, x[:, ij])
+            z = t_conorm(z, x[:, ij], selected_norm)
         return z
 
     if selected_norm == "min/max":
@@ -339,8 +408,18 @@ def t_conorm(x, y, selected_norm: NormConorm | None = None):
         return x + y - x * y
     elif selected_norm == "luk":
         return np.minimum(1, x + y)
+    elif selected_norm == "einstein":
+        # Einstein sum, the De Morgan dual of the Einstein product. The
+        # denominator lies in [1, 2] for inputs in [0, 1], so it is likewise
+        # singularity-free.
+        return (x + y) / (1.0 + x * y)
     elif selected_norm == "hamacher":
-        return (x + y) / (1 - x * y)
+        num = x + y - 2.0 * x * y
+        den = 1.0 - x * y
+        out = np.ones_like(np.asarray(x, dtype=float))
+        ok = np.abs(den) > 1e-12
+        np.divide(num, den, out=out, where=ok)
+        return out
     else:
         raise ValueError(f"Invalid NORM_CORNOM value: {selected_norm}")
 
@@ -364,7 +443,11 @@ def membership(x, mu, sigma, default_member: MemberFunction | None = None):
 
 
 def tsk_firing_strengths(
-    X: pd.DataFrame, model: GaussianMixtureModel, anomaly_details: AnomalyParameters | None = None
+    X: pd.DataFrame,
+    model: GaussianMixtureModel,
+    anomaly_details: AnomalyParameters | None = None,
+    norms: NormPair | None = None,
+    feature_arrays: dict[str, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, list[Any]]:
     """Calculate firing strengths for each label in a Zeroth-order TSK fuzzy model.
 
@@ -372,12 +455,26 @@ def tsk_firing_strengths(
         X: Feature dataframe (input variables)
         model: GaussianMixtureModel containing labels and their Gaussian parameters
         anomaly_details: Whether to include the anomaly label in the firing strengths
+        norms: Explicit (t-norm, t-conorm) pair. Takes precedence over
+            `anomaly_details`; when both are absent the default family is used.
+            Regression has no `anomaly_details` to carry the selection, so this
+            argument is the only way a regressor can choose its operators.
+        feature_arrays: Optional pre-extracted ``{feature_name: ndarray}`` mapping,
+            bypassing the `X[name].values` pandas lookups below. `X` never changes
+            between fitness evaluations under antecedent refinement, so callers
+            that hold a frame fixed across many calls (e.g. `refine.py`) can
+            extract each column once and pass the same mapping every time instead
+            of paying a pandas lookup per call. `None` (the default) reproduces
+            the extraction exactly as before, so every existing caller is
+            unaffected.
 
     Returns:
         tuple containing:
             - np.ndarray of firing strengths (n_samples, n_labels)
             - list of label values corresponding to the columns in firing_strengths
     """
+    if norms is None:
+        norms = anomaly_details.norms() if anomaly_details else resolve_norm_pair()
     n_samples = len(X)
     # Get unique labels from any of the feature models
     first_feature_model = next(iter(model.feature_models.values()))
@@ -389,12 +486,55 @@ def tsk_firing_strengths(
     # We'll treat each class as having its own rule: IF (x1 is A1) AND (x2 is A2) ... THEN class = L
     firing_strengths = np.zeros((n_samples, len(unique_labels)))
 
+    # Pull every feature column out of the DataFrame ONCE, before the label loop
+    # (unless the caller already did so and passed `feature_arrays`).
+    # `X[name].values` used to sit in the inner loop, so the same column was
+    # re-extracted for every label -- n_labels x n_features pandas lookups per
+    # call instead of n_features. Under coordinate refinement, which evaluates
+    # this tens of thousands of times on an unchanging frame, that dominated the
+    # runtime: pandas __getitem__ accounted for 148s of a 257s profile.
+    if feature_arrays is None:
+        feature_arrays = {
+            name: np.asarray(X[name].values)
+            for name in model.feature_models
+            if name in X
+        }
+
+    # Fast path: hand the whole class-membership block to the compiled kernel.
+    # It only applies to models the flat layout can hold exactly (all-Gaussian,
+    # every feature carrying every label) and produces bit-identical output, so
+    # it is a pure substitution -- see `tribblefis.kernel`. The anomaly column,
+    # when requested, is still derived here from the class columns exactly as
+    # below, because it is a function of them rather than of the memberships.
+    if kernel.HAVE_CYTHON_KERNEL:
+        n_class_labels = len(unique_labels) - (
+            1 if anomaly_details and anomaly_details.include_anomaly else 0
+        )
+        try:
+            compiled = kernel.compile_model(model, list(feature_arrays))
+        except kernel.NotCompilable:
+            compiled = None
+        if compiled is not None:
+            firing_strengths[:, :n_class_labels] = kernel.firing_strengths(
+                compiled, compiled.feature_matrix(feature_arrays), norms
+            )
+            if n_class_labels < len(unique_labels):
+                boosted = np.clip(
+                    firing_strengths[:, :n_class_labels] + anomaly_details.threshold,
+                    0.0, 1.0,
+                )
+                firing_strengths[:, -1] = t_complement(
+                    t_conorm(boosted, None, norms.t_conorm)
+                )
+            return firing_strengths, unique_labels
+
     for label_idx, label_value in enumerate(unique_labels):
         if anomaly_details and label_value == anomaly_details.label:
             # Anomaly label is treated as a special case
             # We'll use a complementary membership function for it
+            boosted = np.clip(firing_strengths[:, :-1] + anomaly_details.threshold, 0.0, 1.0)
             firing_strengths[:, label_idx] = t_complement(
-                t_conorm(firing_strengths[:, :-1] + anomaly_details.threshold, None, anomaly_details.norm_conorm)
+                t_conorm(boosted, None, norms.t_conorm)
             )
             continue
 
@@ -406,7 +546,9 @@ def tsk_firing_strengths(
             if label_value not in feature_model.label_models:
                 continue
 
-            feature_data = X[feature_name].values
+            feature_data = feature_arrays.get(feature_name)
+            if feature_data is None:
+                continue
             label_model = feature_model.label_models[label_value]
 
             # If multiple membership functions exist for a feature-label pair,
@@ -416,15 +558,11 @@ def tsk_firing_strengths(
                 # Evaluate membership function (works for both Gaussian and Trapezoid)
                 # Logic-OR
                 feature_membership = t_conorm(
-                    feature_membership,
-                    mf.evaluate(feature_data),
-                    anomaly_details.norm_conorm if anomaly_details else None,
+                    feature_membership, mf.evaluate(feature_data), norms.t_conorm
                 )
 
             # Logic-AND
-            label_membership = t_norm(
-                label_membership, feature_membership, anomaly_details.norm_conorm if anomaly_details else None
-            )
+            label_membership = t_norm(label_membership, feature_membership, norms.t_norm)
 
         firing_strengths[:, label_idx] = label_membership
 
@@ -433,17 +571,140 @@ def tsk_firing_strengths(
     return firing_strengths, unique_labels
 
 
-def tsk_predict(X: pd.DataFrame, model: GaussianMixtureModel) -> np.ndarray:
+# ---------------------------------------------------------------------------
+# Analytic gradient of one Gaussian membership function's (mu, sigma) through
+# the raw (pre-normalization) firing strengths, under "probability" norms.
+#
+# See issue #43. Each output label owns an entirely independent set of Gaussian
+# antecedents, so at this raw stage only the *targeted* label's firing-strength
+# column depends on the targeted membership function -- every other column's
+# derivative is exactly zero. That is what makes a per-membership-function
+# gradient cheap: `refine_antecedents_coordinate`'s coordinate-descent block is
+# exactly one Gaussian's (mu, sigma) (`block=2`), so only one label's column
+# and one feature's contribution to it ever need differentiating.
+#
+# Restricted to the "probability" t-norm/t-conorm family (product / probabilistic
+# sum) because it is genuinely smooth everywhere; "min/max" is piecewise smooth
+# (a kink where the min/max argument switches) and an analytic derivative there
+# would be a subgradient, which finite differences already recover.
+# ---------------------------------------------------------------------------
+
+def _conorm_fold_probability(feature_data: np.ndarray, memberships: list) -> np.ndarray:
+    """Probability t-conorm fold (``a S b = a + b - ab``) over a label's memberships."""
+    z = np.zeros_like(feature_data, dtype=float)
+    for mf in memberships:
+        g = mf.evaluate(feature_data)
+        z = z + g - z * g
+    return z
+
+
+def _conorm_fold_probability_with_grad(
+    feature_data: np.ndarray, memberships: list, target_index: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Probability t-conorm fold, plus d(z)/d(mu) and d(z)/d(sigma) of the
+    Gaussian membership at `target_index` (only that one membership depends on
+    theta; every other term in the fold is a constant with respect to it).
+
+    For ``z_new = t_conorm(z, g) = z + g - z*g``, the partials are
+    ``dz_new/dz = 1 - g`` and ``dz_new/dg = 1 - z``, so each fold step updates
+    the running derivative by the chain rule before advancing `z`.
+    """
+    z = np.zeros_like(feature_data, dtype=float)
+    dz_mu = np.zeros_like(feature_data, dtype=float)
+    dz_sigma = np.zeros_like(feature_data, dtype=float)
+    for j, mf in enumerate(memberships):
+        g = mf.evaluate(feature_data)
+        if j == target_index:
+            sigma = max(mf.sigma, 1e-6)
+            diff = feature_data - mf.mu
+            dg_mu = g * diff / (sigma ** 2)
+            dg_sigma = g * (diff ** 2) / (sigma ** 3)
+        else:
+            dg_mu = 0.0
+            dg_sigma = 0.0
+        dz_mu, dz_sigma = dz_mu * (1.0 - g) + (1.0 - z) * dg_mu, dz_sigma * (1.0 - g) + (1.0 - z) * dg_sigma
+        z = z + g - z * g
+    return z, dz_mu, dz_sigma
+
+
+def firing_strengths_and_mf_grad(
+    feature_arrays: dict[str, np.ndarray],
+    model: GaussianMixtureModel,
+    target_feature: str,
+    target_label: Any,
+    target_mf_index: int,
+) -> tuple[np.ndarray, list[Any], np.ndarray, np.ndarray]:
+    """Raw firing strengths under "probability" norms, plus the analytic
+    derivative of the *targeted rule's* column with respect to one Gaussian
+    membership function's ``(mu, sigma)``.
+
+    Args:
+        feature_arrays: Pre-extracted ``{feature_name: ndarray}`` mapping (see
+            `tsk_firing_strengths`).
+        model: Candidate `GaussianMixtureModel` (already has the trial params applied).
+        target_feature: Name of the feature the targeted membership function belongs to.
+        target_label: Output label the targeted membership function belongs to.
+        target_mf_index: Index of the targeted `GaussianMembership` within that
+            label's membership list.
+
+    Returns:
+        ``(firing_strengths, labels, dF_target_col_dmu, dF_target_col_dsigma)``,
+        where the last two are ``(n_samples,)`` arrays -- the derivative of
+        ``firing_strengths[:, labels.index(target_label)]`` only. Every other
+        column's derivative is exactly zero at this raw stage (see module note).
+    """
+    first_feature_model = next(iter(model.feature_models.values()))
+    unique_labels: list[Any] = list(first_feature_model.ordered_keys)
+    n_samples = len(next(iter(feature_arrays.values())))
+    firing_strengths = np.zeros((n_samples, len(unique_labels)))
+    dF_target_dmu = np.zeros(n_samples)
+    dF_target_dsigma = np.zeros(n_samples)
+
+    for label_idx, label_value in enumerate(unique_labels):
+        label_membership = np.ones(n_samples)
+        is_target_label = label_value == target_label
+        target_dz_mu = target_dz_sigma = None
+        other_product = np.ones(n_samples) if is_target_label else None
+
+        for feature_name, feature_model in model.feature_models.items():
+            if label_value not in feature_model.label_models:
+                continue
+            feature_data = feature_arrays.get(feature_name)
+            if feature_data is None:
+                continue
+            label_model = feature_model.label_models[label_value]
+
+            if is_target_label and feature_name == target_feature:
+                feature_membership, target_dz_mu, target_dz_sigma = _conorm_fold_probability_with_grad(
+                    feature_data, label_model.memberships, target_mf_index
+                )
+            else:
+                feature_membership = _conorm_fold_probability(feature_data, label_model.memberships)
+                if is_target_label:
+                    other_product = other_product * feature_membership
+
+            label_membership = label_membership * feature_membership  # probability t-norm
+
+        firing_strengths[:, label_idx] = label_membership
+        if is_target_label:
+            dF_target_dmu = other_product * target_dz_mu
+            dF_target_dsigma = other_product * target_dz_sigma
+
+    return firing_strengths, unique_labels, dF_target_dmu, dF_target_dsigma
+
+
+def tsk_predict(X: pd.DataFrame, model: GaussianMixtureModel,  anomaly_details: AnomalyParameters | None = None) -> np.ndarray:
     """Zeroth-order TSK fuzzy model for classification.
 
     Args:
         X: Feature dataframe (input variables)
         model: GaussianMixtureModel containing labels and their Gaussian parameters
+        anomaly_details: AnomalyParameters containing anomaly detection details
 
     Returns:
         Array of predicted class labels (0 or 1)
     """
-    firing_strengths, unique_labels = tsk_firing_strengths(X, model)
+    firing_strengths, unique_labels = tsk_firing_strengths(X, model, anomaly_details)
     predictions = np.argmax(firing_strengths, axis=1)
     # Map back to original label values if they weren't 0 and 1
     return np.array([unique_labels[i] for i in predictions])
@@ -463,7 +724,7 @@ def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierMode
     n_rules = len(model.rules)
 
     anomaly_details = model.anomaly_params
-    norm_conorm = anomaly_details.norm_conorm if anomaly_details else DefaultNormCornorm
+    norms = anomaly_details.norms() if anomaly_details else resolve_norm_pair()
     member_fcn = anomaly_details.member_function if anomaly_details else DefaultMemberFunction
 
 
@@ -478,8 +739,8 @@ def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierMode
             matched_mfs = model.get_mfs(mf_ids)
             local_vals = np.zeros(n_samples)
             for j, mf in enumerate(matched_mfs):
-                local_vals = t_conorm(local_vals, mf.evaluate(X[feature_name].values), norm_conorm)
-            rule_firing[:, i] = t_norm(local_vals, rule_firing[:, i], norm_conorm)
+                local_vals = t_conorm(local_vals, mf.evaluate(X[feature_name].values), norms.t_conorm)
+            rule_firing[:, i] = t_norm(local_vals, rule_firing[:, i], norms.t_norm)
 
     # Aggregate rule firing strengths by consequent label
     unique_labels = [rule.consequent for rule in model.rules]
@@ -490,8 +751,9 @@ def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierMode
     if anomaly_details and anomaly_details.include_anomaly:
         # Anomaly is the complement of the conorm of all other class firings
         # We use a similar hack as in tsk_firing_strengths
+        boosted = np.clip(rule_firing[:,:-1] + anomaly_details.threshold, 0.0, 1.0)
         rule_firing[:, -1] = t_complement(
-            t_conorm(rule_firing[:,:-1] + anomaly_details.threshold, None, norm_conorm)
+            t_conorm(boosted, None, norms.t_conorm)
         )
 
     predictions_idx = np.argmax(rule_firing, axis=1)
@@ -502,6 +764,22 @@ def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierMode
 def take_top_features(
     feature_differentiators: list[tuple[Any, Any]], top_p: float = 0.95, top_n: int = -1
 ) -> tuple[int, list[Any]]:
+    """Select features from a differentiation-score ranking.
+
+    Args:
+        feature_differentiators: (feature_name, score) pairs, normalized so the
+            top score is 1.0, sorted descending (as returned by
+            ``calculate_gaussian_correlation``).
+        top_p: Per-feature score threshold, not cumulative coverage. A feature is
+            kept when its own normalized score is >= (1 - top_p). Ignored if
+            top_n > 0. top_p=1.0 keeps every feature (threshold 0); lower top_p
+            raises the threshold and keeps fewer.
+        top_n: If > 0, keep exactly the top_n highest-scoring features and
+            ignore top_p.
+
+    Returns:
+        Tuple of (number of features kept, list of kept feature names).
+    """
     if top_n > 0:
         return top_n, [s for s, v in feature_differentiators[:top_n]]
 
