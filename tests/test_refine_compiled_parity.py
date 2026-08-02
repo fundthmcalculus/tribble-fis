@@ -47,8 +47,15 @@ def _problem(n_samples=400, n_features=5, n_labels=3, n_mf=2, seed=0):
 
 
 def _run(X, y):
+    # `analytic_gradient=False` throughout this module: these tests compare two
+    # ways of *evaluating* the same objective and require an identical search
+    # path. The analytic gradient is a different algorithm -- it visits different
+    # points on purpose -- so leaving it at its auto default would be testing
+    # something else. Its own behaviour is covered in
+    # tests/test_analytic_classifier_grad.py.
     return R.refine_classifier_antecedents(
-        _MODEL, X, y, method="coordinate", n_sweeps=2, seed=42, verbose=False
+        _MODEL, X, y, method="coordinate", n_sweeps=2, seed=42,
+        analytic_gradient=False, verbose=False,
     )
 
 
@@ -99,7 +106,8 @@ def test_refinement_result_is_unchanged_by_the_compiled_path(monkeypatch):
 @pytest.mark.parametrize("n_mf", [1, 3])
 def test_refinement_parity_across_membership_counts(monkeypatch, n_mf):
     X, y, model = _problem(n_samples=300, n_features=4, n_labels=2, n_mf=n_mf, seed=n_mf)
-    kwargs = dict(method="coordinate", n_sweeps=1, seed=7, verbose=False)
+    kwargs = dict(method="coordinate", n_sweeps=1, seed=7,
+                  analytic_gradient=False, verbose=False)
     fast, _ = R.refine_classifier_antecedents(model, X, y, **kwargs)
 
     monkeypatch.setattr(
@@ -115,7 +123,8 @@ def test_incremental_and_full_objective_reach_the_same_antecedents():
     """The cached per-cell evaluation changes *how* a candidate is scored, not
     what it scores, so the search must visit the same points and stop in the
     same place. `incremental=False` is the A/B switch for exactly this."""
-    kwargs = dict(method="coordinate", n_sweeps=2, seed=42, verbose=False)
+    kwargs = dict(method="coordinate", n_sweeps=2, seed=42,
+                  analytic_gradient=False, verbose=False)
     fast_model, fast_info = R.refine_classifier_antecedents(
         _MODEL, _X, _Y, incremental=True, **kwargs)
     slow_model, slow_info = R.refine_classifier_antecedents(

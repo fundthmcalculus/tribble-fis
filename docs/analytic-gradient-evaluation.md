@@ -1,8 +1,23 @@
 # Should classifier refinement use an analytic gradient?
 
-**Answer: it is implemented, tested, and off by default. Leave it off unless you
-have measured your own case.** It is ~1.4x faster and lands on a different, not
-reliably better, model.
+**Answer: yes where the objective is smooth, no where it is not — which is now
+the shipped rule.** `analytic_gradient=None` (the default) turns it on exactly
+when the operator pair is differentiable everywhere.
+
+> **Superseded in part.** This document was written while the default family was
+> `min/max`, and concluded "leave it off". That conclusion was right *for
+> min/max* and is still the reason the flag is not unconditionally on. Once
+> `probability` became the default (see `norm-family-evaluation.md`) the
+> objective became smooth, the closed form became the actual derivative rather
+> than a subgradient, and the trade changed completely:
+>
+> | family | speed | accuracy vs finite differences |
+> |---|---|---|
+> | min/max (subgradient) | 1.43x | −0.0091, worst −0.0967 |
+> | probability (exact) | **1.74x** | **+0.0012 ± 0.0026** |
+>
+> Everything below about *min/max* still holds. The sections on cProfile and on
+> the acceptance guard are independent of the family and hold regardless.
 
 Reproduce with `python -m benchmarks.bench -k refine` and the paired-holdout
 harness described at the bottom. Hardware as in `benchmarks/README.md`.
@@ -113,19 +128,35 @@ wants a contiguous feature column), and they remove per-call allocations that
 would matter at a sample count where 32 KB per call is not lost in the noise.
 No speedup is claimed for them.
 
-## If you want to turn it on
+## The shipped rule
+
+`analytic_gradient=None` (default) resolves to `_smooth_objective(norms)` — true
+only for `probability`, the one family with implemented partials that is
+differentiable everywhere. `True`/`False` override it.
 
 ```python
-refine_classifier_antecedents(model, X, y, analytic_gradient=True)
+refine_classifier_antecedents(model, X, y)                          # auto
+refine_classifier_antecedents(model, X, y, analytic_gradient=True)  # force
 ```
 
-It silently does nothing without the compiled kernel, or under `luk`,
-`hamacher` or `einstein` (no partials implemented — `supports_gradient()`
-reports this). The case where it is unambiguously sound is `probability` norms,
-where the objective is genuinely smooth and the gradient exact rather than a
-subgradient; the classifier objective currently hard-codes `min/max`, so
-reaching that would mean threading a norm choice through
-`_make_classifier_fitness` first.
+It silently does nothing without the compiled kernel, under a gradient-free
+`sub_method` such as Powell, or under `luk`/`hamacher`/`einstein` (no partials
+implemented — `supports_gradient()` reports this).
+
+## Combined with the other default changes
+
+Old defaults (`min/max` + L-BFGS-B + finite differences) against new
+(`probability` + SLSQP + auto gradient), same 18 combinations, same heuristic
+start, 30% holdout:
+
+| | accuracy | worst | time |
+|---|---|---|---|
+| old | 0.7881 | 0.3722 | 906.5 ms |
+| **new** | **0.8138** | **0.4028** | **463.2 ms** |
+
+**+0.0257 ± 0.0070 accuracy (13 wins, 2 losses) and 1.96x faster.** The accuracy
+comes from the norm family, the speed from the solver and the gradient, and they
+compose because they act on different parts of the problem.
 
 ## Harness
 
