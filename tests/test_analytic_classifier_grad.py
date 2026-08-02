@@ -174,7 +174,8 @@ def test_refinement_runs_and_stays_finite_with_the_gradient_on():
     })
 
     kwargs = dict(method="coordinate", n_sweeps=2, seed=42, verbose=False)
-    _fd_model, fd = R.refine_classifier_antecedents(model, X, y, **kwargs)
+    _fd_model, fd = R.refine_classifier_antecedents(
+        model, X, y, analytic_gradient=False, **kwargs)
     an_model, an = R.refine_classifier_antecedents(
         model, X, y, analytic_gradient=True, **kwargs)
 
@@ -185,10 +186,62 @@ def test_refinement_runs_and_stays_finite_with_the_gradient_on():
     )
 
 
-def test_analytic_gradient_is_off_by_default():
-    """It trades a bit-exact, better-behaved search for ~1.4x. Defaulting it on
-    would silently change every refinement's result."""
+def test_analytic_gradient_defaults_to_the_smoothness_rule():
+    """The default is ``None`` -- "use it where it is the real derivative".
+
+    That is the whole safety argument: under a smooth pair the closed form *is*
+    the gradient and is accuracy-neutral; under a piecewise-smooth one it is a
+    subgradient and measured as an accuracy lottery. A plain ``True`` default
+    would silently take the second deal too.
+    """
     import inspect
 
     sig = inspect.signature(R.refine_classifier_antecedents)
-    assert sig.parameters["analytic_gradient"].default is False
+    assert sig.parameters["analytic_gradient"].default is None
+
+    assert R._smooth_objective(NormPair("probability", "probability"))
+    for family in ("min/max", "luk", "hamacher", "einstein"):
+        assert not R._smooth_objective(NormPair(family, family)), family
+    # A mixed pair is only smooth if both halves are.
+    assert not R._smooth_objective(NormPair("probability", "min/max"))
+
+
+def test_auto_rule_engages_under_the_default_family_and_not_under_min_max():
+    """End to end: the rule has to reach the solver, not just exist. Fewer
+    evaluations is the observable signature of a gradient being supplied."""
+    X, y, model = _problem_for_auto()
+    prob = NormPair("probability", "probability")
+    minmax = NormPair("min/max", "min/max")
+    kw = dict(n_sweeps=1, seed=11, verbose=False)
+
+    auto_prob = R.refine_classifier_antecedents(model, X, y, norms=prob, **kw)[1]
+    off_prob = R.refine_classifier_antecedents(
+        model, X, y, norms=prob, analytic_gradient=False, **kw)[1]
+    auto_mm = R.refine_classifier_antecedents(model, X, y, norms=minmax, **kw)[1]
+    off_mm = R.refine_classifier_antecedents(
+        model, X, y, norms=minmax, analytic_gradient=False, **kw)[1]
+
+    if K.HAVE_CYTHON_KERNEL:
+        assert auto_prob["n_eval"] < off_prob["n_eval"], "auto should be on here"
+    assert auto_mm["n_eval"] == off_mm["n_eval"], "auto must stay off under min/max"
+
+
+def _problem_for_auto():
+    rng = np.random.default_rng(21)
+    n_labels, n_features = 3, 5
+    centers = rng.normal(0, 3, size=(n_labels, n_features))
+    y = rng.integers(0, n_labels, size=400)
+    cols = [f"f{i}" for i in range(n_features)]
+    X = pd.DataFrame(centers[y] + rng.normal(0, 1, size=(400, n_features)), columns=cols)
+    model = GaussianMixtureModel(feature_models={
+        name: FeatureModel(label_models={
+            lab: LabelModel(memberships=[
+                GaussianMembership(mu=float(rng.normal(0, 3)), sigma=1.0,
+                                   id=uuid.UUID(bytes=rng.bytes(16)))
+                for _ in range(2)
+            ])
+            for lab in range(n_labels)
+        })
+        for name in cols
+    })
+    return X, y, model
