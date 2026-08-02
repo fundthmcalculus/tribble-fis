@@ -224,7 +224,7 @@ def optimize_tsk_coefficients(
     initial_corr_terms: ndarray | None = None,
     order: typing.Literal["0th", "1st", "2nd", "3rd", "full-2nd"] = "2nd",
     norms: NormPair | None = None,
-    l2_reg: float = 0.0,
+    l2_reg: float = 1e-6,
 ) -> tuple[typing.Any, typing.Any]:
     """
     Optimize TSK coefficients for different polynomial orders.
@@ -469,7 +469,7 @@ def solve_tsk_consequents(
     y_train: pd.DataFrame,
     n_output_buckets: int,
     order: typing.Literal["0th", "1st", "2nd", "3rd", "full-2nd"] = "2nd",
-    l2_reg: float = 0.0,
+    l2_reg: float = 1e-6,
     basis: str = "raw",
     cross_pairs: list[tuple[int, int]] | None = None,
     pin_extremes: bool = True,
