@@ -475,6 +475,7 @@ def solve_tsk_consequents(
     pin_extremes: bool = True,
     norms: NormPair | None = None,
     verbose: bool = True,
+    feature_arrays: dict[str, np.ndarray] | None = None,
 ) -> tuple[ndarray, ndarray]:
     """Solve for the globally optimal TSK consequent coefficients in closed form.
 
@@ -503,6 +504,10 @@ def solve_tsk_consequents(
     unconstrained solve. A non-finite value at one extreme skips only that end;
     the other stays pinned.
 
+    ``feature_arrays``: optional pre-extracted ``{feature_name: ndarray}``
+    mapping (see `tsk_firing_strengths`), also reused here to build `X_rule`
+    without a pandas round-trip. `None` reproduces the previous behavior exactly.
+
     Returns (corr_terms_opt, y_bucket_mean_opt), matching
     `optimize_tsk_coefficients`.
     """
@@ -510,12 +515,16 @@ def solve_tsk_consequents(
         print(f"\nSolving {order} consequents in closed form (basis={basis}, l2={l2_reg:g})...")
 
     firing_strengths_train, labels_train = tsk_firing_strengths(
-        X_train[top_n_todo], gaussian_memberships, norms=norms
+        X_train[top_n_todo], gaussian_memberships, norms=norms, feature_arrays=feature_arrays
     )
     norm_fs = _normalize_firing_strengths(firing_strengths_train)
     n_rules = norm_fs.shape[1]
 
-    X_rule = X_train[top_n_todo].to_numpy()
+    if feature_arrays is not None:
+        X_rule = np.column_stack([feature_arrays[c] for c in top_n_todo]) if top_n_todo \
+            else np.empty((len(X_train), 0))
+    else:
+        X_rule = X_train[top_n_todo].to_numpy()
     feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs)
     n_terms = feats.shape[1]
     n_coeffs_per_rule = 1 + n_terms
@@ -610,19 +619,30 @@ def predict_tsk(
     basis: str = "raw",
     cross_pairs: list[tuple[int, int]] | None = None,
     norms: NormPair | None = None,
+    feature_arrays: dict[str, np.ndarray] | None = None,
 ) -> ndarray:
     """Shared TSK prediction path used by the solver's callers and CV.
 
     Uses the same firing-strength normalization and feature basis as
     `solve_tsk_consequents`, so fit and predict cannot silently diverge.
+
+    ``feature_arrays``: optional pre-extracted ``{feature_name: ndarray}``
+    mapping (see `tsk_firing_strengths`); `None` reproduces the previous
+    behavior exactly.
     """
-    firing_strengths, labels = tsk_firing_strengths(X[top_n_todo], model, norms=norms)
+    firing_strengths, labels = tsk_firing_strengths(
+        X[top_n_todo], model, norms=norms, feature_arrays=feature_arrays
+    )
     norm_fs = _normalize_firing_strengths(firing_strengths)
 
     if order == "0th":
         return norm_fs @ np.asarray(y_bucket_mean)
 
-    X_rule = X[top_n_todo].to_numpy()
+    if feature_arrays is not None:
+        X_rule = np.column_stack([feature_arrays[c] for c in top_n_todo]) if top_n_todo \
+            else np.empty((len(X), 0))
+    else:
+        X_rule = X[top_n_todo].to_numpy()
     feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs)
     y_pred = np.zeros(len(X))
     for ij, rule_id in enumerate(labels):
