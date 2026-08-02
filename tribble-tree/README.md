@@ -81,19 +81,21 @@ clf.predict(X); clf.predict_proba(X)
 
 No estimator here (or in `tribblefis`) scales its input automatically -- raw units are
 kept by default so split thresholds stay physically meaningful (e.g. "Cement is High
->= 350"). If your features need bounding to `[0, 1]` or span multiple scales, compose
-`tribblefis.scaling.StandardFuzzyScalar` in front of the estimator with a `Pipeline`,
-the same way you'd use `StandardScaler`:
+>= 350"). If your features need normalizing or span multiple scales, compose one of
+`tribblefis.scaling.StandardScalar` (z-score, `mu=0`/`sigma=1`) or `UnitScalar`
+(min-max bounded to `[0, 1]`) in front of the estimator with a `Pipeline`:
 
 ```python
 from sklearn.pipeline import make_pipeline
-from tribblefis.scaling import StandardFuzzyScalar
+from tribblefis.scaling import StandardScalar
 
-model = make_pipeline(StandardFuzzyScalar(), FuzzyRegressionTree(tsk_order="1st")).fit(X, y)
+model = make_pipeline(StandardScalar(), FuzzyRegressionTree(tsk_order="1st")).fit(X, y)
 ```
 
-`StandardFuzzyScalar` auto-detects per-feature dynamic range and log1p-transforms
-features spanning multiple decades before min-max bounding everything to `[0, 1]`.
+Both auto-detect per-feature dynamic range and log1p-transform features spanning
+multiple decades before the final normalization. `StandardScalar` is the current
+default recommendation; `UnitScalar` is the direct `[0, 1]`-bounded alternative.
+Which one performs better for a given FIS is still an open, empirical question.
 
 ## Hierarchical mixture of fuzzy experts (composing sub-FIS)
 

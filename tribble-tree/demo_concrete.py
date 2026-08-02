@@ -48,9 +48,10 @@ def load_data():
 
     Raw (unscaled) features are kept on purpose so the tree's split thresholds are
     physically meaningful, e.g. "Cement is High >= 350". If your own features need
-    bounding or span multiple scales, compose ``tribblefis.scaling.StandardFuzzyScalar``
-    in front of the estimator with ``sklearn.pipeline.make_pipeline`` instead --
-    see ``demo_phishing.py`` for an example.
+    bounding or span multiple scales, compose ``tribblefis.scaling.StandardScalar``
+    (z-score) or ``UnitScalar`` ([0, 1] bounding) in front of the estimator with
+    ``sklearn.pipeline.make_pipeline`` instead -- see ``demo_phishing.py`` for an
+    example.
     """
     df = pd.read_csv(DATA_PATH).dropna()
     df.columns = [c.strip() for c in df.columns]
