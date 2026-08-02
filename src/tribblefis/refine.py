@@ -27,9 +27,14 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import differential_evolution, minimize
 
-from .gauss_data import GaussianMembership, LabelModel, FeatureModel, GaussianMixtureModel
-from .gauss_math import tsk_firing_strengths
-from .regression import solve_tsk_consequents, predict_tsk, _mse, _rsquared
+from .gauss_data import (
+    GaussianMembership, LabelModel, FeatureModel, GaussianMixtureModel, NormPair, resolve_norm_pair,
+)
+from .gauss_math import tsk_firing_strengths, firing_strengths_and_mf_grad
+from .regression import (
+    solve_tsk_consequents, predict_tsk, _mse, _rsquared,
+    build_consequent_features, _normalize_firing_strengths,
+)
 
 # The refinement fitness runs thousands of tiny (~O(100)-wide) linear solves. On a
 # multithreaded BLAS those small matrices thrash on thread-spawn overhead and
@@ -115,40 +120,59 @@ def build_param_bounds(
 # Fitness: apply candidate antecedents -> closed-form consequents -> val MSE.
 # ---------------------------------------------------------------------------
 
+def _prepare_folds(X_train: pd.DataFrame, y_train: pd.DataFrame, folds):
+    """Per-fold train/val splits, each with its feature columns pre-extracted once.
+
+    `refine_antecedents_coordinate` (and the other refiners) evaluate the fitness
+    tens of thousands of times against these same frames -- only the candidate
+    Gaussian parameters vary between calls, `X_train` never does. Building each
+    fold's ``{feature_name: ndarray}`` mapping here, instead of inside the fitness
+    closure, turns ~84k x n_features pandas column lookups into a handful of
+    conversions for the whole refinement run. See issue #42.
+    """
+    prepared = []
+    for tr_idx, val_idx in folds:
+        X_tr = X_train.iloc[tr_idx]
+        X_val = X_train.iloc[val_idx]
+        prepared.append((
+            X_tr, y_train.iloc[tr_idx], {c: np.asarray(X_tr[c].to_numpy()) for c in X_tr.columns},
+            X_val, y_train.iloc[val_idx]["y_value"].to_numpy(),
+            {c: np.asarray(X_val[c].to_numpy()) for c in X_val.columns},
+        ))
+    return prepared
+
+
 def _make_kfold_fitness(
     model, X_train, y_train, folds, top_n_todo, n_output_buckets, order, l2_reg, basis, cross_pairs,
-    pin_extremes=False,
+    pin_extremes=False, norms: NormPair | None = None, prepared=None,
 ):
     """Cross-validated fitness: mean held-out MSE over `folds`.
 
     A single validation fold is far too easy to overfit when the search has
     O(100) free antecedent parameters -- the optimizer drives that one fold's MSE
     down while test error rises. Averaging over k folds forces the antecedents to
-    generalize. Each fold pre-slices its train/val DataFrames once (outside the
-    hot loop) so a fitness call is just: apply params -> per-fold solve+predict.
+    generalize. Each fold pre-slices its train/val DataFrames (and pre-extracts
+    their feature arrays -- see `_prepare_folds`) once, outside the hot loop, so a
+    fitness call is just: apply params -> per-fold solve+predict.
     """
-    prepared = []
+    if prepared is None:
+        prepared = _prepare_folds(X_train, y_train, folds)
     y_bucket_mean_dummy = np.zeros(n_output_buckets)  # solver ignores this arg when pin_extremes=False
-    for tr_idx, val_idx in folds:
-        prepared.append((
-            X_train.iloc[tr_idx], y_train.iloc[tr_idx],
-            X_train.iloc[val_idx], y_train.iloc[val_idx]["y_value"].to_numpy(),
-        ))
 
     def fitness(vec: np.ndarray) -> float:
         candidate = apply_gaussian_params(model, vec)
         total, n = 0.0, 0
-        for X_tr, y_tr, X_val, y_val_true in prepared:
+        for X_tr, y_tr, fa_tr, X_val, y_val_true, fa_val in prepared:
             try:
                 corr, means = solve_tsk_consequents(
                     X_tr, candidate, top_n_todo, y_bucket_mean_dummy, y_tr,
                     n_output_buckets=n_output_buckets, order=order,
                     l2_reg=l2_reg, basis=basis, cross_pairs=cross_pairs, pin_extremes=pin_extremes,
-                    verbose=False,
+                    norms=norms, feature_arrays=fa_tr, verbose=False,
                 )
                 y_hat = predict_tsk(
                     X_val, candidate, top_n_todo, means, corr,
-                    order=order, basis=basis, cross_pairs=cross_pairs,
+                    order=order, basis=basis, cross_pairs=cross_pairs, norms=norms, feature_arrays=fa_val,
                 )
             except Exception:
                 return 1e6
@@ -282,6 +306,117 @@ def refine_antecedents_local(
 
 
 # ---------------------------------------------------------------------------
+# Analytic gradient of one coordinate-descent block's CV fitness (issue #43).
+#
+# `refine_antecedents_coordinate`'s sub-problem is always exactly one Gaussian's
+# (mu, sigma) when `block == 2` (the default), everything else in the model held
+# fixed. That is a *bilevel* derivative: the consequents `beta*` are re-solved
+# for every candidate theta, so the total derivative of the validation MSE picks
+# up a `dbeta*/dtheta` term as well as the direct `dPhi_val/dtheta` term (the
+# envelope theorem applies to the training objective beta* minimizes, not to the
+# validation loss being differentiated here). See the issue for the derivation;
+# restricted to "probability" norms, where the objective is smooth everywhere
+# (min/max is only piecewise smooth, and FD already finds its subgradient).
+# ---------------------------------------------------------------------------
+
+def _analytic_block_supported(norms: NormPair, pin_extremes: bool, block: int) -> bool:
+    return (
+        block == 2
+        and not pin_extremes
+        and norms.t_norm == "probability"
+        and norms.t_conorm == "probability"
+    )
+
+
+def _design_matrix(feature_arrays, top_n_todo, F, order, basis, cross_pairs):
+    """Stacked per-rule design ``[norm_fs_r * [1 | basis(X)]]_r``, plus the
+    ingredients (`phi`, `norm_fs`) the gradient needs to reuse."""
+    X_rule = np.column_stack([feature_arrays[c] for c in top_n_todo]) if top_n_todo \
+        else np.empty((F.shape[0], 0))
+    feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs)
+    phi = np.hstack([np.ones((X_rule.shape[0], 1)), feats])
+    norm_fs = _normalize_firing_strengths(F)
+    n_rules = F.shape[1]
+    design = (norm_fs[:, :, np.newaxis] * phi[:, np.newaxis, :]).reshape(X_rule.shape[0], n_rules * phi.shape[1])
+    return design, phi, norm_fs
+
+
+def _norm_fs_grad(F: np.ndarray, r0: int, dF_r0: np.ndarray) -> np.ndarray:
+    """d(row-normalized firing strengths)/dtheta given the derivative of only the
+    target rule's raw firing-strength column.
+
+    Every other raw column is a constant in theta (each output label owns
+    independent Gaussian antecedents -- see `firing_strengths_and_mf_grad`); only
+    the shared row-sum denominator couples ``norm_fs[:, r0]``'s change into every
+    other column. Zero-firing rows keep the same all-zero convention as
+    `_normalize_firing_strengths` (their derivative is likewise zero).
+    """
+    row_sums = F.sum(axis=1)
+    valid = row_sums > 1e-6
+    safe_s = np.where(row_sums > 0, row_sums, 1.0)
+    d_norm = -F * dF_r0[:, np.newaxis] / safe_s[:, np.newaxis] ** 2
+    d_norm[:, r0] += dF_r0 / safe_s
+    d_norm[~valid, :] = 0.0
+    return d_norm
+
+
+def _fold_mse_and_grad(
+    fa_tr, y_tr, fa_val, y_val_true, candidate, top_n_todo, order, l2_reg, basis, cross_pairs,
+    target_feature, target_label, target_mf_index,
+):
+    """(val MSE, [d(val MSE)/d(mu), d(val MSE)/d(sigma)]) for one fold, at
+    `candidate`'s current parameters for the targeted Gaussian.
+
+    ``beta* = argmin_beta ||Phi_tr @ beta - y_tr||^2 + l2_reg * ||D^(1/2) beta||^2``
+    is solved once here (mirroring `solve_tsk_consequents`'s unconstrained ridge
+    branch -- this path only ever runs with `pin_extremes=False`), then
+    differentiated via the normal-equation identity
+    ``dbeta*/dtheta = A^-1 [(dPhi_tr/dtheta)^T r - Phi_tr^T (dPhi_tr/dtheta) beta*]``
+    with ``A = Phi_tr^T Phi_tr + l2_reg * D`` and ``r = y_tr - Phi_tr @ beta*``.
+    """
+    F_tr, labels, dF_tr_mu, dF_tr_sigma = firing_strengths_and_mf_grad(
+        fa_tr, candidate, target_feature, target_label, target_mf_index
+    )
+    r0 = labels.index(target_label)
+    design_tr, phi_tr, norm_fs_tr = _design_matrix(fa_tr, top_n_todo, F_tr, order, basis, cross_pairs)
+    n_rules, n_coeffs = F_tr.shape[1], phi_tr.shape[1]
+
+    y = np.asarray(y_tr["y_value"].values, dtype=float)
+    penalty = np.ones(n_rules * n_coeffs)
+    penalty[::n_coeffs] = 0.0  # never penalize each rule's intercept/bucket-mean column
+    if l2_reg > 0:
+        sqrt_pen = np.sqrt(l2_reg * penalty)
+        beta = np.linalg.lstsq(
+            np.vstack([design_tr, np.diag(sqrt_pen)]), np.hstack([y, np.zeros_like(sqrt_pen)]), rcond=None
+        )[0]
+    else:
+        beta = np.linalg.lstsq(design_tr, y, rcond=None)[0]
+    resid = y - design_tr @ beta
+    A = design_tr.T @ design_tr + l2_reg * np.diag(penalty)
+
+    F_val, _, dF_val_mu, dF_val_sigma = firing_strengths_and_mf_grad(
+        fa_val, candidate, target_feature, target_label, target_mf_index
+    )
+    design_val, phi_val, norm_fs_val = _design_matrix(fa_val, top_n_todo, F_val, order, basis, cross_pairs)
+    y_hat_val = design_val @ beta
+    if not np.all(np.isfinite(y_hat_val)):
+        raise FloatingPointError("non-finite prediction")
+    mse = float(np.mean((y_val_true - y_hat_val) ** 2))
+
+    grads = []
+    for dF_tr, dF_val in ((dF_tr_mu, dF_val_mu), (dF_tr_sigma, dF_val_sigma)):
+        dPhi_tr = (_norm_fs_grad(F_tr, r0, dF_tr)[:, :, np.newaxis] * phi_tr[:, np.newaxis, :]).reshape(design_tr.shape)
+        rhs = dPhi_tr.T @ resid - design_tr.T @ (dPhi_tr @ beta)
+        dbeta = np.linalg.lstsq(A, rhs, rcond=None)[0]
+
+        dPhi_val = (_norm_fs_grad(F_val, r0, dF_val)[:, :, np.newaxis] * phi_val[:, np.newaxis, :]).reshape(design_val.shape)
+        dyhat = dPhi_val @ beta + design_val @ dbeta
+        grads.append(float(np.mean(2.0 * (y_hat_val - y_val_true) * dyhat)))
+
+    return mse, np.array(grads)
+
+
+# ---------------------------------------------------------------------------
 # Per-variable (block) coordinate descent.
 # ---------------------------------------------------------------------------
 
@@ -302,6 +437,7 @@ def refine_antecedents_coordinate(
     sub_maxfun: int = 25,
     tol: float = 1e-5,
     seed: int = 42,
+    norms: NormPair | None = None,
 ) -> tuple[GaussianMixtureModel, dict]:
     """Refine antecedents by *sequential* per-variable (block) coordinate descent.
 
@@ -321,12 +457,22 @@ def refine_antecedents_coordinate(
     low-dimensional local solve, so the total number of fitness evaluations is far
     smaller for comparable quality. `block=1` gives pure scalar coordinate descent.
 
+    ``norms``: when both halves resolve to "probability", each `block=2`
+    sub-problem is solved with the analytic bilevel gradient (issue #43) instead
+    of L-BFGS-B's default finite-difference estimate, so `sub_maxfun` buys more
+    optimizer iterations per fitness evaluation rather than more finite-difference
+    evaluations. `None` (the default family, "min/max") keeps the previous
+    finite-difference behavior unchanged -- the analytic gradient is only valid
+    for a norm family that is smooth everywhere.
+
     Never returns a model worse than the heuristic start on the CV fitness (the
     running best is only ever updated on a strict improvement).
     """
     folds = _make_folds(len(X_train), n_folds, val_fraction, seed)
+    prepared = _prepare_folds(X_train, y_train, folds)
     fitness = _make_kfold_fitness(model, X_train, y_train, folds, top_n_todo,
-                                  n_output_buckets, order, l2_reg, basis, cross_pairs)
+                                  n_output_buckets, order, l2_reg, basis, cross_pairs,
+                                  norms=norms, prepared=prepared)
     bounds = build_param_bounds(model, X_train)
     lo = np.array([b[0] for b in bounds])
     hi = np.array([b[1] for b in bounds])
@@ -337,10 +483,14 @@ def refine_antecedents_coordinate(
     cur = init_fit
     n_eval = [1]  # count fitness calls for reporting
 
+    resolved_norms = norms if norms is not None else resolve_norm_pair()
+    slots = list(_iter_gaussian_slots(model))
+    analytic_ok = _analytic_block_supported(resolved_norms, pin_extremes=False, block=block)
+
     n_blocks = (n_params + block - 1) // block
     print(f"\nCoordinate-descent antecedent refinement: {n_params} params "
           f"({n_blocks} blocks of {block}), order={order}, {n_folds}-fold "
-          f"init val MSE={init_fit:.5f}")
+          f"init val MSE={init_fit:.5f}" + (" (analytic gradient)" if analytic_ok else ""))
 
     with _single_threaded():
         for sweep in range(n_sweeps):
@@ -349,14 +499,41 @@ def refine_antecedents_coordinate(
                 idx = np.arange(b * block, min((b + 1) * block, n_params))
                 sub_bounds = [(lo[k], hi[k]) for k in idx]
 
-                def f_sub(v):
-                    trial = x.copy()
-                    trial[idx] = v
-                    n_eval[0] += 1
-                    return fitness(trial)
+                if analytic_ok and b < len(slots):
+                    target_feature, target_label, target_mf_index, _mf = slots[b]
 
-                res = minimize(f_sub, x[idx], method="L-BFGS-B", bounds=sub_bounds,
-                               options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
+                    def f_sub_grad(v, idx=idx, target_feature=target_feature,
+                                    target_label=target_label, target_mf_index=target_mf_index):
+                        trial = x.copy()
+                        trial[idx] = v
+                        n_eval[0] += 1
+                        candidate = apply_gaussian_params(model, trial)
+                        total_f, total_g, n_ok = 0.0, np.zeros(2), 0
+                        for X_tr, y_tr, fa_tr, X_val, y_val_true, fa_val in prepared:
+                            try:
+                                f_i, g_i = _fold_mse_and_grad(
+                                    fa_tr, y_tr, fa_val, y_val_true, candidate, top_n_todo,
+                                    order, l2_reg, basis, cross_pairs,
+                                    target_feature, target_label, target_mf_index,
+                                )
+                            except Exception:
+                                return 1e6, np.zeros(2)
+                            total_f += f_i
+                            total_g += g_i
+                            n_ok += 1
+                        return total_f / max(n_ok, 1), total_g / max(n_ok, 1)
+
+                    res = minimize(f_sub_grad, x[idx], method="L-BFGS-B", jac=True, bounds=sub_bounds,
+                                   options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
+                else:
+                    def f_sub(v, idx=idx):
+                        trial = x.copy()
+                        trial[idx] = v
+                        n_eval[0] += 1
+                        return fitness(trial)
+
+                    res = minimize(f_sub, x[idx], method="L-BFGS-B", bounds=sub_bounds,
+                                   options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
                 if res.fun < cur - 1e-12:
                     x[idx] = np.clip(res.x, lo[idx], hi[idx])
                     cur = float(res.fun)

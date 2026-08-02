@@ -398,6 +398,7 @@ def tsk_firing_strengths(
     model: GaussianMixtureModel,
     anomaly_details: AnomalyParameters | None = None,
     norms: NormPair | None = None,
+    feature_arrays: dict[str, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, list[Any]]:
     """Calculate firing strengths for each label in a Zeroth-order TSK fuzzy model.
 
@@ -409,6 +410,14 @@ def tsk_firing_strengths(
             `anomaly_details`; when both are absent the default family is used.
             Regression has no `anomaly_details` to carry the selection, so this
             argument is the only way a regressor can choose its operators.
+        feature_arrays: Optional pre-extracted ``{feature_name: ndarray}`` mapping,
+            bypassing the `X[name].values` pandas lookups below. `X` never changes
+            between fitness evaluations under antecedent refinement, so callers
+            that hold a frame fixed across many calls (e.g. `refine.py`) can
+            extract each column once and pass the same mapping every time instead
+            of paying a pandas lookup per call. `None` (the default) reproduces
+            the extraction exactly as before, so every existing caller is
+            unaffected.
 
     Returns:
         tuple containing:
@@ -428,17 +437,19 @@ def tsk_firing_strengths(
     # We'll treat each class as having its own rule: IF (x1 is A1) AND (x2 is A2) ... THEN class = L
     firing_strengths = np.zeros((n_samples, len(unique_labels)))
 
-    # Pull every feature column out of the DataFrame ONCE, before the label loop.
+    # Pull every feature column out of the DataFrame ONCE, before the label loop
+    # (unless the caller already did so and passed `feature_arrays`).
     # `X[name].values` used to sit in the inner loop, so the same column was
     # re-extracted for every label -- n_labels x n_features pandas lookups per
     # call instead of n_features. Under coordinate refinement, which evaluates
     # this tens of thousands of times on an unchanging frame, that dominated the
     # runtime: pandas __getitem__ accounted for 148s of a 257s profile.
-    feature_arrays = {
-        name: np.asarray(X[name].values)
-        for name in model.feature_models
-        if name in X
-    }
+    if feature_arrays is None:
+        feature_arrays = {
+            name: np.asarray(X[name].values)
+            for name in model.feature_models
+            if name in X
+        }
 
     for label_idx, label_value in enumerate(unique_labels):
         if anomaly_details and label_value == anomaly_details.label:
@@ -481,6 +492,128 @@ def tsk_firing_strengths(
     # For zeroth-order TSK classification, the output is typically the class
     # with the maximum firing strength (defuzzification)
     return firing_strengths, unique_labels
+
+
+# ---------------------------------------------------------------------------
+# Analytic gradient of one Gaussian membership function's (mu, sigma) through
+# the raw (pre-normalization) firing strengths, under "probability" norms.
+#
+# See issue #43. Each output label owns an entirely independent set of Gaussian
+# antecedents, so at this raw stage only the *targeted* label's firing-strength
+# column depends on the targeted membership function -- every other column's
+# derivative is exactly zero. That is what makes a per-membership-function
+# gradient cheap: `refine_antecedents_coordinate`'s coordinate-descent block is
+# exactly one Gaussian's (mu, sigma) (`block=2`), so only one label's column
+# and one feature's contribution to it ever need differentiating.
+#
+# Restricted to the "probability" t-norm/t-conorm family (product / probabilistic
+# sum) because it is genuinely smooth everywhere; "min/max" is piecewise smooth
+# (a kink where the min/max argument switches) and an analytic derivative there
+# would be a subgradient, which finite differences already recover.
+# ---------------------------------------------------------------------------
+
+def _conorm_fold_probability(feature_data: np.ndarray, memberships: list) -> np.ndarray:
+    """Probability t-conorm fold (``a S b = a + b - ab``) over a label's memberships."""
+    z = np.zeros_like(feature_data, dtype=float)
+    for mf in memberships:
+        g = mf.evaluate(feature_data)
+        z = z + g - z * g
+    return z
+
+
+def _conorm_fold_probability_with_grad(
+    feature_data: np.ndarray, memberships: list, target_index: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Probability t-conorm fold, plus d(z)/d(mu) and d(z)/d(sigma) of the
+    Gaussian membership at `target_index` (only that one membership depends on
+    theta; every other term in the fold is a constant with respect to it).
+
+    For ``z_new = t_conorm(z, g) = z + g - z*g``, the partials are
+    ``dz_new/dz = 1 - g`` and ``dz_new/dg = 1 - z``, so each fold step updates
+    the running derivative by the chain rule before advancing `z`.
+    """
+    z = np.zeros_like(feature_data, dtype=float)
+    dz_mu = np.zeros_like(feature_data, dtype=float)
+    dz_sigma = np.zeros_like(feature_data, dtype=float)
+    for j, mf in enumerate(memberships):
+        g = mf.evaluate(feature_data)
+        if j == target_index:
+            sigma = max(mf.sigma, 1e-6)
+            diff = feature_data - mf.mu
+            dg_mu = g * diff / (sigma ** 2)
+            dg_sigma = g * (diff ** 2) / (sigma ** 3)
+        else:
+            dg_mu = 0.0
+            dg_sigma = 0.0
+        dz_mu, dz_sigma = dz_mu * (1.0 - g) + (1.0 - z) * dg_mu, dz_sigma * (1.0 - g) + (1.0 - z) * dg_sigma
+        z = z + g - z * g
+    return z, dz_mu, dz_sigma
+
+
+def firing_strengths_and_mf_grad(
+    feature_arrays: dict[str, np.ndarray],
+    model: GaussianMixtureModel,
+    target_feature: str,
+    target_label: Any,
+    target_mf_index: int,
+) -> tuple[np.ndarray, list[Any], np.ndarray, np.ndarray]:
+    """Raw firing strengths under "probability" norms, plus the analytic
+    derivative of the *targeted rule's* column with respect to one Gaussian
+    membership function's ``(mu, sigma)``.
+
+    Args:
+        feature_arrays: Pre-extracted ``{feature_name: ndarray}`` mapping (see
+            `tsk_firing_strengths`).
+        model: Candidate `GaussianMixtureModel` (already has the trial params applied).
+        target_feature: Name of the feature the targeted membership function belongs to.
+        target_label: Output label the targeted membership function belongs to.
+        target_mf_index: Index of the targeted `GaussianMembership` within that
+            label's membership list.
+
+    Returns:
+        ``(firing_strengths, labels, dF_target_col_dmu, dF_target_col_dsigma)``,
+        where the last two are ``(n_samples,)`` arrays -- the derivative of
+        ``firing_strengths[:, labels.index(target_label)]`` only. Every other
+        column's derivative is exactly zero at this raw stage (see module note).
+    """
+    first_feature_model = next(iter(model.feature_models.values()))
+    unique_labels: list[Any] = list(first_feature_model.ordered_keys)
+    n_samples = len(next(iter(feature_arrays.values())))
+    firing_strengths = np.zeros((n_samples, len(unique_labels)))
+    dF_target_dmu = np.zeros(n_samples)
+    dF_target_dsigma = np.zeros(n_samples)
+
+    for label_idx, label_value in enumerate(unique_labels):
+        label_membership = np.ones(n_samples)
+        is_target_label = label_value == target_label
+        target_dz_mu = target_dz_sigma = None
+        other_product = np.ones(n_samples) if is_target_label else None
+
+        for feature_name, feature_model in model.feature_models.items():
+            if label_value not in feature_model.label_models:
+                continue
+            feature_data = feature_arrays.get(feature_name)
+            if feature_data is None:
+                continue
+            label_model = feature_model.label_models[label_value]
+
+            if is_target_label and feature_name == target_feature:
+                feature_membership, target_dz_mu, target_dz_sigma = _conorm_fold_probability_with_grad(
+                    feature_data, label_model.memberships, target_mf_index
+                )
+            else:
+                feature_membership = _conorm_fold_probability(feature_data, label_model.memberships)
+                if is_target_label:
+                    other_product = other_product * feature_membership
+
+            label_membership = label_membership * feature_membership  # probability t-norm
+
+        firing_strengths[:, label_idx] = label_membership
+        if is_target_label:
+            dF_target_dmu = other_product * target_dz_mu
+            dF_target_dsigma = other_product * target_dz_sigma
+
+    return firing_strengths, unique_labels, dF_target_dmu, dF_target_dsigma
 
 
 def tsk_predict(X: pd.DataFrame, model: GaussianMixtureModel,  anomaly_details: AnomalyParameters | None = None) -> np.ndarray:
