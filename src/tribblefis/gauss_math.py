@@ -4,6 +4,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.spatial.distance import jensenshannon
 from scipy.stats import wasserstein_distance
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
@@ -162,6 +163,14 @@ def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tu
               mis-ranked feature is simply never seen.
             - "bhattacharyya": parametric (Gaussian fit per class). Cheaper, and fine
               when features are approximately Gaussian.
+            - "composite": blend of three Gaussian-fit measures (Bhattacharyya,
+              Jensen-Shannon, overlap coefficient) via the average of their
+              arithmetic and geometric means. The geometric-mean term requires
+              every measure to agree, so a feature can't score high on the
+              strength of a single measure's blind spot. Costs ~3x bhattacharyya.
+              Does not include the histogram-correlation term the pre-#34 blend
+              had; that measure was on a different scale, crashed on
+              zero-variance features, and was the worst performing of the four.
 
     Returns:
         List of tuples (feature_name, differentiation_score) sorted by score descending
@@ -169,7 +178,7 @@ def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tu
     Raises:
         ValueError: If method is not recognized
     """
-    valid_methods = {"bhattacharyya", "wasserstein"}
+    valid_methods = {"bhattacharyya", "wasserstein", "composite"}
     if method not in valid_methods:
         raise ValueError(f"method must be one of {valid_methods}, got {method!r}")
 
@@ -198,7 +207,7 @@ def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tu
                 data_label_ij = data[y == unique_labels[ij]].values
                 data_label_jk = data[y == unique_labels[jk]].values
 
-                if method == "bhattacharyya":
+                if method in ("bhattacharyya", "composite"):
                     # Fit Gaussian distributions
                     mu_ij, std_ij = stats.norm.fit(data_label_ij)
                     mu_jk, std_jk = stats.norm.fit(data_label_jk)
@@ -214,7 +223,10 @@ def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tu
 
                     # Bhattacharyya distance = 1 - Bhattacharyya coefficient
                     bhattacharyya_coeff = np.sum(np.sqrt(pdf_ij * pdf_jk))
-                    distance = 1 - bhattacharyya_coeff
+                    bhatta_diff = 1 - bhattacharyya_coeff
+
+                if method == "bhattacharyya":
+                    distance = bhatta_diff
 
                 elif method == "wasserstein":
                     # Wasserstein distance (non-parametric, no distribution assumption)
@@ -223,6 +235,27 @@ def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tu
                     pooled_std = np.sqrt((np.var(data_label_ij) + np.var(data_label_jk)) / 2)
                     if pooled_std > 1e-10:
                         distance = distance / pooled_std
+
+                elif method == "composite":
+                    # Jensen-Shannon distance (0 = identical, 1 = completely different)
+                    js_diff = jensenshannon(pdf_ij, pdf_jk)
+                    # Overlap coefficient, converted to a "higher = more different" scale
+                    overlap_diff = 1 - np.sum(np.minimum(pdf_ij, pdf_jk))
+
+                    # Deliberately excludes the removed histogram-correlation term
+                    # (different scale, crashed on zero-variance features).
+                    diff_vals = np.array([bhatta_diff, js_diff, overlap_diff])
+                    diff_vals = diff_vals[np.isfinite(diff_vals)]
+
+                    if len(diff_vals) == 0:
+                        distance = 0.0
+                    else:
+                        arithmetic_mean = np.mean(diff_vals)
+                        geometric_mean = np.prod(diff_vals) ** (1 / len(diff_vals))
+                        # Average of both means: geometric term requires every
+                        # measure to agree, so one measure's blind spot can't
+                        # alone drive the score high.
+                        distance = (arithmetic_mean + geometric_mean) / 2
 
                 differentiation_score += distance
 
