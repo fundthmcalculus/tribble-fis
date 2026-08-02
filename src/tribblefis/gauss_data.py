@@ -20,7 +20,22 @@ import numpy as np
 # `resolve_norm_pair`.
 NormConorm = Literal["min/max", "probability", "luk", "hamacher", "einstein"]
 MemberFunction = Literal["gaussian", "triangular", "trap"]
-DefaultNormCornorm: NormConorm = "min/max"
+# The default family. `probability` rather than the textbook `min/max` because
+# min/max measured as the *worst* of the four De Morgan families on classification
+# accuracy -- see docs/norm-family-evaluation.md. Over 18 dataset x split
+# combinations, refined:
+#
+#   min/max      0.7881   (baseline)
+#   hamacher     0.8029   +0.0148 +/- 0.0078
+#   probability  0.8135   +0.0254 +/- 0.0063   <- default
+#   einstein     0.8175   +0.0294 +/- 0.0061
+#
+# Einstein edges it out, but not separably (the gap between the two is well
+# inside their error bars) and it costs two divisions per operation. Probability
+# is the cheapest of the three, is the one family whose objective is smooth
+# everywhere -- which is what makes an exact analytic gradient possible -- and is
+# the most familiar (product / probabilistic sum).
+DefaultNormCornorm: NormConorm = "probability"
 DefaultMemberFunction: MemberFunction = "gaussian"
 
 NORM_FAMILIES: tuple[NormConorm, ...] = (

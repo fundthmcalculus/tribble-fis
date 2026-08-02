@@ -7,7 +7,7 @@ from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.utils.validation import check_X_y, check_is_fitted
 from sklearn.utils.multiclass import check_classification_targets
 
-from .gauss_data import AnomalyParameters
+from .gauss_data import AnomalyParameters, DefaultNormCornorm
 from .gauss_math import (
     calculate_gaussian_correlation,
     take_top_features,
@@ -22,7 +22,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
     It follows scikit-learn's ClassifierMixin interface.
     """
 
-    def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, norm_conorm="min/max", log_transform=False, member_function="gaussian", trapz_method="fast", random_state=42,
+    def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, norm_conorm=DefaultNormCornorm, log_transform=False, member_function="gaussian", trapz_method="fast", random_state=42,
                  refine=False, refine_method="coordinate", refine_l2_shrink=0.05,
                  t_norm=None, t_conorm=None, allow_mixed_norms=False):
         """
@@ -39,7 +39,14 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
             member_function: Type of membership function ("gaussian" or "trap").
             trapz_method: Method for trapezoid fitting ("fast" for histogram-based default, "em" for EM-based).
                            that have a broad range of scales.
-            norm_conorm: Fuzzy norm/conorm pair ("min/max", "probability", "luk", "hamacher").
+            norm_conorm: Fuzzy norm/conorm family -- one of "min/max",
+                    "probability" (the default), "luk", "hamacher", "einstein".
+                    The default is not the textbook min/max: measured across 18
+                    dataset x split combinations, min/max was the *worst* of the
+                    four De Morgan families for classification accuracy. See
+                    docs/norm-family-evaluation.md. Avoid "luk" for anything
+                    wide -- its bounded sum saturates and leaves most rows with
+                    no membership at all.
             random_state: Seed for random number generator for reproducibility.
             refine: If True (Gaussian memberships only), post-fit the Gaussian
                     antecedent ``(mu, sigma)`` against a cross-entropy objective so
@@ -331,7 +338,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         top_p=0.95,
         n_gaussians=0,
         member_function="gaussian",
-        norm_conorm="min/max",
+        norm_conorm=DefaultNormCornorm,
         t_norm=None,
         t_conorm=None,
         allow_mixed_norms=False,
