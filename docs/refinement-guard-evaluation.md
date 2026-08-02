@@ -90,22 +90,63 @@ is worse than not refining about one time in nine, typically by ~2 points, and
 the guard caught half of those at best while discarding good refinements at
 three times the rate. The docstring now says what is measured.
 
+## The Ruspini partition: a different answer
+
+`refine_ruspini_partition` carried a copy of the same guard. It would have been
+easy to delete it by analogy. Measured on its own benchmark
+(`benchmarks/ruspini_guard_bench.py`), the analogy does not hold — **its guard
+stays**.
+
+48 paired cases, differences against `none`:
+
+| guard | mean diff | se | t | verdict |
+|---|---|---|---|---|
+| `legacy` | +0.0049 | 0.0058 | 0.84 | not significant |
+| `ce` | +0.0021 | 0.0071 | 0.29 | not significant |
+| `effect-size` | −0.0045 | 0.0071 | −0.64 | not significant |
+| `mcnemar` | −0.0240 | 0.0094 | −2.56 | **significantly worse** |
+
+No evidence for a change, so the existing `"legacy"` default stands. The two
+refiners now have different guard defaults, and the reason is that they were
+measured separately and gave different readings.
+
+**Why they differ.** The base rate is much less lopsided here — refinement helps
+2.2x more often than it hurts, against 7.1x on the classifier — so a guard has
+more to catch. The Ruspini search is also lower-dimensional (one apex knot per
+term, against two parameters per membership function) and optimises a *shared*
+partition every class rule reads, so there is less to overfit and the
+data-reclaiming half of the classifier's win does not materialise: `none` trains
+on a third more rows and still only ties.
+
+Accepting blindly remains positive expected value here too (+0.0946 when
+refinement helps against −0.0308 when it hurts). The guard is simply not costing
+anything on this search, which is a different situation from earning its keep.
+
+**Power caveat, stated plainly.** This benchmark is 48 cases, not 108: Ruspini's
+coordinate step is a *grid line search* (25 evaluations per knot per sweep), so
+the full matrix did not finish a single dataset in fifteen minutes. Datasets and
+configurations were cut to make it tractable. With `se ≈ 0.006` this can only
+resolve differences above roughly 0.012 — so "not significant" here means "no
+detectable difference at this scale", not "proven equal". A genuine effect
+around half a point would be invisible.
+
+**One finding is consistent across both searches:** `mcnemar` is significantly
+worse. Rejecting on a strict significance test throws away far more good
+refinements than bad ones, wherever it was tried.
+
 ## What remains
 
 - The alternatives are still selectable — `guard="mcnemar"` if a bounded worst
   case is worth ~2.5 points of mean accuracy to you.
-- Route C from #65 (track the validation curve per sweep and keep the argmin)
-  is **not** implemented. It is the one route that does not fit the
-  accept/reject frame: it changes which model is produced rather than filtering
-  the final one, and it is not obviously in conflict with `guard="none"` — with
-  the data reclaimed there is no validation split to draw the curve on, so it
-  would need its own design. Left open on #65.
-- Route D (cross-validated refereeing) is also unimplemented, and now looks
-  unattractive: it is the most expensive route and it makes a decision the
+- Routes C (per-sweep validation curve) and D (cross-validated refereeing) are
+  **dropped**, not deferred. C never fitted the accept/reject frame — it changes
+  which model is produced rather than filtering the finished one — and with the
+  classifier's holdout reclaimed there is no validation split left to draw a
+  curve on; reintroducing one would give back more than the whole rejection-rule
+  question was worth. D is the most expensive route and makes a decision the
   evidence says should not be made.
-- `refine_ruspini_partition` still has the original copied guard. Worth the same
-  treatment, but it needs its own measurement — the Ruspini partition is a much
-  lower-dimensional search and the base rate there may differ.
+- Einstein remains nominally ahead of `probability` as a norm family
+  (+0.0294 against +0.0254) but statistically tied. Left at `probability`.
 
 ## Reproducing
 
