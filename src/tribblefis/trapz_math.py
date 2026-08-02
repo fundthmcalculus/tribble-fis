@@ -26,6 +26,9 @@ def trapz_pdf(x: np.ndarray, a: float, b: float, c: float, d: float) -> np.ndarr
     The normalized PDF is: trapz_mf(x) / area
     where area = (b-a)/2 + (c-b) + (d-c)/2
 
+    Zero-width trapezoids (where a == b == c == d) have no support and thus
+    carry no mass; the PDF is zero everywhere.
+
     Args:
         x: Array of points at which to evaluate the PDF
         a, b, c, d: Trapezoid parameters (must satisfy a <= b <= c <= d)
@@ -35,6 +38,12 @@ def trapz_pdf(x: np.ndarray, a: float, b: float, c: float, d: float) -> np.ndarr
     """
     x = np.asarray(x, dtype=float)
     y = np.zeros_like(x, dtype=float)
+
+    # Compute area (normalization constant)
+    area = (b - a) / 2 + (c - b) + (d - c) / 2
+    if area == 0:
+        # Zero-width trapezoid: no mass
+        return y
 
     # Rising slope [a, b]
     ab_width = b - a
@@ -51,10 +60,8 @@ def trapz_pdf(x: np.ndarray, a: float, b: float, c: float, d: float) -> np.ndarr
         mask = (x > c) & (x < d)
         y[mask] = (d - x[mask]) / cd_width
 
-    # Compute area (normalization constant)
-    area = (b - a) / 2 + (c - b) + (d - c) / 2
-    if area > 0:
-        y = y / area
+    # Normalize by area
+    y = y / area
 
     return y
 
