@@ -888,13 +888,85 @@ def _cross_entropy_from_strengths(fs: np.ndarray, y_idx: np.ndarray, n_labels: i
     wasted work in a function called thousands of times per refinement. Each
     step is the same floating-point operation on the same operands as the two-call
     form, so the value is bit-identical.
+
+    For the refinement hot loop use :class:`_CrossEntropy` instead, which hoists
+    the row-index gather and the scratch buffers out of the call.
     """
-    row = fs.sum(axis=1)
-    num = fs[np.arange(len(y_idx)), y_idx]
-    p = np.full(len(y_idx), 1.0 / max(n_labels, 1))
-    np.divide(num, row, out=p, where=row > 0)
-    np.clip(p, 1e-12, 1.0, out=p)
-    return float(-np.mean(np.log(p)))
+    return _CrossEntropy(y_idx, n_labels, fs.shape)(fs)
+
+
+class _CrossEntropy:
+    """``_cross_entropy_from_strengths`` with its per-call setup hoisted out.
+
+    Profiling the wide refinement after the incremental-fold work put this
+    function at roughly *twice* the cost of the forward pass it consumes, which
+    was not where the time was supposed to be. Almost none of it was arithmetic:
+    every call rebuilt ``np.arange(n)`` for the fancy index, allocated a fresh
+    probability buffer, and did a two-array gather. The labels and the shape are
+    fixed for a whole refinement, so all of that hoists into the constructor and
+    the flat gather becomes a single take.
+
+    Bit-identical to the function form -- the same operations on the same
+    operands, only allocated once.
+    """
+
+    def __init__(self, y_idx: np.ndarray, n_labels: int, shape: tuple[int, int]):
+        n, n_cols = shape
+        self.n_labels = n_labels
+        self.y_idx = np.asarray(y_idx)
+        self.uniform = 1.0 / max(n_labels, 1)
+        # Flat indices of the true-class entry of each row, so the per-call
+        # gather is one `take` on a ravelled view instead of a two-array
+        # fancy-index plus a fresh `arange`.
+        self.flat_idx = np.arange(n, dtype=np.intp) * n_cols + np.asarray(y_idx, dtype=np.intp)
+        self._p = np.empty(n, dtype=float)
+        self._num = np.empty(n, dtype=float)
+
+    def __call__(self, fs: np.ndarray) -> float:
+        row = fs.sum(axis=1)
+        np.take(fs.reshape(-1), self.flat_idx, out=self._num)
+        p = self._p
+        p.fill(self.uniform)
+        np.divide(self._num, row, out=p, where=row > 0)
+        np.clip(p, 1e-12, 1.0, out=p)
+        np.log(p, out=p)
+        return float(-np.mean(p))
+
+    def with_column_grad(self, fs: np.ndarray, col: int, d_col) -> tuple[float, np.ndarray]:
+        """Cross-entropy, and its derivative w.r.t. parameters that move only
+        column `col` of `fs`.
+
+        With ``p_i = fs[i, y_i] / S_i`` and only column ``c`` depending on the
+        parameter,
+
+            d(-log p_i)/dtheta = -( [y_i == c] / fs[i, c] - 1 / S_i ) * dfs[i, c]/dtheta
+
+        -- the first term appears only for rows whose true class *is* the moved
+        column, the second for every row, through the normaliser. Rows that are
+        clipped, or whose strengths are all zero (uniform fallback), contribute
+        nothing and are masked out.
+
+        `d_col` is a sequence of ``(n,)`` derivative arrays; one output per entry.
+        """
+        row = fs.sum(axis=1)
+        np.take(fs.reshape(-1), self.flat_idx, out=self._num)
+        p = self._p
+        p.fill(self.uniform)
+        np.divide(self._num, row, out=p, where=row > 0)
+        np.clip(p, 1e-12, 1.0, out=p)
+
+        fs_c = fs[:, col]
+        live = (row > 0) & (p > 1e-12) & (fs_c > 0)
+        coef = np.zeros(len(row))
+        np.divide(-1.0, row, out=coef, where=live)
+        target = live & (self.y_idx == col)
+        coef[target] += 1.0 / fs_c[target]
+
+        n = len(row)
+        grads = np.array([-float(np.dot(coef, d)) / n for d in d_col])
+
+        np.log(p, out=p)
+        return float(-np.mean(p)), grads
 
 
 def _classifier_proba(X: pd.DataFrame, model: GaussianMixtureModel):
@@ -988,6 +1060,7 @@ class _CompiledClassifierObjective:
         self.x0 = x0
         self.width = width
         self._incremental: IncrementalFIS | None = None
+        self._ce = _CrossEntropy(y_idx, n_labels, (len(y_idx), n_labels))
 
     def _reg(self, vec: np.ndarray) -> float:
         if not self.l2_shrink:
@@ -995,10 +1068,7 @@ class _CompiledClassifierObjective:
         return self.l2_shrink * float(np.mean(((vec - self.x0) / self.width) ** 2))
 
     def _loss(self, fs: np.ndarray, vec: np.ndarray) -> float:
-        return (
-            _cross_entropy_from_strengths(fs, self.y_idx, self.n_labels)
-            + self._reg(vec)
-        )
+        return self._ce(fs) + self._reg(vec)
 
     def __call__(self, vec: np.ndarray) -> float:
         try:
@@ -1012,6 +1082,64 @@ class _CompiledClassifierObjective:
             self._incremental.refresh()
         return self._loss(fs, vec)
 
+    def _reg_grad(self, vec: np.ndarray, indices) -> np.ndarray:
+        """d(reg)/d(vec[indices]) for ``reg = l2 * mean(((vec - x0)/width)**2)``."""
+        if not self.l2_shrink:
+            return np.zeros(len(indices))
+        scale = 2.0 * self.l2_shrink / vec.size
+        idx = np.asarray(indices)
+        return scale * (vec[idx] - self.x0[idx]) / self.width[idx] ** 2
+
+    def supports_gradient(self) -> bool:
+        inc = self._ensure_incremental()
+        return inc.supports_gradient()
+
+    def _ensure_incremental(self) -> IncrementalFIS:
+        if self._incremental is None:
+            self._incremental = IncrementalFIS(
+                self.compiled, self.feature_matrix, self.norms
+            )
+        return self._incremental
+
+    def slot_fitness_with_grad(self, slot: int, template: np.ndarray):
+        """Like :meth:`slot_fitness`, but the objective also returns its gradient.
+
+        L-BFGS-B otherwise finite-differences a two-parameter block, which costs
+        two extra whole evaluations per gradient -- two thirds of all evaluations
+        in a refinement. Here the derivative rides along inside the same fold
+        that computes the value.
+
+        Under ``min/max`` this is a subgradient and the search therefore takes a
+        *different* path than the finite-difference version; it is not a
+        bit-exact substitution, and measurably it is not reliably a better one.
+        See ``analytic_gradient`` in :func:`refine_classifier_antecedents` and
+        ``docs/analytic-gradient-evaluation.md``.
+        """
+        inc = self._ensure_incremental()
+        vec = template.copy()
+        i_mu, i_sigma = 2 * slot, 2 * slot + 1
+        col = inc.target_label_index(slot)
+
+        reg_grad = self._reg_grad
+
+        def f_sub(v):
+            vec[i_mu] = v[0]
+            vec[i_sigma] = v[1]
+            try:
+                fs, d_mu, d_sigma = inc.evaluate_slot_with_grad(
+                    slot, float(v[0]), float(v[1])
+                )
+            except Exception:
+                return 1e6, np.zeros(2)
+            ce, grad = self._ce.with_column_grad(fs, col, (d_mu, d_sigma))
+            return ce + self._reg(vec), grad + reg_grad(vec, (i_mu, i_sigma))
+
+        def commit(v) -> None:
+            inc.evaluate_slot(slot, float(v[0]), float(v[1]))
+            inc.commit()
+
+        return f_sub, commit
+
     def slot_fitness(self, slot: int, template: np.ndarray):
         """A two-argument objective for membership `slot`'s ``(mu, sigma)``.
 
@@ -1021,11 +1149,7 @@ class _CompiledClassifierObjective:
         ``v`` into the cache. Nothing is mutated until then, so an L-BFGS-B
         sub-problem that ends up rejecting every trial leaves no trace.
         """
-        if self._incremental is None:
-            self._incremental = IncrementalFIS(
-                self.compiled, self.feature_matrix, self.norms
-            )
-        inc = self._incremental
+        inc = self._ensure_incremental()
         vec = template.copy()
         i_mu, i_sigma = 2 * slot, 2 * slot + 1
 
@@ -1070,6 +1194,7 @@ def refine_classifier_antecedents(
     n_sweeps: int = 3,
     block: int = 2,
     incremental: bool = True,
+    analytic_gradient: bool = False,
     sub_maxfun: int = 25,
     population_size: int = 40,
     num_generations: int = 20,
@@ -1095,6 +1220,14 @@ def refine_classifier_antecedents(
     :class:`~tribblefis.kernel.IncrementalFIS`). The two produce bit-identical
     results and the cache is several times faster on a wide model, so this exists
     to A/B that claim, not because either answer is preferable.
+
+    ``analytic_gradient=True`` hands L-BFGS-B a closed-form gradient instead of
+    letting it finite-difference each two-parameter block. It is **off by
+    default** and is not a free speedup -- read
+    ``docs/analytic-gradient-evaluation.md`` before turning it on. In short: it
+    removes two thirds of the evaluations, but under the default ``min/max``
+    norms the gradient of an inactive branch is exactly zero, so the search takes
+    a different path and lands on different (not reliably better) antecedents.
     """
     y_arr = np.asarray(y_train)
     bounds = build_param_bounds(model, X_train, sigma_min_frac, sigma_max_frac)
@@ -1141,6 +1274,9 @@ def refine_classifier_antecedents(
             and n_params % 2 == 0
             and isinstance(fitness, _CompiledClassifierObjective)
         )
+        use_analytic_grad = (
+            use_incremental and analytic_gradient and fitness.supports_gradient()
+        )
         with _single_threaded():
             for sweep in range(n_sweeps):
                 prev = cur
@@ -1149,8 +1285,13 @@ def refine_classifier_antecedents(
                     sub_bounds = [(lo[k], hi[k]) for k in bidx]
 
                     commit = None
+                    jac = False
                     if use_incremental:
-                        slot_f, commit = fitness.slot_fitness(b, x)
+                        if use_analytic_grad:
+                            slot_f, commit = fitness.slot_fitness_with_grad(b, x)
+                            jac = True
+                        else:
+                            slot_f, commit = fitness.slot_fitness(b, x)
 
                         def f_sub(v, _slot_f=slot_f):
                             nonlocal n_eval
@@ -1165,6 +1306,7 @@ def refine_classifier_antecedents(
                             return fitness(trial)
 
                     res = minimize(f_sub, x[bidx], method="L-BFGS-B", bounds=sub_bounds,
+                                   jac=jac,
                                    options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
                     if res.fun < cur - 1e-12:
                         x[bidx] = np.clip(res.x, lo[bidx], hi[bidx])

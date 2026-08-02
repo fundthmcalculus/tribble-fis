@@ -233,6 +233,143 @@ cdef inline void _sample_cells(
             out[i, l] = _tnorm(out[i, l], cell, t_norm_code)
 
 
+cdef inline double _d_conorm_da(double a, double b, int code) noexcept nogil:
+    """d S(a, b) / da. Only the two families the gradient path supports."""
+    if code == 0:                       # min/max -> max
+        return 1.0 if a >= b else 0.0
+    return 1.0 - b                      # probability
+
+
+cdef inline double _d_conorm_db(double a, double b, int code) noexcept nogil:
+    if code == 0:
+        return 0.0 if a >= b else 1.0
+    return 1.0 - a
+
+
+cdef inline double _d_tnorm_da(double a, double b, int code) noexcept nogil:
+    """d T(a, b) / da. Only the two families the gradient path supports."""
+    if code == 0:                       # min/max -> min
+        return 1.0 if a <= b else 0.0
+    return b                            # probability
+
+
+cdef inline double _d_tnorm_db(double a, double b, int code) noexcept nogil:
+    if code == 0:
+        return 0.0 if a <= b else 1.0
+    return a
+
+
+def refold_label_with_grad(
+    const double[::1] xcol,
+    const double[::1] mu_k,
+    const double[::1] sigma_k,
+    const double[::1] active_k,
+    Py_ssize_t ki,
+    const double[:, ::1] cells_l,
+    Py_ssize_t fi,
+    double[::1] new_cell,
+    double[::1] out_col,
+    double[::1] d_mu,
+    double[::1] d_sigma,
+    int t_norm_code,
+    int t_conorm_code,
+    int num_threads,
+):
+    """:func:`refold_label`, plus d(out_col)/d(mu, sigma) of membership `ki`.
+
+    Carrying the derivative through the same two folds that compute the value
+    costs a handful of extra registers and no extra pass over memory, which is
+    the entire point: SciPy's alternative is two more *whole* evaluations per
+    gradient.
+
+    Supports the ``min/max`` and ``probability`` families only (codes 0 and 1);
+    the caller checks before dispatching here. Under ``min/max`` the result is a
+    subgradient -- the derivative of the currently-active branch, and exactly
+    zero for a membership function that is not the arg-min/arg-max anywhere.
+    That is a true one-sided derivative almost everywhere, ties being
+    measure-zero, but it is genuinely different information from a
+    finite-difference step that can see across a branch switch.
+    """
+    cdef Py_ssize_t n = xcol.shape[0]
+    cdef Py_ssize_t i
+
+    if n == 0:
+        return
+
+    if num_threads > 1:
+        for i in prange(n, nogil=True, schedule='static', num_threads=num_threads):
+            _sample_refold_grad(i, xcol, mu_k, sigma_k, active_k, ki, cells_l, fi,
+                                new_cell, out_col, d_mu, d_sigma,
+                                t_norm_code, t_conorm_code)
+    else:
+        with nogil:
+            for i in range(n):
+                _sample_refold_grad(i, xcol, mu_k, sigma_k, active_k, ki, cells_l, fi,
+                                    new_cell, out_col, d_mu, d_sigma,
+                                    t_norm_code, t_conorm_code)
+
+
+cdef inline void _sample_refold_grad(
+    Py_ssize_t i,
+    const double[::1] xcol,
+    const double[::1] mu_k,
+    const double[::1] sigma_k,
+    const double[::1] active_k,
+    Py_ssize_t ki,
+    const double[:, ::1] cells_l,
+    Py_ssize_t fi,
+    double[::1] new_cell,
+    double[::1] out_col,
+    double[::1] d_mu,
+    double[::1] d_sigma,
+    int t_norm_code,
+    int t_conorm_code,
+) noexcept nogil:
+    cdef Py_ssize_t n_f = cells_l.shape[1], n_k = mu_k.shape[0]
+    cdef Py_ssize_t f, k
+    cdef double xv = xcol[i]
+    cdef double d, g, s, cell, acc, cf
+    cdef double dg_mu, dg_sg, dcell_mu, dcell_sg, dacc_mu, dacc_sg, da, db
+
+    cell = 0.0
+    dcell_mu = 0.0
+    dcell_sg = 0.0
+    for k in range(n_k):
+        s = sigma_k[k]
+        d = (xv - mu_k[k]) / s
+        g = exp(-0.5 * d * d) * active_k[k]
+        if k == ki:
+            dg_mu = g * (xv - mu_k[k]) / (s * s)
+            dg_sg = g * (xv - mu_k[k]) * (xv - mu_k[k]) / (s * s * s)
+        else:
+            dg_mu = 0.0
+            dg_sg = 0.0
+        da = _d_conorm_da(cell, g, t_conorm_code)
+        db = _d_conorm_db(cell, g, t_conorm_code)
+        dcell_mu = da * dcell_mu + db * dg_mu
+        dcell_sg = da * dcell_sg + db * dg_sg
+        cell = _conorm(cell, g, t_conorm_code)
+    new_cell[i] = cell
+
+    acc = 1.0
+    dacc_mu = 0.0
+    dacc_sg = 0.0
+    for f in range(n_f):
+        cf = cell if f == fi else cells_l[i, f]
+        da = _d_tnorm_da(acc, cf, t_norm_code)
+        db = _d_tnorm_db(acc, cf, t_norm_code)
+        if f == fi:
+            dacc_mu = da * dacc_mu + db * dcell_mu
+            dacc_sg = da * dacc_sg + db * dcell_sg
+        else:
+            dacc_mu = da * dacc_mu
+            dacc_sg = da * dacc_sg
+        acc = _tnorm(acc, cf, t_norm_code)
+    out_col[i] = acc
+    d_mu[i] = dacc_mu
+    d_sigma[i] = dacc_sg
+
+
 def refold_label(
     const double[::1] xcol,
     const double[::1] mu_k,
