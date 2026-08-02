@@ -31,7 +31,9 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         Args:
             top_n: Number of top features to select based on differentiation score.
                    If > 0, top_p is ignored.
-            top_p: Percentage of cumulative differentiation score to cover.
+            top_p: Per-feature score threshold, not cumulative coverage: a feature
+                   is kept when its own normalized differentiation score is
+                   >= (1 - top_p). Ignored if top_n > 0.
             n_gaussians: Number of Gaussians per feature per label (0 for automatic).
                          Can also be a dictionary mapping feature names or labels to number of Gaussians.
             member_function: Type of membership function ("gaussian" or "trap").

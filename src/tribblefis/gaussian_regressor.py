@@ -47,7 +47,9 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         Args:
             top_n: Number of top features to select based on differentiation score.
                    If > 0, top_p is ignored.
-            top_p: Percentage of cumulative differentiation score to cover.
+            top_p: Per-feature score threshold, not cumulative coverage: a feature
+                   is kept when its own normalized differentiation score is
+                   >= (1 - top_p). Ignored if top_n > 0.
             n_gaussians: Number of Gaussians per feature per label (0 for automatic).
             log_transform: Whether to automatically apply log-transformation to features.
             n_output_buckets: Number of output buckets for partitioning y during training.

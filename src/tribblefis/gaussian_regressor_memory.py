@@ -199,7 +199,9 @@ class MimoGaussianPredictorMemory(BaseEstimator, RegressorMixin):
             memory_size: Size of long-term memory window (must be < window_size)
             include_time: Whether to include explicit time_step feature
             top_n: Number of top features for base regressor
-            top_p: Percentage of cumulative score for base regressor
+            top_p: Per-feature score threshold for base regressor, not cumulative
+                   coverage: a feature is kept when its own normalized score is
+                   >= (1 - top_p). Ignored if top_n > 0.
             n_gaussians: Number of Gaussians per feature (0=automatic)
             log_transform: Whether to apply log-transform to features
             n_output_buckets: Number of output buckets for TSK

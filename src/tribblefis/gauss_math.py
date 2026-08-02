@@ -149,15 +149,19 @@ def fit_gaussians(X, y, column: str, label_value: int, n_gaussians: int = 0, max
     return gaussians
 
 
-def calculate_gaussian_correlation(X, y, method: str = "bhattacharyya") -> list[tuple[Any, Any]]:
+def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tuple[Any, Any]]:
     """Calculate distance metric between distributions for each feature across different labels.
 
     Args:
         X: Feature dataframe
         y: Label series
         method: Distance metric to use. Options:
-            - "bhattacharyya" (default): Parametric divergence, best empirical performance
-            - "wasserstein": Non-parametric, no distribution assumption
+            - "wasserstein" (default): non-parametric, makes no distributional assumption.
+              Preferred: a Gaussian-fit divergence silently mismeasures non-Gaussian
+              features, and the classifier keeps only the top-ranked few, so a
+              mis-ranked feature is simply never seen.
+            - "bhattacharyya": parametric (Gaussian fit per class). Cheaper, and fine
+              when features are approximately Gaussian.
 
     Returns:
         List of tuples (feature_name, differentiation_score) sorted by score descending
@@ -687,6 +691,22 @@ def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierMode
 def take_top_features(
     feature_differentiators: list[tuple[Any, Any]], top_p: float = 0.95, top_n: int = -1
 ) -> tuple[int, list[Any]]:
+    """Select features from a differentiation-score ranking.
+
+    Args:
+        feature_differentiators: (feature_name, score) pairs, normalized so the
+            top score is 1.0, sorted descending (as returned by
+            ``calculate_gaussian_correlation``).
+        top_p: Per-feature score threshold, not cumulative coverage. A feature is
+            kept when its own normalized score is >= (1 - top_p). Ignored if
+            top_n > 0. top_p=1.0 keeps every feature (threshold 0); lower top_p
+            raises the threshold and keeps fewer.
+        top_n: If > 0, keep exactly the top_n highest-scoring features and
+            ignore top_p.
+
+    Returns:
+        Tuple of (number of features kept, list of kept feature names).
+    """
     if top_n > 0:
         return top_n, [s for s, v in feature_differentiators[:top_n]]
 
