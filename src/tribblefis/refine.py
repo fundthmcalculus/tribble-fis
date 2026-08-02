@@ -936,6 +936,130 @@ def _sub_solve(method: str, fun, x0, bounds, budget: int, jac: bool):
                         jac=jac and spec["jac"], options=options)
 
 
+# ---------------------------------------------------------------------------
+# Acceptance guards: deciding whether a refinement beat its starting point.
+#
+# The refinement minimises a training objective; whether that helped on unseen
+# data is a separate question, answered here on a split the search never saw.
+# The naive answer -- "is held-out accuracy higher?" -- is what `legacy` does,
+# and it is badly underpowered: on a ~37-row validation split one sample is 2.7
+# points against a binomial standard error near 5, so the comparison is mostly
+# reading noise. See issue #65.
+#
+# Each strategy takes the same evidence (per-row correctness and per-row log
+# loss, for both models, on the held-out split) and returns accept/reject plus
+# whatever diagnostics it used. They are interchangeable, which is what lets
+# `benchmarks/guard_bench.py` score them against each other.
+# ---------------------------------------------------------------------------
+
+GUARDS: tuple[str, ...] = ("legacy", "effect-size", "mcnemar", "ce", "none")
+
+
+def _mcnemar_p(only_a: int, only_b: int) -> float:
+    """Two-sided exact McNemar p-value for `only_a` vs `only_b` discordant pairs.
+
+    McNemar is the right instrument here because both models predict the *same*
+    rows: the rows they agree on carry no information about which is better, and
+    an unpaired test that ignores that pairing throws away most of the power.
+    Under the null the discordant pairs are Binomial(n, 1/2), so the exact tail
+    is a sum of binomial coefficients -- no approximation, which matters because
+    the discordant counts here are routinely single digits.
+    """
+    from math import comb
+
+    n = only_a + only_b
+    if n == 0:
+        return 1.0
+    k = min(only_a, only_b)
+    tail = sum(comb(n, i) for i in range(k + 1)) / (2 ** n)
+    return min(1.0, 2.0 * tail)
+
+
+def _apply_guard(
+    strategy: str,
+    correct_init: np.ndarray,
+    correct_refined: np.ndarray,
+    ll_init: np.ndarray,
+    ll_refined: np.ndarray,
+    alpha: float = 0.10,
+) -> tuple[bool, dict]:
+    """Decide whether to keep a refinement. Returns ``(accept, diagnostics)``.
+
+    Args:
+        correct_init, correct_refined: Per-row boolean correctness on the
+            held-out split, for the starting model and the refined one.
+        ll_init, ll_refined: Per-row negative log-likelihood on the same rows.
+        alpha: Significance level for the tests that use one.
+    """
+    n = len(correct_init)
+    acc_init = float(np.mean(correct_init)) if n else 0.0
+    acc_refined = float(np.mean(correct_refined)) if n else 0.0
+    ce_init = float(np.mean(ll_init)) if n else 0.0
+    ce_refined = float(np.mean(ll_refined)) if n else 0.0
+    diag = {"val_acc": acc_refined, "init_val_acc": acc_init,
+            "val_ce": ce_refined, "init_val_ce": ce_init}
+
+    if strategy == "none":
+        # Route E: no guard at all -- trust the ridge shrinkage toward x0 to
+        # bound how far the search can wander, and always keep the refinement.
+        return True, {**diag, "guard": "none"}
+
+    if strategy == "legacy":
+        accept = (acc_refined > acc_init) or (
+            acc_refined == acc_init and ce_refined < ce_init)
+        return accept, {**diag, "guard": "legacy"}
+
+    if strategy == "effect-size":
+        # Route B: require the accuracy gain to clear one standard error of the
+        # *paired difference*, not of either accuracy on its own -- the two
+        # estimates are computed on the same rows and are strongly correlated,
+        # so the unpaired error bar would be far too wide.
+        d = correct_refined.astype(float) - correct_init.astype(float)
+        se = float(np.std(d, ddof=1) / np.sqrt(n)) if n > 1 else 0.0
+        # A single discordant row sits *exactly* on the threshold: for k=1 the
+        # paired mean and its standard error are both 1/n analytically, so a bare
+        # `>` decides it on floating-point noise. Requiring a hair more than one
+        # SE makes that case a deterministic reject, which is the intent -- one
+        # row is precisely the noise this rule exists to resist.
+        accept = (acc_refined - acc_init) > se * (1.0 + 1e-9)
+        if acc_refined == acc_init:
+            accept = ce_refined < ce_init
+        return accept, {**diag, "guard": "effect-size", "paired_se": se}
+
+    if strategy == "mcnemar":
+        # Route A: significance test on the discordant pairs.
+        only_refined = int(np.sum(correct_refined & ~correct_init))
+        only_init = int(np.sum(correct_init & ~correct_refined))
+        p = _mcnemar_p(only_refined, only_init)
+        accept = only_refined > only_init and p < alpha
+        if only_refined == only_init:
+            # Indistinguishable on accuracy; fall back to the continuous signal.
+            accept = ce_refined < ce_init
+        return accept, {**diag, "guard": "mcnemar", "p_value": p,
+                        "only_refined": only_refined, "only_init": only_init}
+
+    if strategy == "ce":
+        # Route F from the issue: score on the loss the search actually
+        # minimises. Accuracy is a step function that discards most of the
+        # signal; cross-entropy is continuous and much lower variance, so the
+        # same split resolves a smaller true difference.
+        accept = ce_refined < ce_init
+        return accept, {**diag, "guard": "ce"}
+
+    raise ValueError(f"guard={strategy!r} not in {GUARDS}")
+
+
+def _per_row_evidence(X, y, model, norms, labels_hint=None):
+    """Per-row correctness and negative log-likelihood under `model`."""
+    proba, labels = _classifier_proba(X, model, norms)
+    col = {lab: i for i, lab in enumerate(labels)}
+    y_arr = np.asarray(y, dtype=object)
+    y_idx = np.array([col.get(v, 0) for v in y_arr])
+    pred = np.array([labels[i] for i in np.argmax(proba, axis=1)], dtype=object)
+    p = np.clip(proba[np.arange(len(y_idx)), y_idx], 1e-12, 1.0)
+    return (pred == y_arr), -np.log(p)
+
+
 #: Families whose classifier objective is differentiable everywhere, so a
 #: closed-form gradient is the *actual* derivative rather than a subgradient.
 #: Only `probability` qualifies among the pairs the kernel has partials for:
@@ -1260,6 +1384,7 @@ def refine_classifier_antecedents(
     incremental: bool = True,
     analytic_gradient: bool | None = None,
     sub_method: str = "SLSQP",
+    guard: str = "none",
     sub_maxfun: int = 25,
     population_size: int = 40,
     num_generations: int = 20,
@@ -1305,7 +1430,20 @@ def refine_classifier_antecedents(
     ``sub_method`` selects the solver for each block. Measured under the default
     family: SLSQP 1.14x over L-BFGS-B at equal accuracy, and 1.95x with the
     gradient; Powell is slightly more accurate but 1.5x slower; TNC is 3x slower.
+
+    ``guard`` decides whether a refinement is kept. It defaults to ``"none"`` --
+    keep it always -- which is a measured result, not an oversight: across 108
+    (dataset x split x configuration) cases, refinements beat their starting
+    point 85 times and lost 12, gaining ~4 points when they won and shedding ~2
+    when they lost, so *every* rejection rule tested destroys expected accuracy.
+    ``"none"`` also lets the search train on all the data instead of reserving
+    ``val_fraction`` of it to referee a decision no longer being made. The
+    alternatives -- ``"legacy"``, ``"ce"``, ``"effect-size"``, ``"mcnemar"`` --
+    remain for anyone who wants a bounded worst case at that price. See
+    ``docs/refinement-guard-evaluation.md`` and issue #65.
     """
+    if guard not in GUARDS:
+        raise ValueError(f"guard={guard!r} not in {GUARDS}")
     y_arr = np.asarray(y_train)
     # The operators the deployed model will use. Refining against a different
     # pair optimises a model nobody runs, because the firing strengths -- and so
@@ -1319,14 +1457,22 @@ def refine_classifier_antecedents(
     x0 = np.clip(extract_gaussian_params(model), lo, hi)
 
     # Held-out split used only to *accept/reject* the refinement (never optimised).
+    # With `guard="none"` there is no decision to referee, so withholding a
+    # quarter of the training data would be pure loss -- the search gets all of
+    # it instead. That is half the value of dropping the guard; see
+    # docs/refinement-guard-evaluation.md.
     from sklearn.model_selection import train_test_split
     idx = np.arange(len(X_train))
-    strat = y_arr if len(np.unique(y_arr)) > 1 else None
-    try:
-        tr_idx, val_idx = train_test_split(
-            idx, test_size=val_fraction, random_state=seed, stratify=strat)
-    except ValueError:                      # too few samples in a class to stratify
-        tr_idx, val_idx = train_test_split(idx, test_size=val_fraction, random_state=seed)
+    if guard == "none":
+        tr_idx = val_idx = idx
+    else:
+        strat = y_arr if len(np.unique(y_arr)) > 1 else None
+        try:
+            tr_idx, val_idx = train_test_split(
+                idx, test_size=val_fraction, random_state=seed, stratify=strat)
+        except ValueError:                  # too few samples in a class to stratify
+            tr_idx, val_idx = train_test_split(idx, test_size=val_fraction,
+                                               random_state=seed)
     X_tr, y_tr = X_train.iloc[tr_idx], y_arr[tr_idx]
     X_val, y_val = X_train.iloc[val_idx], y_arr[val_idx]
 
@@ -1420,21 +1566,25 @@ def refine_classifier_antecedents(
 
     refined = apply_gaussian_params(model, best_x)
 
-    # Accept only on a genuine held-out improvement (accuracy first, CE tiebreak).
-    val_acc = _classifier_accuracy(X_val, y_val, refined, resolved_norms)
-    val_ce = _classifier_val_ce(X_val, y_val, refined, resolved_norms)
-    init_val_ce = _classifier_val_ce(X_val, y_val, model, resolved_norms)
-    accept = (val_acc > init_val_acc) or (val_acc == init_val_acc and val_ce < init_val_ce)
+    # Accept only on a held-out improvement the chosen guard is willing to call
+    # real. Both models are scored on the same rows, so the evidence is paired
+    # and the guards can use that.
+    ok_init, ll_init = _per_row_evidence(X_val, y_val, model, resolved_norms)
+    ok_refined, ll_refined = _per_row_evidence(X_val, y_val, refined, resolved_norms)
+    accept, guard_info = _apply_guard(guard, ok_init, ok_refined, ll_init, ll_refined)
+    val_acc = guard_info["val_acc"]
+    val_ce = guard_info["val_ce"]
+    init_val_ce = guard_info["init_val_ce"]
     out_model = refined if accept else model
     if verbose:
         verdict = "accepted" if accept else "rejected (kept heuristic)"
-        print(f"  refinement {verdict}: val acc {init_val_acc:.4f} -> {val_acc:.4f}, "
-              f"val CE {init_val_ce:.4f} -> {val_ce:.4f}")
+        print(f"  refinement {verdict} [{guard}]: val acc {init_val_acc:.4f} -> "
+              f"{val_acc:.4f}, val CE {init_val_ce:.4f} -> {val_ce:.4f}")
     return out_model, {
         "refined": bool(accept),
         "init_val_acc": init_val_acc, "val_acc": val_acc,
         "init_val_ce": init_val_ce, "val_ce": val_ce,
-        "init_train_obj": init_fit, **info,
+        "init_train_obj": init_fit, **guard_info, **info,
     }
 
 

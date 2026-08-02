@@ -51,8 +51,13 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
             refine: If True (Gaussian memberships only), post-fit the Gaussian
                     antecedent ``(mu, sigma)`` against a cross-entropy objective so
                     the memberships become discriminative rather than merely
-                    marginal-fit. The refinement is accepted only if it does not
-                    worsen a held-out validation split, so it can never hurt.
+                    marginal-fit. Measured over 108 cases it improves held-out
+                    accuracy by ~5 points on average, but *not* uniformly: it is
+                    worse than not refining about one time in nine, typically by
+                    ~2 points. Earlier versions of this docstring claimed a
+                    held-out check made it "never hurt"; that check existed but
+                    did not deliver it, and rejecting on it cost more accuracy
+                    than it saved -- see docs/refinement-guard-evaluation.md.
             refine_method: ``"coordinate"`` (fast per-membership block coordinate
                     descent, the default) or ``"optimizers"`` (population + local
                     polish search from the `optimizers` package).
