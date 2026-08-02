@@ -4,6 +4,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.spatial.distance import jensenshannon
 from scipy.stats import wasserstein_distance
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
@@ -149,15 +150,31 @@ def fit_gaussians(X, y, column: str, label_value: int, n_gaussians: int = 0, max
     return gaussians
 
 
-def calculate_gaussian_correlation(X, y, method: str = "bhattacharyya") -> list[tuple[Any, Any]]:
+def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tuple[Any, Any]]:
     """Calculate distance metric between distributions for each feature across different labels.
 
     Args:
         X: Feature dataframe
         y: Label series
         method: Distance metric to use. Options:
-            - "bhattacharyya" (default): Parametric divergence, best empirical performance
-            - "wasserstein": Non-parametric, no distribution assumption
+            - "wasserstein" (default): non-parametric, makes no distributional assumption.
+              Preferred: a Gaussian-fit divergence silently mismeasures non-Gaussian
+              features, and the classifier keeps only the top-ranked few, so a
+              mis-ranked feature is simply never seen.
+            - "bhattacharyya": parametric (Gaussian fit per class). Cheaper, and fine
+              when features are approximately Gaussian.
+            - "composite": blend of four measures -- three Gaussian-fit
+              (Bhattacharyya, Jensen-Shannon, overlap coefficient) plus
+              wasserstein, the one non-parametric view -- via the average of
+              their arithmetic and geometric means. The geometric-mean term
+              requires every measure to agree, so a feature can't score high
+              on the strength of a single measure's blind spot; without
+              wasserstein the other three all share the same Gaussian-fit
+              blind spot and don't actually diversify against it. Costs ~4x
+              bhattacharyya. Does not include the histogram-correlation term
+              the pre-#34 blend had; that measure was on a different scale,
+              crashed on zero-variance features, and was the worst performing
+              of the four.
 
     Returns:
         List of tuples (feature_name, differentiation_score) sorted by score descending
@@ -165,7 +182,7 @@ def calculate_gaussian_correlation(X, y, method: str = "bhattacharyya") -> list[
     Raises:
         ValueError: If method is not recognized
     """
-    valid_methods = {"bhattacharyya", "wasserstein"}
+    valid_methods = {"bhattacharyya", "wasserstein", "composite"}
     if method not in valid_methods:
         raise ValueError(f"method must be one of {valid_methods}, got {method!r}")
 
@@ -194,7 +211,7 @@ def calculate_gaussian_correlation(X, y, method: str = "bhattacharyya") -> list[
                 data_label_ij = data[y == unique_labels[ij]].values
                 data_label_jk = data[y == unique_labels[jk]].values
 
-                if method == "bhattacharyya":
+                if method in ("bhattacharyya", "composite"):
                     # Fit Gaussian distributions
                     mu_ij, std_ij = stats.norm.fit(data_label_ij)
                     mu_jk, std_jk = stats.norm.fit(data_label_jk)
@@ -210,15 +227,46 @@ def calculate_gaussian_correlation(X, y, method: str = "bhattacharyya") -> list[
 
                     # Bhattacharyya distance = 1 - Bhattacharyya coefficient
                     bhattacharyya_coeff = np.sum(np.sqrt(pdf_ij * pdf_jk))
-                    distance = 1 - bhattacharyya_coeff
+                    bhatta_diff = 1 - bhattacharyya_coeff
 
-                elif method == "wasserstein":
+                if method in ("wasserstein", "composite"):
                     # Wasserstein distance (non-parametric, no distribution assumption)
-                    distance = wasserstein_distance(data_label_ij, data_label_jk)
+                    w_distance = wasserstein_distance(data_label_ij, data_label_jk)
                     # Normalize by pooled standard deviation for scale invariance
                     pooled_std = np.sqrt((np.var(data_label_ij) + np.var(data_label_jk)) / 2)
                     if pooled_std > 1e-10:
-                        distance = distance / pooled_std
+                        w_distance = w_distance / pooled_std
+
+                if method == "bhattacharyya":
+                    distance = bhatta_diff
+
+                elif method == "wasserstein":
+                    distance = w_distance
+
+                elif method == "composite":
+                    # Jensen-Shannon distance (0 = identical, 1 = completely different)
+                    js_diff = jensenshannon(pdf_ij, pdf_jk)
+                    # Overlap coefficient, converted to a "higher = more different" scale
+                    overlap_diff = 1 - np.sum(np.minimum(pdf_ij, pdf_jk))
+                    # Squash the unbounded pooled-std-normalized wasserstein distance
+                    # onto the same [0, 1) scale as the other three measures so it
+                    # doesn't dominate or get drowned out in the blend.
+                    wasserstein_diff = w_distance / (1 + w_distance)
+
+                    # Deliberately excludes the removed histogram-correlation term
+                    # (different scale, crashed on zero-variance features).
+                    diff_vals = np.array([bhatta_diff, js_diff, overlap_diff, wasserstein_diff])
+                    diff_vals = diff_vals[np.isfinite(diff_vals)]
+
+                    if len(diff_vals) == 0:
+                        distance = 0.0
+                    else:
+                        arithmetic_mean = np.mean(diff_vals)
+                        geometric_mean = np.prod(diff_vals) ** (1 / len(diff_vals))
+                        # Average of both means: geometric term requires every
+                        # measure to agree, so one measure's blind spot can't
+                        # alone drive the score high.
+                        distance = (arithmetic_mean + geometric_mean) / 2
 
                 differentiation_score += distance
 
@@ -687,6 +735,22 @@ def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierMode
 def take_top_features(
     feature_differentiators: list[tuple[Any, Any]], top_p: float = 0.95, top_n: int = -1
 ) -> tuple[int, list[Any]]:
+    """Select features from a differentiation-score ranking.
+
+    Args:
+        feature_differentiators: (feature_name, score) pairs, normalized so the
+            top score is 1.0, sorted descending (as returned by
+            ``calculate_gaussian_correlation``).
+        top_p: Per-feature score threshold, not cumulative coverage. A feature is
+            kept when its own normalized score is >= (1 - top_p). Ignored if
+            top_n > 0. top_p=1.0 keeps every feature (threshold 0); lower top_p
+            raises the threshold and keeps fewer.
+        top_n: If > 0, keep exactly the top_n highest-scoring features and
+            ignore top_p.
+
+    Returns:
+        Tuple of (number of features kept, list of kept feature names).
+    """
     if top_n > 0:
         return top_n, [s for s, v in feature_differentiators[:top_n]]
 
