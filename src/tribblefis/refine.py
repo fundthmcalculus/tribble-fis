@@ -31,6 +31,9 @@ from .gauss_data import (
     GaussianMembership, LabelModel, FeatureModel, GaussianMixtureModel, NormPair, resolve_norm_pair,
 )
 from .gauss_math import tsk_firing_strengths, firing_strengths_and_mf_grad
+from .kernel import (
+    NotCompilable, compile_model, firing_strengths as kernel_firing_strengths,
+)
 from .regression import (
     solve_tsk_consequents, predict_tsk, _mse, _rsquared,
     build_consequent_features, _normalize_firing_strengths,
@@ -861,16 +864,22 @@ def refine_antecedents_optimizers(
 # model does not improve validation loss.
 
 
+def _normalize_proba(fs: np.ndarray, n_labels: int) -> np.ndarray:
+    """Row-normalise firing strengths, with zero-firing rows falling back to
+    uniform -- the same rule as ``MixtureOfGaussiansFuzzyClassifier.predict_proba``."""
+    row = fs.sum(axis=1, keepdims=True)
+    proba = np.full_like(fs, 1.0 / max(n_labels, 1))
+    nz = row.flatten() > 0
+    proba[nz] = fs[nz] / row[nz]
+    return proba
+
+
 def _classifier_proba(X: pd.DataFrame, model: GaussianMixtureModel):
     """Row-normalised firing strengths -> class probabilities, plus the label
     order. Mirrors ``MixtureOfGaussiansFuzzyClassifier.predict_proba`` (zero-firing
     rows fall back to uniform) so the fitness matches the deployed forward pass."""
     fs, labels = tsk_firing_strengths(X, model)
-    row = fs.sum(axis=1, keepdims=True)
-    proba = np.full_like(fs, 1.0 / max(len(labels), 1))
-    nz = row.flatten() > 0
-    proba[nz] = fs[nz] / row[nz]
-    return proba, labels
+    return _normalize_proba(fs, len(labels)), labels
 
 
 def _cross_entropy(proba: np.ndarray, y_idx: np.ndarray) -> float:
@@ -896,6 +905,38 @@ def _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi):
     y_idx_tr = y_idx_tr[valid_tr]
     X_tr = X_tr.iloc[np.where(valid_tr)[0]] if not valid_tr.all() else X_tr
     width = np.where((hi - lo) > 0, hi - lo, 1.0)
+    n_labels = len(labels)
+    norms = resolve_norm_pair()
+
+    # Compile the model once, if its shape allows (all-Gaussian, every feature
+    # carrying every label). A candidate evaluation is then an in-place write of
+    # 2*n_MF floats instead of a full reconstruction of the immutable model tree,
+    # and the feature columns are extracted once instead of per call. Profiled at
+    # baseline, those two costs were ~17% and ~5% of a refinement respectively.
+    # The kernel is bit-exact against `tsk_firing_strengths`, so this changes the
+    # cost of the search and not its trajectory.
+    compiled = None
+    try:
+        compiled = compile_model(model, list(X_tr.columns))
+    except NotCompilable:
+        pass
+
+    if compiled is not None:
+        feature_matrix = compiled.feature_matrix(
+            {name: X_tr[name].to_numpy() for name in compiled.feature_names}
+        )
+
+        def fitness(vec: np.ndarray) -> float:
+            try:
+                compiled.set_params(vec)
+                fs = kernel_firing_strengths(compiled, feature_matrix, norms)
+            except Exception:
+                return 1e6
+            ce = _cross_entropy(_normalize_proba(fs, n_labels), y_idx_tr)
+            reg = l2_shrink * float(np.mean(((vec - x0) / width) ** 2)) if l2_shrink else 0.0
+            return ce + reg
+
+        return fitness
 
     def fitness(vec: np.ndarray) -> float:
         candidate = apply_gaussian_params(model, vec)
