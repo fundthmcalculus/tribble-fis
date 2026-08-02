@@ -895,6 +895,35 @@ def _cross_entropy_from_strengths(fs: np.ndarray, y_idx: np.ndarray, n_labels: i
     return _CrossEntropy(y_idx, n_labels, fs.shape)(fs)
 
 
+# Per-solver option spelling and gradient support for the two-parameter
+# sub-problem. All of these honour box bounds; COBYLA and trust-constr are left
+# out because the first needs constraints rather than bounds and the second's
+# setup cost dwarfs a 2-D problem.
+_SUB_SOLVERS: dict[str, dict[str, typing.Any]] = {
+    # `maxfun` and `maxiter` mean different things to different solvers, and a
+    # gradient-free method silently ignores `jac`, so the differences are spelled
+    # out here rather than guessed at the call site.
+    "L-BFGS-B":    {"budget": ("maxfun", "maxiter"), "jac": True},
+    "SLSQP":       {"budget": ("maxiter",),          "jac": True},
+    "TNC":         {"budget": ("maxfun",),           "jac": True},
+    "Powell":      {"budget": ("maxfev",),           "jac": False},
+    "Nelder-Mead": {"budget": ("maxfev",),           "jac": False},
+}
+
+
+def _sub_solve(method: str, fun, x0, bounds, budget: int, jac: bool):
+    """Run one bounded sub-problem with `method`, spelling its options correctly."""
+    try:
+        spec = _SUB_SOLVERS[method]
+    except KeyError:
+        raise ValueError(
+            f"sub_method={method!r} not in {sorted(_SUB_SOLVERS)}"
+        ) from None
+    options = {name: budget for name in spec["budget"]}
+    return minimize(fun, x0, method=method, bounds=bounds,
+                    jac=jac and spec["jac"], options=options)
+
+
 class _CrossEntropy:
     """``_cross_entropy_from_strengths`` with its per-call setup hoisted out.
 
@@ -969,11 +998,12 @@ class _CrossEntropy:
         return float(-np.mean(p)), grads
 
 
-def _classifier_proba(X: pd.DataFrame, model: GaussianMixtureModel):
+def _classifier_proba(X: pd.DataFrame, model: GaussianMixtureModel,
+                      norms: NormPair | None = None):
     """Row-normalised firing strengths -> class probabilities, plus the label
     order. Mirrors ``MixtureOfGaussiansFuzzyClassifier.predict_proba`` (zero-firing
     rows fall back to uniform) so the fitness matches the deployed forward pass."""
-    fs, labels = tsk_firing_strengths(X, model)
+    fs, labels = tsk_firing_strengths(X, model, norms=norms)
     return _normalize_proba(fs, len(labels)), labels
 
 
@@ -983,7 +1013,8 @@ def _cross_entropy(proba: np.ndarray, y_idx: np.ndarray) -> float:
     return float(-np.mean(np.log(p)))
 
 
-def _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi):
+def _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi,
+                             norms: NormPair | None = None):
     """Ridge-regularised training cross-entropy for a candidate antecedent vector.
 
     ``fitness(vec) = CE(train) + l2_shrink * mean(((vec - x0) / width) ** 2)``.
@@ -992,6 +1023,10 @@ def _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi):
     dimensionless) is the real overfitting control: it keeps the tuned antecedents
     close to the data-driven heuristic unless the classification loss strongly
     favours moving them.
+
+    `norms` must be the pair the *deployed* model will use. Refining against a
+    different pair optimises a model nobody runs: the firing strengths, and
+    therefore the cross-entropy surface, are a function of the operators.
     """
     labels = list(next(iter(model.feature_models.values())).ordered_keys)
     label_to_col = {lab: i for i, lab in enumerate(labels)}
@@ -1001,7 +1036,7 @@ def _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi):
     X_tr = X_tr.iloc[np.where(valid_tr)[0]] if not valid_tr.all() else X_tr
     width = np.where((hi - lo) > 0, hi - lo, 1.0)
     n_labels = len(labels)
-    norms = resolve_norm_pair()
+    norms = norms if norms is not None else resolve_norm_pair()
 
     # Compile the model once, if its shape allows (all-Gaussian, every feature
     # carrying every label). A candidate evaluation is then an in-place write of
@@ -1027,7 +1062,7 @@ def _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi):
     def fitness(vec: np.ndarray) -> float:
         candidate = apply_gaussian_params(model, vec)
         try:
-            proba, cand_labels = _classifier_proba(X_tr, candidate)
+            proba, cand_labels = _classifier_proba(X_tr, candidate, norms)
         except Exception:
             return 1e6
         # cand_labels order matches `labels` (same model structure), so columns align.
@@ -1169,15 +1204,15 @@ class _CompiledClassifierObjective:
         return f_sub, commit
 
 
-def _classifier_accuracy(X, y, model) -> float:
-    proba, labels = _classifier_proba(X, model)
+def _classifier_accuracy(X, y, model, norms: NormPair | None = None) -> float:
+    proba, labels = _classifier_proba(X, model, norms)
     pred = np.array([labels[i] for i in np.argmax(proba, axis=1)], dtype=object)
     return float(np.mean(pred == np.asarray(y, dtype=object)))
 
 
-def _classifier_val_ce(X, y, model) -> float:
+def _classifier_val_ce(X, y, model, norms: NormPair | None = None) -> float:
     """Held-out cross-entropy, mapping each true label to its firing-strength column."""
-    proba, labels = _classifier_proba(X, model)
+    proba, labels = _classifier_proba(X, model, norms)
     col = {lab: i for i, lab in enumerate(labels)}
     y_idx = np.array([col.get(v, 0) for v in np.asarray(y, dtype=object)])
     return _cross_entropy(proba, y_idx)
@@ -1193,8 +1228,10 @@ def refine_classifier_antecedents(
     val_fraction: float = 0.25,
     n_sweeps: int = 3,
     block: int = 2,
+    norms: NormPair | None = None,
     incremental: bool = True,
     analytic_gradient: bool = False,
+    sub_method: str = "L-BFGS-B",
     sub_maxfun: int = 25,
     population_size: int = 40,
     num_generations: int = 20,
@@ -1215,6 +1252,12 @@ def refine_classifier_antecedents(
     validation split's accuracy *and* cross-entropy (otherwise the heuristic model
     is returned unchanged). Returns ``(refined_model, info)``.
 
+    ``norms`` selects the (t-norm, t-conorm) pair the objective is evaluated
+    under, and must match what the deployed model uses -- the firing strengths,
+    and so the entire loss surface, depend on it. Callers that hold an operator
+    choice (``MixtureOfGaussiansFuzzyClassifier.norm_conorm``) must pass it; the
+    default reproduces the library-wide default pair.
+
     ``incremental=False`` turns off the cached per-cell evaluation that
     ``block=2`` coordinate descent otherwise uses (see
     :class:`~tribblefis.kernel.IncrementalFIS`). The two produce bit-identical
@@ -1230,6 +1273,10 @@ def refine_classifier_antecedents(
     a different path and lands on different (not reliably better) antecedents.
     """
     y_arr = np.asarray(y_train)
+    # The operators the deployed model will use. Refining against a different
+    # pair optimises a model nobody runs, because the firing strengths -- and so
+    # the whole loss surface -- are a function of them.
+    resolved_norms = norms if norms is not None else resolve_norm_pair()
     bounds = build_param_bounds(model, X_train, sigma_min_frac, sigma_max_frac)
     if not bounds:                          # no Gaussian memberships -> nothing to do
         return model, {"refined": False, "reason": "no_gaussian_memberships"}
@@ -1249,9 +1296,10 @@ def refine_classifier_antecedents(
     X_tr, y_tr = X_train.iloc[tr_idx], y_arr[tr_idx]
     X_val, y_val = X_train.iloc[val_idx], y_arr[val_idx]
 
-    fitness = _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi)
+    fitness = _make_classifier_fitness(model, X_tr, y_tr, l2_shrink, x0, lo, hi,
+                                       resolved_norms)
     init_fit = fitness(x0)
-    init_val_acc = _classifier_accuracy(X_val, y_val, model)
+    init_val_acc = _classifier_accuracy(X_val, y_val, model, resolved_norms)
 
     if verbose:
         print(f"\nClassifier antecedent refinement ({method}): {len(bounds)} params, "
@@ -1275,7 +1323,9 @@ def refine_classifier_antecedents(
             and isinstance(fitness, _CompiledClassifierObjective)
         )
         use_analytic_grad = (
-            use_incremental and analytic_gradient and fitness.supports_gradient()
+            use_incremental and analytic_gradient
+            and _SUB_SOLVERS.get(sub_method, {}).get("jac", False)
+            and fitness.supports_gradient()
         )
         with _single_threaded():
             for sweep in range(n_sweeps):
@@ -1305,9 +1355,8 @@ def refine_classifier_antecedents(
                             n_eval += 1
                             return fitness(trial)
 
-                    res = minimize(f_sub, x[bidx], method="L-BFGS-B", bounds=sub_bounds,
-                                   jac=jac,
-                                   options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
+                    res = _sub_solve(sub_method, f_sub, x[bidx], sub_bounds,
+                                     sub_maxfun, jac)
                     if res.fun < cur - 1e-12:
                         x[bidx] = np.clip(res.x, lo[bidx], hi[bidx])
                         cur = float(res.fun)
@@ -1334,9 +1383,9 @@ def refine_classifier_antecedents(
     refined = apply_gaussian_params(model, best_x)
 
     # Accept only on a genuine held-out improvement (accuracy first, CE tiebreak).
-    val_acc = _classifier_accuracy(X_val, y_val, refined)
-    val_ce = _classifier_val_ce(X_val, y_val, refined)
-    init_val_ce = _classifier_val_ce(X_val, y_val, model)
+    val_acc = _classifier_accuracy(X_val, y_val, refined, resolved_norms)
+    val_ce = _classifier_val_ce(X_val, y_val, refined, resolved_norms)
+    init_val_ce = _classifier_val_ce(X_val, y_val, model, resolved_norms)
     accept = (val_acc > init_val_acc) or (val_acc == init_val_acc and val_ce < init_val_ce)
     out_model = refined if accept else model
     if verbose:
