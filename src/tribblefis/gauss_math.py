@@ -428,6 +428,18 @@ def tsk_firing_strengths(
     # We'll treat each class as having its own rule: IF (x1 is A1) AND (x2 is A2) ... THEN class = L
     firing_strengths = np.zeros((n_samples, len(unique_labels)))
 
+    # Pull every feature column out of the DataFrame ONCE, before the label loop.
+    # `X[name].values` used to sit in the inner loop, so the same column was
+    # re-extracted for every label -- n_labels x n_features pandas lookups per
+    # call instead of n_features. Under coordinate refinement, which evaluates
+    # this tens of thousands of times on an unchanging frame, that dominated the
+    # runtime: pandas __getitem__ accounted for 148s of a 257s profile.
+    feature_arrays = {
+        name: np.asarray(X[name].values)
+        for name in model.feature_models
+        if name in X
+    }
+
     for label_idx, label_value in enumerate(unique_labels):
         if anomaly_details and label_value == anomaly_details.label:
             # Anomaly label is treated as a special case
@@ -446,7 +458,9 @@ def tsk_firing_strengths(
             if label_value not in feature_model.label_models:
                 continue
 
-            feature_data = X[feature_name].values
+            feature_data = feature_arrays.get(feature_name)
+            if feature_data is None:
+                continue
             label_model = feature_model.label_models[label_value]
 
             # If multiple membership functions exist for a feature-label pair,
