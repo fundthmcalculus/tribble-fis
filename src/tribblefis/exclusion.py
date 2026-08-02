@@ -6,36 +6,44 @@ A zeroth-order TSK classifier gives each label one rule, and that rule is a
 conjunction *of disjunctions* -- one disjunction per feature, folded by the
 t-conorm over that feature-label's membership functions::
 
-    IF (x is X1 OR X2 OR X4) AND (y is Y1 OR Y3) THEN A
+    IF x is [X1, X2, X4] AND y is [Y1, Y2] THEN A
 
 The conorm is where the information is lost. By the time the t-norm ANDs the
 features together, the rule no longer knows *which* ``x`` term fired, so it
 cannot condition on the pairing. It therefore admits the entire outer product
-of its disjunctions -- ``X1&Y1, X2&Y1, X4&Y1, ... X4&Y3`` -- with no way to
-prefer one cell over another.
+of its disjunctions -- all six of ``X1&Y1, X2&Y1, X4&Y1, ... X4&Y2`` -- with no
+way to prefer one cell over another.
 
 That is correct when the label really does occupy every cell. It is wrong when
-it does not. If ``X1&Y3`` is in truth class ``B``, rule ``A`` still claims it at
-full strength, and no amount of re-fitting the ``(mu, sigma)`` of ``X1`` or
-``Y3`` fixes it: both terms are individually right for ``A``, and moving either
-one to dodge the cell costs ``A`` the cells it legitimately owns. The defect is
-in the *combination*, so the repair has to name the combination.
+it does not. If ``X2&Y2`` and ``X4&Y2`` are in truth class ``B``, rule ``A``
+still claims them at full strength, and no amount of re-fitting the
+``(mu, sigma)`` of ``X2``, ``X4`` or ``Y2`` fixes it: each term is individually
+right for ``A``, earning its place from the cells ``A`` does own, and moving any
+one of them to dodge the bad cells costs ``A`` the good ones. The defect is in
+the *combination*, so the repair has to name the combination.
 
 The correction
 --------------
-Mine the cells from the training data and append the negation of the bad ones to
-the parent rule::
+Mine the confused cells from the training data, merge the adjacent ones into
+blocks, and append the negation to the parent rule::
 
-    IF (x is X1 OR X2 OR X4) AND (y is Y1 OR Y3)
-       AND NOT (x is X1 AND y is Y3)
+    IF x is [X1, X2, X4] AND y is [Y1, Y2]
+       AND NOT (x is [X2, X4] AND y is [Y2])
     THEN A
 
-Each clause is attached to one parent label and names one cell, so the reduction
-is as narrow as the evidence: rule ``B`` is untouched, ``X1`` still fires for
-``A`` alongside ``Y1``, and ``Y3`` still fires for ``A`` alongside ``X2`` and
-``X4``. Only the confused block is withdrawn. See
-:class:`~tribblefis.gauss_data.ExclusionClause` for the representation and
-:func:`~tribblefis.gauss_math.apply_exclusions` for the inference half.
+The excluded block is written in exactly the form the rule itself uses -- a set
+of terms per feature, conorm within, t-norm across -- so the two lines read as
+one statement: here is the outer product the rule admits, and here is the
+sub-product it explicitly discards. Because a block is itself a product, the
+clause above withdraws precisely ``X2&Y2`` and ``X4&Y2``, never a cell that was
+not mined.
+
+Each clause is attached to one parent label, so the reduction is as narrow as
+the evidence: rule ``B`` is untouched, ``X2`` still fires for ``A`` alongside
+``Y1``, and ``Y2`` still fires for ``A`` alongside ``X1``. See
+:class:`~tribblefis.gauss_data.ExclusionClause` for the representation,
+:func:`~tribblefis.gauss_math.apply_exclusions` for the inference half, and
+:func:`describe_rules` to print both halves together.
 
 Why this is not just more membership functions
 ----------------------------------------------
@@ -75,14 +83,16 @@ from .gauss_data import (
     NormPair,
     resolve_norm_pair,
 )
-from .gauss_math import apply_exclusions, cell_strength, tsk_firing_strengths
+from .gauss_math import apply_exclusions, block_strength, tsk_firing_strengths
 
 __all__ = [
     "mine_exclusions",
+    "merge_clauses",
     "validate_exclusions",
     "describe_exclusions",
+    "describe_rules",
     "apply_exclusions",
-    "cell_strength",
+    "block_strength",
 ]
 
 
@@ -134,6 +144,107 @@ def _marginal_purity(
     rows = coordinate == mf_index
     total = int(rows.sum())
     return float(is_label[rows].mean()) if total else 1.0
+
+
+def _net_wrong_rows(clause: ExclusionClause) -> float:
+    """Rows the parent wrongly claims in a block, net of the ones it rightly does.
+
+    ``support * (1 - 2 * purity)`` -- the non-parent rows minus the parent rows.
+    Ranking on this rather than on the blamed class's count alone keeps cells and
+    merged blocks on one scale: both recombine additively, so a block scores as
+    the sum of the cells it absorbed.
+    """
+    return float(clause.support * (1.0 - 2.0 * clause.purity))
+
+
+def _merge_pair(left: ExclusionClause, right: ExclusionClause) -> ExclusionClause | None:
+    """Union two clauses into one block, or ``None`` if they do not abut.
+
+    Two blocks combine losslessly when they constrain the same features and
+    their term sets agree on all but *one* of them: the union along that single
+    axis is exactly the two originals and nothing more. ``{X2}x{Y2}`` and
+    ``{X4}x{Y2}`` become ``{X2,X4}x{Y2}``; ``{X2}x{Y2}`` and ``{X4}x{Y3}``
+    differ on two axes, so their union would be a rectangle covering ``X2&Y3``
+    and ``X4&Y2`` as well -- cells nobody produced evidence against -- and they
+    are left alone.
+
+    This is the same one-variable-apart adjacency that Quine-McCluskey uses to
+    combine minterms into implicants, and it is exact for the same reason.
+    """
+    if left.label != right.label or left.features != right.features:
+        return None
+    if left.strength != right.strength:
+        return None
+
+    differing = [
+        index
+        for index, ((_, a), (_, b)) in enumerate(zip(left.terms, right.terms))
+        if a != b
+    ]
+    if len(differing) != 1:
+        return None
+
+    axis = differing[0]
+    feature = left.terms[axis][0]
+    union = tuple(sorted(set(left.terms[axis][1]) | set(right.terms[axis][1])))
+    if len(union) == len(left.terms[axis][1]) or len(union) == len(right.terms[axis][1]):
+        # One already contains the other; the union adds nothing to merge on.
+        return None
+
+    terms = tuple(
+        (name, union if i == axis else indices)
+        for i, (name, indices) in enumerate(left.terms)
+    )
+
+    # Recombine the evidence so the merged clause reports what actually backs it
+    # rather than inheriting one half's counts.
+    support = left.support + right.support
+    purity = (
+        (left.purity * left.support + right.purity * right.support) / support
+        if support
+        else 0.0
+    )
+    blamed = left.blamed if left.support >= right.support else right.blamed
+    if left.blamed is not None and left.blamed == right.blamed:
+        blamed = left.blamed
+
+    return ExclusionClause(
+        label=left.label, terms=terms, strength=left.strength,
+        blamed=blamed, support=support, purity=purity,
+    )
+
+
+def merge_clauses(clauses: Iterable[ExclusionClause]) -> list[ExclusionClause]:
+    """Combine adjacent cells into blocks, repeatedly, until nothing more abuts.
+
+    Mining produces one clause per confused *cell*, which is the finest thing
+    the evidence supports. Four separate ``AND NOT`` lines that between them
+    withdraw ``[X2, X4] x [Y2, Y3]`` say the same thing as one, less legibly, so
+    the cells are merged back up into the largest lossless blocks before the
+    clauses are attached to the rule.
+
+    Lossless is the operative word: only one-axis-apart blocks combine, so the
+    merged clause covers exactly the union of the cells that were mined and
+    never a cell that was not. Merging changes how the reduction reads, not what
+    it withdraws.
+    """
+    merged = list(clauses)
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(merged)):
+            for j in range(i + 1, len(merged)):
+                combined = _merge_pair(merged[i], merged[j])
+                if combined is not None:
+                    merged = (
+                        [combined]
+                        + [c for k, c in enumerate(merged) if k not in (i, j)]
+                    )
+                    changed = True
+                    break
+            if changed:
+                break
+    return merged
 
 
 def mine_exclusions(
@@ -242,6 +353,7 @@ def mine_exclusions(
         "regions": {},
         "eligible_features": {},
         "cells_examined": 0,
+        "cells_accepted": 0,
         "cells_rejected": Counter(),
         "no_multi_mf_features": True,
     }
@@ -295,10 +407,13 @@ def mine_exclusions(
                         continue
                     diagnostics["cells_examined"] += 1
 
-                    terms = tuple(
+                    # Singleton (feature, index) pairs: the finest cell the
+                    # evidence supports. Adjacent ones are merged into blocks
+                    # after the whole region has been scored.
+                    cell_terms = tuple(
                         (name, int(index)) for name, index in zip(subset, cell)
                     )
-                    term_set = frozenset(terms)
+                    term_set = frozenset(cell_terms)
                     if any(previous <= term_set for previous in accepted_terms):
                         # A smaller accepted cell already withdraws this region.
                         diagnostics["cells_rejected"]["covered_by_smaller_cell"] += 1
@@ -326,30 +441,38 @@ def mine_exclusions(
                     # belongs to the membership fit, not to a cross-term.
                     marginals = [
                         _marginal_purity(region_coordinates[name], index, is_label)
-                        for name, index in terms
+                        for name, index in cell_terms
                     ]
                     if min(marginals) < purity + cross_margin:
                         diagnostics["cells_rejected"]["not_cross_confusion"] += 1
                         continue
 
-                    accepted.append((
-                        float(blamed_count - own_count),
+                    accepted.append(
                         ExclusionClause(
                             label=label,
-                            terms=terms,
+                            terms=tuple(
+                                (name, (index,)) for name, index in cell_terms
+                            ),
                             strength=float(strength),
                             blamed=blamed,
                             support=support,
                             purity=purity,
-                        ),
-                    ))
+                        )
+                    )
                     accepted_terms.append(term_set)
 
-        accepted.sort(key=lambda item: item[0], reverse=True)
-        clauses.extend(clause for _, clause in accepted[:max_clauses_per_label])
+        # Merge before capping, not after: four cells that together form one
+        # block should cost one clause of the budget, not four, and capping
+        # first would spend the budget on fragments of a block whose remaining
+        # cells then go unwithdrawn.
+        blocks = merge_clauses(accepted)
+        diagnostics["cells_accepted"] += len(accepted)
+        blocks.sort(key=_net_wrong_rows, reverse=True)
+        clauses.extend(blocks[:max_clauses_per_label])
 
     diagnostics["cells_rejected"] = dict(diagnostics["cells_rejected"])
     diagnostics["n_clauses"] = len(clauses)
+    diagnostics["n_cells_covered"] = sum(clause.n_cells for clause in clauses)
     return clauses, diagnostics
 
 
@@ -368,7 +491,10 @@ def validate_exclusions(
     clauses = model.exclusions if clauses is None else clauses
     problems: list[str] = []
     for clause in clauses:
-        for feature_name, mf_index in clause.terms:
+        if not clause.terms:
+            problems.append(f"{clause.label}: clause names no features")
+            continue
+        for feature_name, mf_indices in clause.terms:
             feature_model = model.feature_models.get(feature_name)
             if feature_model is None:
                 problems.append(
@@ -381,13 +507,34 @@ def validate_exclusions(
                     f"{clause.label}: feature {feature_name!r} carries no label {clause.label!r}"
                 )
                 break
-            if not (0 <= mf_index < len(label_model.memberships)):
+            if not mf_indices:
                 problems.append(
-                    f"{clause.label}: {feature_name!r} membership index {mf_index} is out of "
-                    f"range (feature-label has {len(label_model.memberships)})"
+                    f"{clause.label}: {feature_name!r} names an empty set of memberships"
+                )
+                break
+            available = len(label_model.memberships)
+            bad = [i for i in mf_indices if not (0 <= i < available)]
+            if bad:
+                problems.append(
+                    f"{clause.label}: {feature_name!r} membership index "
+                    f"{', '.join(str(i) for i in bad)} out of range "
+                    f"(feature-label has {available})"
                 )
                 break
     return problems
+
+
+def _term_list(indices: Iterable[int]) -> str:
+    indices = list(indices)
+    if len(indices) == 1:
+        return f"mf{indices[0]}"
+    return "[" + ", ".join(f"mf{i}" for i in indices) + "]"
+
+
+def _block_text(clause: ExclusionClause) -> str:
+    return " AND ".join(
+        f"{feature} is {_term_list(indices)}" for feature, indices in clause.terms
+    )
 
 
 def describe_exclusions(
@@ -396,9 +543,12 @@ def describe_exclusions(
 ) -> str:
     """The mined clauses as readable rule exceptions, grouped by parent rule.
 
-    Each line names the cell that was withdrawn, the class the rows in it really
-    belonged to, and the support behind the decision, so a reader can judge the
-    exception on the same evidence that produced it.
+    Each line names the block that was withdrawn, the class the rows in it
+    really belonged to, and the support behind the decision, so a reader can
+    judge the exception on the same evidence that produced it.
+
+    For the fuller picture -- each rule's admitted outer product printed above
+    the blocks it then discards -- use :func:`describe_rules`.
     """
     clauses = list(model.exclusions if clauses is None else clauses)
     if not clauses:
@@ -412,12 +562,77 @@ def describe_exclusions(
     for label, label_clauses in by_label.items():
         lines.append(f"RULE {label}:")
         for clause in label_clauses:
-            cell = " AND ".join(
-                f"{feature} is mf{index}" for feature, index in clause.terms
-            )
             detail = f"n={clause.support}, {clause.purity:.0%} really {label}"
             if clause.blamed is not None:
                 detail = f"mostly {clause.blamed}; {detail}"
             suffix = "" if clause.strength == 1.0 else f" [strength {clause.strength:g}]"
-            lines.append(f"  AND NOT ({cell})   -- {detail}{suffix}")
+            lines.append(f"  AND NOT ({_block_text(clause)})   -- {detail}{suffix}")
+    return "\n".join(lines)
+
+
+def describe_rules(
+    model: GaussianMixtureModel,
+    clauses: Iterable[ExclusionClause] | None = None,
+    labels: Iterable[Any] | None = None,
+) -> str:
+    """Each rule as its admitted outer product, then the blocks it discards.
+
+    The two halves are written in the same vocabulary on purpose::
+
+        RULE A:
+          IF  x is [mf0, mf1, mf2] AND y is [mf0, mf1]      -- 6 cells admitted
+          AND NOT (x is [mf1, mf2] AND y is mf1)            -- 2 cells discarded
+                                                            -- mostly B; n=79, 0% really A
+
+    The ``IF`` line is what the conorm-then-t-norm structure claims: the full
+    product of the per-feature term lists, every cell of it equally. Each
+    ``AND NOT`` line is a sub-product of the same shape, so a reader can see at
+    a glance which cells of the first line survive -- which is the thing the
+    firing strength alone never shows.
+    """
+    clauses = list(model.exclusions if clauses is None else clauses)
+    by_label: dict[Any, list[ExclusionClause]] = {}
+    for clause in clauses:
+        by_label.setdefault(clause.label, []).append(clause)
+
+    if labels is None:
+        labels = sorted(
+            {
+                label
+                for feature_model in model.feature_models.values()
+                for label in feature_model.label_models
+            },
+            key=str,
+        )
+
+    lines: list[str] = []
+    for label in labels:
+        antecedents = []
+        admitted = 1
+        for feature_name, feature_model in model.feature_models.items():
+            label_model = feature_model.label_models.get(label)
+            if label_model is None or not label_model.memberships:
+                continue
+            antecedents.append(
+                f"{feature_name} is {_term_list(range(len(label_model.memberships)))}"
+            )
+            admitted *= len(label_model.memberships)
+        if not antecedents:
+            continue
+
+        lines.append(f"RULE {label}:")
+        lines.append(
+            f"  IF  {' AND '.join(antecedents)}"
+            f"      -- {admitted} cell{'s' if admitted != 1 else ''} admitted"
+        )
+        for clause in by_label.get(label, []):
+            detail = f"n={clause.support}, {clause.purity:.0%} really {label}"
+            if clause.blamed is not None:
+                detail = f"mostly {clause.blamed}; {detail}"
+            suffix = "" if clause.strength == 1.0 else f" [strength {clause.strength:g}]"
+            lines.append(
+                f"  AND NOT ({_block_text(clause)})"
+                f"      -- {clause.n_cells} discarded; {detail}{suffix}"
+            )
+        lines.append(f"  THEN {label}")
     return "\n".join(lines)

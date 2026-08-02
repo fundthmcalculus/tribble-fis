@@ -46,7 +46,7 @@ from sklearn.datasets import (
 )
 from sklearn.model_selection import train_test_split
 
-from tribblefis.exclusion import describe_exclusions
+from tribblefis.exclusion import describe_rules
 from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
 
 SPLITS = (0, 1, 2)
@@ -85,6 +85,23 @@ def striped(n_per_cell=90, seed=0, spread=0.5):
         for j, cy in enumerate(centres):
             rows.append(rng.normal([cx, cy], spread, size=(n_per_cell, 2)))
             labels += [assignment[i][j]] * n_per_cell
+    return pd.DataFrame(np.vstack(rows), columns=["x", "y"]), pd.Series(labels)
+
+
+def blocky(n_per_cell=70, seed=0, spread=0.5):
+    """3x3 grid where class B owns a contiguous 2x2 rectangle of cells.
+
+    The case merging exists for: four confused cells that abut, and so collapse
+    into one ``AND NOT (x is [X2, X3] AND y is [Y2, Y3])`` rather than four
+    separate lines saying the same thing.
+    """
+    rng = np.random.RandomState(seed)
+    centres = (-4.0, 0.0, 4.0)
+    rows, labels = [], []
+    for i, cx in enumerate(centres):
+        for j, cy in enumerate(centres):
+            rows.append(rng.normal([cx, cy], spread, size=(n_per_cell, 2)))
+            labels += ["A" if i == 0 or j == 0 else "B"] * n_per_cell
     return pd.DataFrame(np.vstack(rows), columns=["x", "y"]), pd.Series(labels)
 
 
@@ -128,24 +145,31 @@ def score_pair(X, y, seed, n_gaussians, **exclusion_kwargs):
     )
 
 
-def run_synthetic(n_gaussians=2):
+def run_synthetic():
+    """``n_gaussians`` is matched to each grid, since a 3x3 problem needs three
+    membership functions per feature before its cells are even expressible."""
     print("\n== synthetic: the outer product is the binding constraint ==\n")
-    print(f"{'problem':<22}{'base':>8}{'excl':>8}{'delta':>9}{'clauses':>9}")
-    print("-" * 56)
-    for name, builder in (
-        ("checkerboard 2x2", lambda s: checkerboard(seed=s)),
-        ("checkerboard 3x3", lambda s: checkerboard(seed=s, blobs=3, n_per_cell=80)),
-        ("striped 3x3 (3 class)", lambda s: striped(seed=s)),
+    print(f"{'problem':<24}{'base':>8}{'excl':>8}{'delta':>9}{'clauses':>9}{'cells':>7}")
+    print("-" * 65)
+    for name, builder, n_gaussians in (
+        ("checkerboard 2x2", lambda s: checkerboard(seed=s), 2),
+        ("checkerboard 3x3", lambda s: checkerboard(seed=s, blobs=3, n_per_cell=80), 3),
+        ("striped 3x3 (3 class)", lambda s: striped(seed=s), 3),
+        ("block 3x3 (2 class)", lambda s: blocky(seed=s), 3),
     ):
-        rows = [score_pair(*builder(seed), seed, n_gaussians)[:3] for seed in SPLITS]
+        rows = [score_pair(*builder(seed), seed, n_gaussians) for seed in SPLITS]
         base = float(np.mean([r[0] for r in rows]))
         excl = float(np.mean([r[1] for r in rows]))
         clauses = float(np.mean([r[2] for r in rows]))
-        print(f"{name:<22}{base:>8.4f}{excl:>8.4f}{excl - base:>+9.4f}{clauses:>9.1f}")
+        cells = float(np.mean([sum(c.n_cells for c in r[3].exclusions_) for r in rows]))
+        print(
+            f"{name:<24}{base:>8.4f}{excl:>8.4f}{excl - base:>+9.4f}"
+            f"{clauses:>9.1f}{cells:>7.1f}"
+        )
 
-    print("\nExample rule base (checkerboard 2x2):")
-    *_, model = score_pair(*checkerboard(seed=0), 0, n_gaussians)
-    print(describe_exclusions(model.model_))
+    print("\nExample rule base (block 3x3), showing what is admitted and discarded:")
+    *_, model = score_pair(*blocky(seed=0), 0, 3, exclusion_max_clauses=8)
+    print(describe_rules(model.model_))
 
 
 def run_real(n_gaussians_values=(1, 2, 3), splits=SPLITS):

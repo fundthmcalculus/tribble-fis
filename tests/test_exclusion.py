@@ -25,11 +25,13 @@ import pytest
 
 from tribblefis.exclusion import (
     describe_exclusions,
+    describe_rules,
+    merge_clauses,
     mine_exclusions,
     validate_exclusions,
 )
 from tribblefis.gauss_data import ExclusionClause, resolve_norm_pair
-from tribblefis.gauss_math import cell_strength, tsk_firing_strengths
+from tribblefis.gauss_math import block_strength, tsk_firing_strengths
 from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
 
 
@@ -115,7 +117,7 @@ def test_clause_lowers_only_its_parent_rule():
     labels_before = None
 
     before, labels_before = tsk_firing_strengths(X, model)
-    clause = ExclusionClause(label="A", terms=(("x", 0), ("y", 0)))
+    clause = ExclusionClause.create("A", {"x": 0, "y": 0})
     after, labels_after = tsk_firing_strengths(X, model.with_exclusions([clause]))
 
     assert labels_before == labels_after
@@ -141,12 +143,12 @@ def test_clause_spares_the_cells_its_terms_belong_to():
     norms = resolve_norm_pair("probability")
 
     before, labels = tsk_firing_strengths(X, model)
-    clause = ExclusionClause(label="A", terms=(("x", 0), ("y", 0)))
+    clause = ExclusionClause.create("A", {"x": 0, "y": 0})
     after, _ = tsk_firing_strengths(X, model.with_exclusions([clause]))
     parent = labels.index("A")
 
     arrays = {name: np.asarray(X[name].values) for name in ("x", "y")}
-    cell = cell_strength(clause, model, arrays, norms)
+    cell = block_strength(clause, model, arrays, norms)
     outside = cell < 0.01
     assert outside.sum() > 100, "need rows outside the cell for this to mean anything"
     np.testing.assert_allclose(after[outside, parent], before[outside, parent], atol=1e-12)
@@ -160,12 +162,180 @@ def test_strength_zero_is_a_no_op_and_scales_monotonically():
 
     totals = []
     for strength in (0.0, 0.25, 0.5, 1.0):
-        clause = ExclusionClause(label="A", terms=(("x", 0), ("y", 0)), strength=strength)
+        clause = ExclusionClause.create("A", {"x": 0, "y": 0}, strength=strength)
         fired, _ = tsk_firing_strengths(X, model.with_exclusions([clause]))
         totals.append(fired[:, parent].sum())
 
     np.testing.assert_allclose(totals[0], before[:, parent].sum())
     assert totals[0] > totals[1] > totals[2] > totals[3]
+
+
+# --------------------------------------------------------------------------
+# Block form: sets of terms per feature, mirroring the rule's own shape
+# --------------------------------------------------------------------------
+
+def test_block_covers_exactly_the_cells_it_names():
+    """``NOT (x is [mf0, mf1] AND y is [mf0])`` must equal the two singleton
+    clauses ``x is mf0 & y is mf0`` and ``x is mf1 & y is mf0`` applied together,
+    and nothing more."""
+    X, y = checkerboard()
+    model = make_classifier(n_gaussians=2).fit(X, y).model_
+    norms = resolve_norm_pair("probability")
+    arrays = {name: np.asarray(X[name].values) for name in ("x", "y")}
+
+    block = ExclusionClause.create("A", {"x": [0, 1], "y": [0]})
+    left = ExclusionClause.create("A", {"x": 0, "y": 0})
+    right = ExclusionClause.create("A", {"x": 1, "y": 0})
+
+    # The block's own strength is the conorm of the two cells it spans.
+    from tribblefis.gauss_math import t_conorm
+    expected = t_conorm(
+        block_strength(left, model, arrays, norms),
+        block_strength(right, model, arrays, norms),
+        "probability",
+    )
+    np.testing.assert_allclose(
+        block_strength(block, model, arrays, norms), expected, atol=1e-12
+    )
+
+    # A block spanning every x term is the y term alone -- the degenerate case
+    # that shows a block really is a sub-product of the parent rule.
+    whole_x = ExclusionClause.create("A", {"x": [0, 1], "y": [0]})
+    assert whole_x.n_cells == 2
+
+
+def test_singleton_block_matches_the_old_single_cell_behaviour():
+    X, y = checkerboard()
+    model = make_classifier().fit(X, y).model_
+    norms = resolve_norm_pair("probability")
+    arrays = {name: np.asarray(X[name].values) for name in ("x", "y")}
+
+    scalar = ExclusionClause.create("A", {"x": 0, "y": 0})
+    listed = ExclusionClause.create("A", {"x": [0], "y": [0]})
+    assert scalar == listed
+    np.testing.assert_array_equal(
+        block_strength(scalar, model, arrays, norms),
+        block_strength(listed, model, arrays, norms),
+    )
+
+
+def test_create_normalises_term_sets():
+    a = ExclusionClause.create("A", {"x": [2, 1, 1], "y": 0})
+    b = ExclusionClause.create("A", [("x", (1, 2)), ("y", [0])])
+    assert a == b
+    assert a.terms == (("x", (1, 2)), ("y", (0,)))
+    assert a.n_cells == 2
+
+
+def test_merge_combines_cells_that_differ_on_one_axis():
+    cells = [
+        ExclusionClause.create("A", {"x": 1, "y": 1}, support=10, purity=0.0),
+        ExclusionClause.create("A", {"x": 2, "y": 1}, support=30, purity=0.0),
+    ]
+    merged = merge_clauses(cells)
+
+    assert len(merged) == 1
+    assert merged[0].terms == (("x", (1, 2)), ("y", (1,)))
+    # Evidence is recombined, not inherited from one half.
+    assert merged[0].support == 40
+
+
+def test_merge_is_lossless_and_refuses_diagonal_pairs():
+    """``X1&Y1`` and ``X2&Y2`` differ on both axes. Their bounding block would
+    also cover ``X1&Y2`` and ``X2&Y1``, which nothing was mined against, so they
+    must be left as two clauses."""
+    cells = [
+        ExclusionClause.create("A", {"x": 0, "y": 0}, support=10),
+        ExclusionClause.create("A", {"x": 1, "y": 1}, support=10),
+    ]
+    assert len(merge_clauses(cells)) == 2
+
+
+def test_merge_repeats_to_a_full_rectangle():
+    cells = [
+        ExclusionClause.create("A", {"x": i, "y": j}, support=5)
+        for i in (0, 1) for j in (2, 3)
+    ]
+    merged = merge_clauses(cells)
+
+    assert len(merged) == 1
+    assert dict(merged[0].terms) == {"x": (0, 1), "y": (2, 3)}
+    assert merged[0].n_cells == 4
+    assert merged[0].support == 20
+
+
+def test_merge_keeps_different_parents_apart():
+    cells = [
+        ExclusionClause.create("A", {"x": 0, "y": 0}),
+        ExclusionClause.create("B", {"x": 1, "y": 0}),
+    ]
+    assert len(merge_clauses(cells)) == 2
+
+
+def test_merging_does_not_change_what_is_withdrawn():
+    """The end-to-end guarantee: merged blocks and the cells they came from
+    produce the same firing strengths."""
+    X, y = checkerboard()
+    model = make_classifier(n_gaussians=2).fit(X, y).model_
+
+    cells = [
+        ExclusionClause.create("A", {"x": i, "y": 0}, support=10)
+        for i in (0, 1)
+    ]
+    merged = merge_clauses(cells)
+    assert len(merged) == 1
+
+    fine, _ = tsk_firing_strengths(X, model.with_exclusions(cells))
+    coarse, _ = tsk_firing_strengths(X, model.with_exclusions(merged))
+    np.testing.assert_allclose(fine, coarse, atol=1e-12)
+
+
+def test_mined_clauses_are_merged_blocks():
+    """Mining on a 3x3 grid should produce blocks, not one clause per cell."""
+    rng = np.random.RandomState(0)
+    rows, labels = [], []
+    for i, cx in enumerate((-4.0, 0.0, 4.0)):
+        for j, cy in enumerate((-4.0, 0.0, 4.0)):
+            rows.append(rng.normal([cx, cy], 0.5, size=(70, 2)))
+            # A owns the whole left column and the middle; B owns the rest, so
+            # B's confusion with A forms a contiguous 2x2 rectangle.
+            labels += ["A" if i == 0 or j == 0 else "B"] * 70
+    X = pd.DataFrame(np.vstack(rows), columns=["x", "y"])
+    y = pd.Series(labels)
+
+    fitted = make_classifier(n_gaussians=3).fit(X, y)
+    clauses, info = mine_exclusions(fitted.model_, X, y, max_clauses_per_label=8)
+
+    assert clauses, info
+    # At least one clause must span more than a single cell, or merging never
+    # engaged and this test is not measuring what it claims.
+    assert any(clause.n_cells > 1 for clause in clauses)
+    assert info["n_cells_covered"] >= len(clauses)
+
+
+def test_validate_rejects_empty_term_sets():
+    X, y = checkerboard()
+    model = make_classifier().fit(X, y).model_
+    empty = ExclusionClause(label="A", terms=(("x", ()), ("y", (0,))))
+
+    problems = validate_exclusions(model.with_exclusions([empty]))
+    assert len(problems) == 1 and "empty set" in problems[0]
+
+    before, _ = tsk_firing_strengths(X, model)
+    after, _ = tsk_firing_strengths(X, model.with_exclusions([empty]))
+    np.testing.assert_array_equal(before, after)
+
+
+def test_describe_rules_shows_admitted_then_discarded():
+    X, y = checkerboard()
+    model = make_classifier(exclude_cross_terms=True).fit(X, y)
+    text = describe_rules(model.model_)
+
+    assert "IF " in text and "AND NOT" in text and "THEN" in text
+    assert "cells admitted" in text
+    assert "discarded" in text
+    # The admitted line must list the rule's full term set for each feature.
+    assert "x is [mf0, mf1]" in text
 
 
 # --------------------------------------------------------------------------
@@ -287,8 +457,8 @@ def test_stale_clauses_are_reported_and_skipped_not_misapplied():
     X, y = checkerboard()
     model = make_classifier().fit(X, y).model_
 
-    stale = ExclusionClause(label="A", terms=(("x", 99), ("y", 0)))
-    unknown_feature = ExclusionClause(label="A", terms=(("nope", 0), ("y", 0)))
+    stale = ExclusionClause.create("A", {"x": 99, "y": 0})
+    unknown_feature = ExclusionClause.create("A", {"nope": 0, "y": 0})
     with_stale = model.with_exclusions([stale, unknown_feature])
 
     problems = validate_exclusions(with_stale)
@@ -334,9 +504,9 @@ def test_anomaly_column_reflects_the_narrowed_rules():
     model = make_classifier().fit(X, y).model_
     details = AnomalyParameters(include_anomaly=True, threshold=0.0, norm_conorm="probability")
 
-    clause = ExclusionClause(label="A", terms=(("x", 0), ("y", 0)))
+    clause = ExclusionClause.create("A", {"x": 0, "y": 0})
     arrays = {name: np.asarray(X[name].values) for name in ("x", "y")}
-    cell = cell_strength(clause, model, arrays, resolve_norm_pair("probability"))
+    cell = block_strength(clause, model, arrays, resolve_norm_pair("probability"))
     inside = cell > 0.7
     assert inside.sum() > 10
 

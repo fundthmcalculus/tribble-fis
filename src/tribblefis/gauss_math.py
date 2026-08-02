@@ -387,39 +387,61 @@ def t_complement(x):
 # each parent rule away from the cells it wrongly claims.
 # ---------------------------------------------------------------------------
 
-def cell_strength(
+def block_strength(
     clause: ExclusionClause,
     model: GaussianMixtureModel,
     feature_arrays: dict[str, np.ndarray],
     norms: NormPair,
 ) -> np.ndarray | None:
-    """Firing strength of the single outer-product cell a clause names.
+    """Firing strength of the outer-product block a clause names.
 
-    This is the *conjunction of one membership function per listed feature* --
-    deliberately not the per-feature conorm the parent rule folds. The conorm is
-    what loses track of which term fired and so admits the whole outer product;
-    naming individual memberships is what lets a clause point at one cell of it.
+    Built in exactly the shape the parent rule is built in -- the t-conorm over
+    the memberships listed for each feature, then the t-norm across features --
+    but over the clause's *subsets* rather than the rule's full term lists. That
+    correspondence is the point: ``NOT (x is [X2, X4] AND y is [Y2])`` is the
+    same kind of object as the rule it narrows, so the two read together as what
+    is admitted and what is then discarded.
+
+    Because a block is itself a product of per-feature sets, it covers exactly
+    the cells its sets enumerate -- ``X2&Y2`` and ``X4&Y2`` for the clause above
+    -- and no others. A single cell is the all-singletons case.
 
     Returns ``None`` when the clause does not address this model (an unknown
-    feature or label, or a membership index past the end of the list), so a
-    stale clause is skipped rather than silently mis-firing on the wrong
-    membership function. :func:`tribblefis.exclusion.validate_exclusions`
-    reports the same condition up front.
+    feature or label, an empty term set, or a membership index past the end of
+    the list), so a stale clause is skipped rather than silently mis-firing on
+    the wrong membership function.
+    :func:`tribblefis.exclusion.validate_exclusions` reports the same conditions
+    up front.
     """
     strength: np.ndarray | None = None
-    for feature_name, mf_index in clause.terms:
+    for feature_name, mf_indices in clause.terms:
         feature_model = model.feature_models.get(feature_name)
         if feature_model is None:
             return None
         label_model = feature_model.label_models.get(clause.label)
-        if label_model is None or not (0 <= mf_index < len(label_model.memberships)):
+        if label_model is None or not mf_indices:
+            return None
+        if any(not (0 <= i < len(label_model.memberships)) for i in mf_indices):
             return None
         feature_data = feature_arrays.get(feature_name)
         if feature_data is None:
             return None
 
-        mf_value = label_model.memberships[mf_index].evaluate(feature_data)
-        strength = mf_value if strength is None else t_norm(strength, mf_value, norms.t_norm)
+        # Logic-OR within the feature, over this clause's subset of its terms.
+        feature_value = np.zeros(len(feature_data), dtype=float)
+        for mf_index in mf_indices:
+            feature_value = t_conorm(
+                feature_value,
+                label_model.memberships[mf_index].evaluate(feature_data),
+                norms.t_conorm,
+            )
+
+        # Logic-AND across the features the block constrains.
+        strength = (
+            feature_value
+            if strength is None
+            else t_norm(strength, feature_value, norms.t_norm)
+        )
     return strength
 
 
@@ -434,10 +456,10 @@ def apply_exclusions(
     """Narrow each parent rule by its own exclusion clauses, in place.
 
     For every clause the parent label's column becomes
-    ``T(w_L, 1 - strength * cell)`` -- the rule ANDed with the (optionally
-    softened) negation of the cell. Several clauses on one label chain through
+    ``T(w_L, 1 - strength * block)`` -- the rule ANDed with the (optionally
+    softened) negation of the block. Several clauses on one label chain through
     the same t-norm, which is the direct reading of
-    ``... AND NOT cell_1 AND NOT cell_2``.
+    ``... AND NOT block_1 AND NOT block_2``.
 
     Only the parent label's column is touched. The blamed class is not boosted:
     withdrawing the over-claiming rule is enough to hand the argmax to whichever
@@ -451,8 +473,9 @@ def apply_exclusions(
         labels: Column labels of ``firing_strengths``.
         model: The model the clauses index into.
         feature_arrays: ``{feature_name: ndarray}`` for this batch.
-        norms: Resolved operator pair; ``t_norm`` performs both the intra-cell
-            conjunction and the conjunction against the parent rule.
+        norms: Resolved operator pair. ``t_conorm`` folds each feature's term
+            subset, and ``t_norm`` performs both the across-feature conjunction
+            inside the block and the conjunction against the parent rule.
         clauses: Defaults to ``model.exclusions``.
 
     Returns:
@@ -467,10 +490,10 @@ def apply_exclusions(
         column = column_of.get(clause.label)
         if column is None or clause.strength == 0.0:
             continue
-        cell = cell_strength(clause, model, feature_arrays, norms)
-        if cell is None:
+        block = block_strength(clause, model, feature_arrays, norms)
+        if block is None:
             continue
-        admissible = t_complement(np.clip(clause.strength * cell, 0.0, 1.0))
+        admissible = t_complement(np.clip(clause.strength * block, 0.0, 1.0))
         firing_strengths[:, column] = t_norm(
             firing_strengths[:, column], admissible, norms.t_norm
         )

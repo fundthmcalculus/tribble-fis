@@ -69,17 +69,20 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
                     mines *negated cross-terms* from the training data and appends
                     them to the rules that need them. Each label's rule is a
                     conjunction of per-feature disjunctions, so it admits the whole
-                    outer product of its terms -- "x is X1 or X2 or X4" AND "y is Y1
-                    or Y3" fires for all six pairings, including any that in truth
-                    belong to another class. Mining finds those cells and adds
-                    ``AND NOT (x is X1 AND y is Y3)`` to the offending rule alone.
+                    outer product of its terms -- ``x is [X1, X2, X4] AND y is
+                    [Y1, Y2]`` fires for all six pairings, including any that in
+                    truth belong to another class. Mining finds those cells, merges
+                    adjacent ones into blocks, and adds
+                    ``AND NOT (x is [X2, X4] AND y is [Y2])`` to the offending rule
+                    alone -- written in the same form as the rule itself, so the
+                    two read together as what is admitted and what is discarded.
                     Off by default; it only ever has anything to find when features
                     carry more than one membership function per label (``n_gaussians``
                     > 1, or automatic fitting that chose several). See
-                    :mod:`tribblefis.exclusion` and :attr:`exclusions_`.
-            exclusion_order: Cell size to mine -- how many features a clause names.
-                    ``2`` (pairs) by default; a sequence like ``(2, 3)`` also
-                    considers larger cells.
+                    :mod:`tribblefis.exclusion`, :attr:`exclusions_`, and
+                    :func:`tribblefis.exclusion.describe_rules`.
+            exclusion_order: How many features a mined cell spans. ``2`` (pairs) by
+                    default; a sequence like ``(2, 3)`` also considers larger cells.
             exclusion_min_support: Minimum training rows behind a cell (and behind
                     the class blamed for it) before a rule may be narrowed on it.
             exclusion_max_purity: A cell is a candidate only when at most this
@@ -88,8 +91,10 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
                     single-feature terms to count as genuine cross-confusion rather
                     than a badly placed membership function.
             exclusion_max_clauses: Cap on clauses per rule, worst confusion first.
-            exclusion_strength: Scales each negation to ``1 - strength * cell``.
-                    ``1.0`` is a hard veto of the cell; lower values discount the
+                    Applied after merging, so a block that four cells agree on
+                    costs one clause of the budget rather than four.
+            exclusion_strength: Scales each negation to ``1 - strength * block``.
+                    ``1.0`` is a hard veto of the block; lower values discount the
                     parent rule there instead.
         """
         self.is_fitted_: bool = False
