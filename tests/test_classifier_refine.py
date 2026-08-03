@@ -99,6 +99,29 @@ class TestClassifierRefinement(unittest.TestCase):
         if info["refined"]:
             self.assertGreaterEqual(info["val_acc"], info["init_val_acc"])
 
+    def test_optimizers_backend_is_reproducible(self):
+        """A seeded refinement must return the same model every time.
+
+        This is a property of the pinned `optimizers` revision, not of
+        `refine.py`. Before optimizers 3a57f91 the initial population came from
+        `np.random.default_rng()` with no argument -- fresh OS entropy -- so
+        `set_seed(seed)` did nothing and this loop produced three different
+        answers in eight tries. The test exists to make a rollback of that pin
+        fail here rather than surface as an intermittently red suite.
+        """
+        X, y, model = self._heuristic_model()
+        results = []
+        for _ in range(3):
+            refined, info = refine_classifier_antecedents(
+                model, X, y, method="optimizers", optimizer_method="ga",
+                local_grad_optim="perturb", population_size=16, num_generations=5,
+                local_scale=0.25, l2_shrink=0.05, seed=0, verbose=False,
+            )
+            results.append(
+                (round(info["fit"], 12), tuple(np.round(extract_gaussian_params(refined), 12)))
+            )
+        self.assertEqual(len(set(results)), 1, f"seeded refinement varied: {results}")
+
     def test_refine_flag_on_classifier_api(self):
         clf, X, y = _quiet_fit(refine=True)
         self.assertTrue(clf.is_fitted_)

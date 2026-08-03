@@ -668,6 +668,34 @@ def refine_antecedents_ga(
 #   2. the search box is optionally *localized* around the heuristic
 #      (``local_scale``) so the polish-driven population stays in the heuristic's
 #      basin rather than wandering into overfit territory.
+#
+# Reproducibility, and why the `optimizers` pin has a floor
+# ---------------------------------------------------------
+# `_run_optimizer_search` calls `set_seed(seed)` so that a refinement is a pure
+# function of its `seed`. Whether that actually holds is a property of the
+# installed `optimizers` revision, not of this file:
+#
+#   * Before optimizers 3a57f91, `InputContinuousVariable.initial_random_value`
+#     fell back to `np.random.default_rng()` with **no argument** -- fresh OS
+#     entropy -- so the initial population ignored `set_seed` entirely. Every
+#     call returned a different model. Measured here on a fixed 120-row problem
+#     with `seed=0`: eight identical calls produced three different validation
+#     accuracies (0.8000 / 0.8083 / 0.8167). That is also what made
+#     `tests/test_classifier_refine.py` flaky, roughly one run in six.
+#   * From 3a57f91 the initial population draws from the package's seeded
+#     generator, and the same eight calls agree exactly.
+#
+# `uv.lock` therefore must not be rolled back past that commit; the constraint
+# is restated next to the git source in `pyproject.toml`, which is where someone
+# re-pinning would be looking.
+#
+# One caveat remains upstream: `optimizers` is only reproducible at `n_jobs=1`,
+# because above that its parallel workers share a single
+# `numpy.random.Generator`, which is not thread-safe and hands out draws in
+# scheduler order. `_run_optimizer_search` passes `n_jobs=1` -- for an unrelated
+# reason, that the fitness closure is not picklable -- so this path is safe
+# today, but a future change to that argument would silently reintroduce the
+# nondeterminism. See fundthmcalculus/optimizers#100.
 
 _OPTIMIZER_METHODS = ("ga", "pso", "aco", "multi")
 
