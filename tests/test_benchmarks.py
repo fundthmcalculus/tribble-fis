@@ -34,6 +34,7 @@ def test_model_shape_matches_request():
             assert len(lmodel.memberships) == 2
 
 
+@pytest.mark.performance
 @pytest.mark.parametrize("name", ["forward-small", "predict-large", "refine-classifier"])
 def test_workload_checksum_is_reproducible(name):
     """Two runs of the same workload must agree exactly.
