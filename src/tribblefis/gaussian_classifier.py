@@ -24,7 +24,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
 
     def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, norm_conorm=DefaultNormCornorm, member_function="gaussian", trapz_method="fast", random_state=42,
                  refine=False, refine_method="coordinate", refine_l2_shrink=0.05,
-                 t_norm=None, t_conorm=None, allow_mixed_norms=False,
+                 t_norm=None, t_conorm=None, allow_mixed_norms=False, max_samples=None,
                  exclude_cross_terms=False, exclusion_order=2, exclusion_min_support=10,
                  exclusion_max_purity=0.5, exclusion_cross_margin=0.05,
                  exclusion_max_clauses=4, exclusion_strength=1.0):
@@ -65,6 +65,11 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
                     polish search from the `optimizers` package).
             refine_l2_shrink: Ridge shrinkage pulling the tuned antecedents toward
                     the heuristic start; the main overfitting control for refinement.
+            max_samples: Cap on the rows used per (feature, label) when fitting
+                    Gaussian or EM-trapezoid memberships. ``None`` -- the default
+                    -- uses every row; pass an int to bound fit time on large
+                    datasets. Ignored by ``trapz_method="fast"``, which was
+                    never subsampled.
             exclude_cross_terms: If True, run a second stage after fitting that
                     mines *negated cross-terms* from the training data and appends
                     them to the rules that need them. Each label's rule is a
@@ -114,6 +119,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.t_norm = t_norm
         self.t_conorm = t_conorm
         self.allow_mixed_norms = allow_mixed_norms
+        self.max_samples = max_samples
         self.anomaly_params = AnomalyParameters(
             include_anomaly=False,
             norm_conorm=self.norm_conorm,
@@ -171,7 +177,8 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         # 3. Create membership model (Gaussian or Trapezoid)
         if self.member_function == "gaussian":
             self.model_ = create_gaussian_membership_dict(
-                X_df, y_series, top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians
+                X_df, y_series, top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians,
+                max_samples=self.max_samples, random_state=self.random_state,
             )
         elif self.member_function == "trap":
             if self.trapz_method == "fast":
@@ -182,7 +189,8 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
             elif self.trapz_method == "em":
                 from .trapz_math import create_trapz_membership_dict
                 self.model_ = create_trapz_membership_dict(
-                    X_df, y_series, top_n_var_names=self.top_features_, n_trapezoids=self.n_gaussians
+                    X_df, y_series, top_n_var_names=self.top_features_, n_trapezoids=self.n_gaussians,
+                    max_samples=self.max_samples, random_state=self.random_state,
                 )
             else:
                 raise ValueError(f"Unknown trapz_method: {self.trapz_method}")
@@ -335,7 +343,8 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         y_series = pd.Series(y)
 
         new_model = create_gaussian_membership_dict(
-            X_df, y_series, top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians
+            X_df, y_series, top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians,
+            max_samples=self.max_samples, random_state=self.random_state,
         )
 
         self.model_ = self.model_.augment(new_model)
@@ -418,6 +427,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         refine=False,
         refine_method="coordinate",
         refine_l2_shrink=0.05,
+        max_samples=None,
         exclude_cross_terms=False,
         exclusion_order=2,
         exclusion_min_support=10,
@@ -428,7 +438,8 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
     ):
         """
         Args:
-            top_n, top_p, n_gaussians, member_function, norm_conorm, random_state:
+            top_n, top_p, n_gaussians, member_function, norm_conorm, random_state,
+            max_samples:
                 Passed through to every underlying
                 :class:`MixtureOfGaussiansFuzzyClassifier` (base and experts).
             max_layers: Maximum number of models in the cascade *including* the
@@ -498,6 +509,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         self.refine = refine
         self.refine_method = refine_method
         self.refine_l2_shrink = refine_l2_shrink
+        self.max_samples = max_samples
         self.exclude_cross_terms = exclude_cross_terms
         self.exclusion_order = exclusion_order
         self.exclusion_min_support = exclusion_min_support
@@ -515,6 +527,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
             refine=self.refine,
             refine_method=self.refine_method,
             refine_l2_shrink=self.refine_l2_shrink,
+            max_samples=self.max_samples,
             # Cross-term exclusion and the experts address different failures and
             # compose: a clause narrows one rule away from a cell it should never
             # have claimed, while an expert re-decides a whole confused pair with
