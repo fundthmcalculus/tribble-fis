@@ -111,7 +111,10 @@ def fit_gaussian_mixture_1d(
     n_distinct = len(np.unique(data))
 
     if n_gaussians > 0:
-        k = min(n_gaussians, len(data))
+        # Same cap as the automatic branch below, and for the same reason: a
+        # column with v distinct values cannot support more than v clusters,
+        # requested explicitly or not.
+        k = min(n_gaussians, len(data), n_distinct)
         components = _hard_partition_gaussians(data, _kmeans_labels_1d(data, k, random_state), k)
     elif len(data) < 2:
         components = _hard_partition_gaussians(data, np.zeros(len(data), dtype=int), 1)
