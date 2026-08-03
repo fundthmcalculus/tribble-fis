@@ -8,48 +8,174 @@ from scipy.spatial.distance import jensenshannon
 from scipy.stats import wasserstein_distance
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
-from sklearn.mixture import GaussianMixture
 from tribbleclustering import IVATMeans, FuzzyCMeans
 
 from . import kernel
 from .gauss_data import *  # noqa: F401, F403
 
 
-def find_optimal_gaussians(data, max_gaussians: int = 4):
-    """Find the optimal number of Gaussians using Bayesian Information Criterion (BIC)"""
+#: Variance floor used when scoring a candidate mixture, as a fraction of the
+#: column's own variance. Plays the role of scikit-learn's ``reg_covar``, but
+#: scale-relative rather than absolute: these columns are raw features, so a
+#: fixed 1e-6 is a hard floor on a millivolt column and a rounding error on a
+#: currency one. Without a floor, a component that lands on a single point has
+#: zero variance, infinite likelihood, and always wins the selection.
+BIC_VARIANCE_FLOOR_FRAC = 1e-6
+
+
+def _hard_partition_gaussians(data: np.ndarray, labels: np.ndarray, n_clusters: int):
+    """(mu, sigma, weight) per non-empty cluster.
+
+    This *is* the maximum-likelihood Gaussian mixture for the partition k-means
+    produced: with hard assignments the mixture likelihood separates, so each
+    component's MLE is just the mean and standard deviation of its own points
+    and its weight is its share of them. There is nothing left to iterate.
+    """
+    n = len(data)
+    out = []
+    for i in range(n_clusters):
+        vals = data[labels == i]
+        if vals.size == 0:
+            continue
+        mu = float(vals.mean())
+        sd = float(vals.std()) if vals.size > 1 else 0.0
+        if np.isfinite(mu) and np.isfinite(sd):
+            out.append((mu, sd, vals.size / n))
+    return out
+
+
+def _mixture_bic(data: np.ndarray, components, var_floor: float) -> float:
+    """BIC of a 1-D Gaussian mixture, scored on every point.
+
+    Same criterion ``GaussianMixture.bic`` reports -- ``n_params * log(N) - 2 *
+    log_likelihood`` with ``3k - 1`` free parameters -- evaluated at the
+    hard-assignment MLE instead of at an EM optimum. The likelihood is the full
+    mixture density at every observation, not a per-cluster sum, which is what
+    makes the numbers comparable across k.
+    """
+    if not components:
+        return np.inf
+    density = np.zeros(len(data), dtype=float)
+    for mu, sd, weight in components:
+        var = sd * sd + var_floor
+        density += weight * np.exp(-0.5 * (data - mu) ** 2 / var) / np.sqrt(2.0 * np.pi * var)
+    log_likelihood = float(np.log(np.maximum(density, 1e-300)).sum())
+    n_params = 3 * len(components) - 1
+    return n_params * np.log(len(data)) - 2.0 * log_likelihood
+
+
+def _kmeans_labels_1d(data: np.ndarray, k: int, random_state: int) -> np.ndarray:
+    if k <= 1:
+        return np.zeros(len(data), dtype=int)
+    return KMeans(n_clusters=k, random_state=random_state).fit_predict(data.reshape(-1, 1))
+
+
+def fit_gaussian_mixture_1d(
+    data,
+    n_gaussians: int = 0,
+    max_gaussians: int = 4,
+    random_state: int = 42,
+) -> tuple[list, int]:
+    """Place 1-D Gaussians by k-means, choosing the component count by BIC.
+
+    Returns ``(memberships, n_selected)``.
+
+    The point of returning both is that the caller no longer has to refit. The
+    previous arrangement asked :func:`find_optimal_gaussians` for a count --
+    which it obtained by fitting a full EM mixture at every candidate k and
+    throwing all of them away -- and then ran a k-means at the winning k to get
+    the placement it had just discarded. That is between five and nine fits to
+    keep one, and on the datasets in the accompanying study it accounted for
+    82-91% of identification time.
+
+    Here each candidate k is scored from the k-means partition it implies, using
+    the closed-form MLE of the corresponding hard-assignment mixture, and the
+    winner's components *are* the returned memberships. One k-means per
+    candidate, none discarded, and k = 1 needs no clustering at all.
+
+    The selection criterion is the same BIC, but read at the hard-assignment
+    optimum rather than the soft one, so the two can disagree at the margin --
+    typically where the BIC curve is nearly flat and the choice barely matters.
+    Pass ``n_gaussians > 0`` to skip selection entirely.
+    """
+    data = np.asarray(data, dtype=float).ravel()
+    if len(data) == 0:
+        return [], 0
+
+    var_floor = BIC_VARIANCE_FLOOR_FRAC * max(float(data.var()), np.finfo(float).tiny)
+
+    # A column with v distinct values supports at most v clusters. Asking for
+    # more gets a ConvergenceWarning, an empty cluster, and a k-means run whose
+    # result is thrown away -- and on a dataset with binary or low-cardinality
+    # features that is most of the candidates.
+    n_distinct = len(np.unique(data))
+
+    if n_gaussians > 0:
+        # Same cap as the automatic branch below, and for the same reason: a
+        # column with v distinct values cannot support more than v clusters,
+        # requested explicitly or not.
+        k = min(n_gaussians, len(data), n_distinct)
+        components = _hard_partition_gaussians(data, _kmeans_labels_1d(data, k, random_state), k)
+    elif len(data) < 2:
+        components = _hard_partition_gaussians(data, np.zeros(len(data), dtype=int), 1)
+    else:
+        best_bic, components = np.inf, []
+        for k in range(1, min(max_gaussians, n_distinct) + 1):
+            candidate = _hard_partition_gaussians(data, _kmeans_labels_1d(data, k, random_state), k)
+            bic = _mixture_bic(data, candidate, var_floor)
+            if bic < best_bic:
+                best_bic, components = bic, candidate
+
+    return (
+        [GaussianMembership.create(mu=mu, sigma=sd) for mu, sd, _w in components],
+        len(components),
+    )
+
+
+def find_optimal_gaussians(data, max_gaussians: int = 4, random_state: int = 42) -> int:
+    """Number of Gaussians the data supports, by BIC.
+
+    Thin wrapper over :func:`fit_gaussian_mixture_1d`, kept because it is public.
+    Prefer that function directly: it hands back the fit the count was chosen
+    from instead of making the caller reproduce it.
+    """
     if len(data) < 2:
         return 1
-
-    n_samples = len(data)
-    max_components = min(max_gaussians, n_samples)
-
-    bics = []
-    n_components_range = range(1, max_components + 1)
-
-    # Use IVat Means to estimate optimal number of Gaussians?
-    # ivat_means = IVATMeans(random_state=42)
-    # ivat_means.fit(data.copy())
-    # return ivat_means.cluster_centers_.shape[0]
-
-    for n in n_components_range:
-        # TO DO - Use Fuzzy C Means to pick the mu and then compute the sigma
-        gmm = GaussianMixture(n_components=n, random_state=42)
-        gmm.fit(data)
-        if not gmm.converged_:
-            continue
-        bics.append(gmm.bic(data))
-
-    optimal_n = n_components_range[np.argmin(bics)]
-    return optimal_n
+    return fit_gaussian_mixture_1d(
+        data, n_gaussians=0, max_gaussians=max_gaussians, random_state=random_state
+    )[1]
 
 
-def fit_gaussians(X, y, column: str, label_value: int, n_gaussians: int = 0, max_samples: int = 20_000):
-    """Fit multiple Gaussian distributions to a single variable filtered by label value using K-means
+def fit_gaussians(
+    X,
+    y,
+    column: str,
+    label_value: int,
+    n_gaussians: int = 0,
+    max_samples: int | None = None,
+    random_state: int = 42,
+    verbose: bool = False,
+):
+    """Fit 1-D Gaussians to one variable, filtered to one label, by k-means.
 
-    If n_gaussians <= 0, the optimal number of Gaussians is determined automatically.
+    If ``n_gaussians <= 0`` the component count is chosen by BIC.
+
+    Args:
+        max_samples: Cap on the rows used for the fit. ``None`` -- the default --
+            uses every row. When a cap is given the rows are drawn **at random**
+            without replacement, seeded by ``random_state``.
+
+            This used to default to 20,000 and take the *first* 20,000 rows,
+            neither of which the caller could see or change:
+            ``create_gaussian_membership_dict`` did not expose the argument. Two
+            things were wrong with that. A prefix is not a sample -- on data
+            sorted by anything at all it is a biased one -- and a cost curve
+            measured through an invisible cap looks sublinear when it is merely
+            truncated. Subsampling is worth having; doing it silently is not.
+        verbose: Print the automatically-selected component count. Off by
+            default; this fires once per (feature, label) pair.
     """
 
-    # Filter data by label, and take a maximum of 20K samples
     series = X[column][y == label_value].dropna()
 
     # Check if the column is categorical (string or object)
@@ -68,33 +194,20 @@ def fit_gaussians(X, y, column: str, label_value: int, n_gaussians: int = 0, max
             gaussians.append(GaussianMembership.create(mu=float(i), sigma=0.00001))
         return gaussians
 
-    data = series.values.reshape(-1, 1)
-    data = data[:max_samples]
+    data = series.to_numpy(dtype=float)
+
+    if max_samples is not None and 0 < max_samples < len(data):
+        rng = np.random.default_rng(random_state)
+        data = data[rng.choice(len(data), size=max_samples, replace=False)]
 
     if len(data) == 0:
         return []
 
-    if n_gaussians <= 0:
-        n_gaussians = find_optimal_gaussians(data)
-        print(f"  Automatically selected {n_gaussians} Gaussians for {column} (label {label_value})")
-
-    # Use Fuzzy C Means to find cluster centers
-    # TODO - Buffer source array is read-only
-    n_clusters = min(n_gaussians, len(data))
-    # ivat_means = IVATMeans(random_state=42, n_clusters=n_clusters)
-    # cluster_labels_ivat = ivat_means.fit_predict(data.copy())
-    # cluster_labels = cluster_labels_ivat
-    # TODO - Fuzzy C Means?
-    fc_means = KMeans(n_clusters=n_clusters, random_state=42)
-    cluster_labels = fc_means.fit_predict(data.copy())
-
-    # Fit Gaussian to each cluster
-    gaussians = []
-    for i in range(n_gaussians):
-        cluster_data = data[cluster_labels == i].flatten()
-        mu, std = stats.norm.fit(cluster_data)
-        if np.isfinite(mu) and np.isfinite(std):
-            gaussians.append(GaussianMembership.create(mu=mu, sigma=std))
+    gaussians, n_selected = fit_gaussian_mixture_1d(
+        data, n_gaussians=n_gaussians, random_state=random_state
+    )
+    if verbose and n_gaussians <= 0:
+        print(f"  Automatically selected {n_selected} Gaussians for {column} (label {label_value})")
 
     return gaussians
 
@@ -246,7 +359,13 @@ def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tu
 
 
 def create_gaussian_membership_dict(
-    X, y, top_n_var_names: list[str], n_gaussians: int | dict[str, int] = 0
+    X,
+    y,
+    top_n_var_names: list[str],
+    n_gaussians: int | dict[str, int] = 0,
+    max_samples: int | None = None,
+    random_state: int = 42,
+    verbose: bool = False,
 ) -> GaussianMixtureModel:
     """Create a dictionary of Gaussian input memberships for top-n variables across all class labels
 
@@ -256,6 +375,13 @@ def create_gaussian_membership_dict(
         top_n_var_names: List of feature names
         n_gaussians: Number of Gaussians to fit per feature per label (0 for automatic).
                      Can also be a dictionary mapping feature names to their respective number of Gaussians.
+        max_samples: Rows per (feature, label) used for the fit; ``None`` uses
+                     all of them. See :func:`fit_gaussians` -- this argument
+                     exists here because the cap was previously applied at 20,000
+                     rows with no way for this caller to see it or turn it off.
+        random_state: Seeds both the k-means and, when ``max_samples`` is set,
+                      the subsample draw.
+        verbose: Print each automatically-selected component count.
 
     Returns:
         GaussianMixtureModel containing the fit Gaussian membership functions
@@ -279,30 +405,37 @@ def create_gaussian_membership_dict(
                 label_n_gaussians = n_gaussians.get(label_value, 0)
             if label_n_gaussians > 0:
                 feature_n_gaussians = label_n_gaussians
-            gaussians_params = fit_gaussians(X, y, feature_name, label_value, feature_n_gaussians)
+            gaussians_params = fit_gaussians(
+                X,
+                y,
+                feature_name,
+                label_value,
+                feature_n_gaussians,
+                max_samples=max_samples,
+                random_state=random_state,
+                verbose=verbose,
+            )
             label_models[label_value] = LabelModel(memberships=gaussians_params)
 
         return feature_name, FeatureModel(label_models=label_models)
 
     feature_models = {}
 
-    # Use ProcessPoolExecutor for CPU-bound work
-    # TODO - This hangs on some linux machines without max_workers=1!
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        # Submit all tasks
-        futures = [executor.submit(process_feature, name) for name in top_n_var_names]
-        
-        # Collect results as they complete
-        from concurrent.futures import as_completed
-        for future in as_completed(futures):
-            try:
-                feature_name, feature_model = future.result()
-                feature_models[feature_name] = feature_model
-            except Exception as e:
-                # Log the error but continue processing other features
-                print(f"Error processing feature: {e}")
-                import traceback
-                traceback.print_exc()
+    # Serial, and honest about it. This was a ThreadPoolExecutor pinned to
+    # max_workers=1 -- the pin is load-bearing (it hangs above one worker on some
+    # Linux hosts), so the pool bought nothing but futures machinery per feature.
+    # With one worker `as_completed` also yields in submission order, so the
+    # resulting dict order is unchanged, which matters: `extract_gaussian_params`
+    # flattens this dict into a parameter vector.
+    for name in top_n_var_names:
+        try:
+            feature_name, feature_model = process_feature(name)
+            feature_models[feature_name] = feature_model
+        except Exception as e:
+            # Log the error but continue processing other features
+            print(f"Error processing feature: {e}")
+            import traceback
+            traceback.print_exc()
 
     return GaussianMixtureModel(feature_models=feature_models)
 

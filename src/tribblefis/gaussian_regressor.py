@@ -38,6 +38,7 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         t_conorm=None,
         allow_mixed_norms=False,
         random_state=42,
+        max_samples=None,
     ):
         """
         Initialize the MixtureOfGaussiansFuzzyRegressor.
@@ -73,6 +74,9 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
             allow_mixed_norms: Advanced. Required to opt in to a t-norm and t-conorm
                 from different families, which are not De Morgan duals.
             random_state: Seed for reproducibility.
+            max_samples: Cap on the rows used per (feature, label-bucket) when
+                fitting Gaussian memberships. ``None`` -- the default -- uses
+                every row; pass an int to bound fit time on large datasets.
         """
         self.is_fitted_ = False
         self.model_ = None
@@ -98,6 +102,7 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         self.t_conorm = t_conorm
         self.allow_mixed_norms = allow_mixed_norms
         self.random_state = random_state
+        self.max_samples = max_samples
 
     def _norms(self) -> NormPair:
         """Resolved (t-norm, t-conorm) for this estimator.
@@ -151,7 +156,8 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
 
         # Create Gaussian membership model
         self.model_ = create_gaussian_membership_dict(
-            X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians
+            X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians,
+            max_samples=self.max_samples, random_state=self.random_state,
         )
 
         self.n_rules_ = self.model_.n_rules
@@ -216,6 +222,7 @@ class MimoGaussianPredictor(BaseEstimator, RegressorMixin):
         tsk_order="1st",
         optimize_coefficients=True,
         random_state=42,
+        max_samples=None,
     ):
         self.top_n = top_n
         self.top_p = top_p
@@ -224,6 +231,7 @@ class MimoGaussianPredictor(BaseEstimator, RegressorMixin):
         self.tsk_order = tsk_order
         self.optimize_coefficients = optimize_coefficients
         self.random_state = random_state
+        self.max_samples = max_samples
 
     def _make_regressor(self):
         return MixtureOfGaussiansFuzzyRegressor(
@@ -234,6 +242,7 @@ class MimoGaussianPredictor(BaseEstimator, RegressorMixin):
             tsk_order=self.tsk_order,
             optimize_coefficients=self.optimize_coefficients,
             random_state=self.random_state,
+            max_samples=self.max_samples,
         )
 
     def fit(self, X, y):
