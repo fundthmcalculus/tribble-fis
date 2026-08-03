@@ -77,6 +77,32 @@ clf = FuzzyClassificationTree(criterion="ambiguity", max_depth=3, n_terms=2).fit
 clf.predict(X); clf.predict_proba(X)
 ```
 
+### Feature scaling
+
+No estimator here (or in `tribblefis`) scales its input automatically -- raw units are
+kept by default so split thresholds stay physically meaningful (e.g. "Cement is High
+>= 350"). If your features need normalizing or span multiple scales, compose one of
+`tribblefis.scaling.UnitFuzzyScalar` (min-max bounded to `[0, 1]`) or
+`StandardFuzzyScalar` (z-score, `mu=0`/`sigma=1`) in front of the estimator with a
+`Pipeline`:
+
+```python
+from sklearn.pipeline import make_pipeline
+from tribblefis.scaling import UnitFuzzyScalar
+
+model = make_pipeline(UnitFuzzyScalar(), FuzzyRegressionTree(tsk_order="1st")).fit(X, y)
+```
+
+Both log1p-transform wide-dynamic-range features before the final normalization --
+either auto-detected by dynamic range, or named explicitly via `log_features`.
+
+**`UnitFuzzyScalar` is the recommended default.** Gaussian membership functions assume
+a bounded, non-negative domain, and the unbounded centred output of
+`StandardFuzzyScalar` measurably degrades FIS accuracy -- on UCI Concrete over ten
+seeds it took a 1st-order flat MoG-TSK model *below* raw untransformed features
+(R^2 0.087 vs 0.646). Use `StandardFuzzyScalar` only if you specifically need centred
+features; see the class docstring for the full measurement and caveats.
+
 ## Hierarchical mixture of fuzzy experts (composing sub-FIS)
 
 The models above are a single fuzzy tree. To instead **compose multiple sub-FIS into

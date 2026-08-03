@@ -14,58 +14,6 @@ from . import kernel
 from .gauss_data import *  # noqa: F401, F403
 
 
-def log_transform(X: pd.DataFrame, column: str | list[str], offset=0):
-    """Apply log transformation to a column in the DataFrame with an offset to avoid log(0)."""
-    X[column] = np.log(X[column] + offset)
-    return X
-
-
-def standard_transform(X: pd.DataFrame | pd.Series, column: str | list[str] = "") -> pd.DataFrame:
-    if isinstance(X, pd.Series):
-        X = (X - X.min()) / (X.max() - X.min())
-    else:
-        X[column] = (X[column] - X[column].min()) / (X[column].max() - X[column].min())
-    return X
-
-
-def detect_and_apply_log_transform(X: pd.DataFrame, min_dynamic_range: float= 3.0) -> tuple[pd.DataFrame, list[str]]:
-    """
-    Detect and apply log transformation to features with dynamic range
-
-    A feature qualifies for log transformation if its dynamic range
-    (log10(max_abs / min_abs) of non-zero values) exceeds dynamic_range.
-
-    Args:
-        X: DataFrame of features
-        min_dynamic_range: Dynamic range threshold for log transformation
-
-    Returns:
-        Tuple of (transformed_X, features_to_transform)
-    """
-    features_to_transform = []
-    for col in X.columns:
-        vals = X[col].dropna()
-        if len(vals) == 0:
-            continue
-
-        non_zero_vals = vals[vals != 0]
-        if len(non_zero_vals) == 0:
-            continue
-
-        abs_vals = np.abs(non_zero_vals)
-        max_abs = abs_vals.max()
-        min_abs = abs_vals.min()
-
-        dynamic_range = np.log10(max_abs / min_abs)
-        if dynamic_range >= min_dynamic_range:
-            features_to_transform.append(col)
-            print(f"  Suggesting log-transform for feature '{col}' (dynamic range: {dynamic_range:.2f})")
-            # Offset by minimum value to avoid log(0)
-            X[col] = np.log1p(X[col] - vals.min())
-
-    return X, features_to_transform
-
-
 #: Variance floor used when scoring a candidate mixture, as a fraction of the
 #: column's own variance. Plays the role of scikit-learn's ``reg_covar``, but
 #: scale-relative rather than absolute: these columns are raw features, so a
