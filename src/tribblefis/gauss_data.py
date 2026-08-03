@@ -402,25 +402,104 @@ class FeatureModel(NamedTuple):
         return FeatureModel(new_label_models)
 
 
+class SubdominantRule(NamedTuple):
+    """A rule subordinate to another rule's activation, firing for a corrected class.
+
+    Where an :class:`ExclusionClause` repairs a rule by *withdrawing* it from a
+    region, a sub-dominant rule repairs a confusion by *adding* a more specific
+    rule underneath the one that gets it wrong::
+
+        IF   rule P fires
+        AND  x is [...] AND y is [...]        <- fit on the rows P gets wrong
+        THEN T   (instead of P)
+
+    Its activation is gated on the parent: ``w_sub = T(w_P, a_sub)``, so it is
+    silent everywhere rule ``P`` is silent. That gate is what makes the rule an
+    exception to ``P`` rather than a competing account of ``T`` -- it can key on
+    evidence that only separates the classes *inside* ``P``'s region, evidence
+    far too weak to survive global feature ranking.
+
+    **Sub-dominant, and why the decision is by precedence.** Every t-norm obeys
+    ``T(a, b) <= min(a, b)``, so ``w_sub <= w_P`` identically: the gate that
+    makes the rule subordinate also caps it below the very rule it corrects. A
+    gated rule can therefore never outvote its parent on magnitude, and a flat
+    argmax over firing strengths would render it inert. Resolution is by
+    *specificity* instead: where a sub-rule's activation clears its
+    :attr:`threshold`, the more specific rule takes the label -- the ordinary
+    reading of an exception in a rule base, and the reason ``P``'s own firing
+    strength is left untouched.
+
+    Attributes:
+        parent: The label whose rule gates this one. The sub-rule is consulted
+            only for samples currently predicted ``parent``.
+        consequent: The corrected class. The sub-rule fires for this and nothing
+            else.
+        antecedents: ``{feature_name: [membership, ...]}``, this rule's own
+            terms, folded exactly as a parent rule's are -- t-conorm within a
+            feature, t-norm across features. They are its own objects rather
+            than indices into the parent model, because they are fit on the
+            confused rows and need not resemble either class's global fit.
+        threshold: Activation at or above which the override fires. Fit by
+            bisection over the parent's region during mining.
+        layer: Depth in the cascade. Layer 0 sub-rules gate on a base rule;
+            layer 1 gates on a label some layer-0 sub-rule produces, and so on.
+        support: Confused rows behind this sub-rule at mining time.
+        purity: Fraction of the parent's region that really was ``consequent``.
+    """
+
+    parent: int | str
+    consequent: int | str
+    antecedents: dict[str, list[AnyMembership]]
+    threshold: float = 0.5
+    layer: int = 0
+    support: int = 0
+    purity: float = 0.0
+
+    @property
+    def pair(self) -> tuple:
+        """``(parent, consequent)`` -- the confusion this rule arbitrates."""
+        return (self.parent, self.consequent)
+
+
 class GaussianMixtureModel(NamedTuple):
     """A collection of FeatureModels mapping feature names to their models.
 
-    ``exclusions`` carries the optional second-stage admissibility reduction:
-    negated cross-terms mined from the training data that narrow individual
-    rules away from the outer-product cells they wrongly claim. See
-    :class:`ExclusionClause` and :mod:`tribblefis.exclusion`. It is empty by
-    default, and :func:`tribblefis.gauss_math.tsk_firing_strengths` applies
-    whatever is present, so a model without mined clauses fires exactly as it
-    did before the feature existed.
+    Two optional correction stages ride along, both empty by default, so a model
+    that has been through neither fires exactly as it did before either existed:
+
+    ``exclusions``
+        Negated cross-terms that narrow individual rules away from the
+        outer-product cells they wrongly claim -- a *withdrawal* from the
+        offending rule. Applied inside
+        :func:`tribblefis.gauss_math.tsk_firing_strengths`, so every consumer of
+        firing strengths sees them. See :class:`ExclusionClause` and
+        :mod:`tribblefis.exclusion`.
+
+    ``subdominant``
+        More specific rules gated on a parent rule's activation, firing for a
+        corrected class -- an *addition* underneath the offending rule. They
+        resolve by precedence rather than magnitude, so they are applied at
+        defuzzification (:func:`tribblefis.gauss_math.tsk_predict`) rather than
+        to the strengths. See :class:`SubdominantRule` and
+        :mod:`tribblefis.subdominant`.
+
+    The two are independent and compose: a clause repairs a rule that claims a
+    region it should not, a sub-rule repairs a region where the right answer
+    needs evidence the parent rule never had.
     """
 
     feature_models: dict[str, FeatureModel]
     anomaly_params: Optional[AnomalyParameters] = None
     exclusions: tuple[ExclusionClause, ...] = ()
+    subdominant: tuple[SubdominantRule, ...] = ()
 
     def with_exclusions(self, clauses) -> "GaussianMixtureModel":
         """This model with ``clauses`` as its exclusion set (replacing any existing)."""
         return self._replace(exclusions=tuple(clauses))
+
+    def with_subdominant(self, rules) -> "GaussianMixtureModel":
+        """This model with ``rules`` as its sub-dominant cascade (replacing any existing)."""
+        return self._replace(subdominant=tuple(rules))
 
     @property
     def n_rules(self) -> int:
