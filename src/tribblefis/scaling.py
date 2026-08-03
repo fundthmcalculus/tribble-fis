@@ -7,22 +7,22 @@ estimator in this package -- callers who want it compose one of the scalers
 below into an ``sklearn.pipeline.Pipeline`` in front of the estimator::
 
     from sklearn.pipeline import make_pipeline
-    from tribblefis.scaling import StandardScalar
+    from tribblefis.scaling import UnitScalar
     from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
 
-    pipe = make_pipeline(StandardScalar(), MixtureOfGaussiansFuzzyClassifier())
+    pipe = make_pipeline(UnitScalar(), MixtureOfGaussiansFuzzyClassifier())
     pipe.fit(X_train, y_train)
 
 Two scalers are offered, differing only in the final normalization:
 
-- :class:`StandardScalar` -- z-score standardization (``mu=0``, ``sigma=1``).
 - :class:`UnitScalar` -- min-max bounding to ``[0, 1]`` (or a custom range).
+  **The recommended default for FIS estimators in this package** (see
+  "Choosing between them" below).
+- :class:`StandardScalar` -- genuine z-score standardization (``mu=0``,
+  ``sigma=1``), for callers who specifically need centred features.
 
-Both auto-detect and log1p-transform wide-dynamic-range features first (see
-``log_dynamic_range``), and both mirror sklearn scalers' ``fit``/``transform``/
-``fit_transform``/``inverse_transform``/``get_feature_names_out`` surface.
-Which one is the better default for a given FIS is an open, empirical
-question -- see the ``grad-school`` proposal-defense evaluation.
+Both mirror sklearn scalers' ``fit``/``transform``/``fit_transform``/
+``inverse_transform``/``get_feature_names_out`` surface.
 
 Which features get logged
 -------------------------
@@ -45,6 +45,67 @@ threshold: the features ordered by dynamic range are ``Slag`` (4.25 decades),
 no scalar threshold selects it::
 
     UnitScalar(log_features=["Slag", "FlyAsh", "Age"])
+
+Getting a DataFrame back
+------------------------
+
+FIS consumers frequently need column names (they build membership
+dictionaries keyed by feature). ``set_output`` comes free with
+``TransformerMixin``, so there is no need to re-wrap the output in
+``pd.DataFrame(...)`` by hand::
+
+    scaler = UnitScalar(log_features=["Slag", "Age"]).set_output(transform="pandas")
+    X_scaled = scaler.fit_transform(X_train)   # a DataFrame, columns preserved
+
+    # ...or, in a pipeline:
+    pipe = make_pipeline(UnitScalar(), MixtureOfGaussiansFuzzyRegressor())
+    pipe.fit(X_train, y_train)
+
+Scaling a regression target
+---------------------------
+
+Some constructions in this package need ``y`` bounded to ``[0, 1]`` (output
+partitioning, and consequent bucket means pinned to the unit interval). These
+scalers are feature scalers, but a target is just a one-column frame, so the
+idiom is a one-liner and this package deliberately adds no separate target
+API::
+
+    y_scaler = UnitScalar(log_dynamic_range=None)      # or log_features=[]
+    y_scaled = y_scaler.fit_transform(y.to_frame()).ravel()
+    y_pred = y_scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).ravel()
+
+If you want that wired up automatically, use the standard sklearn tool
+:class:`sklearn.compose.TransformedTargetRegressor`, which already handles
+the fit/inverse plumbing::
+
+    TransformedTargetRegressor(
+        regressor=MixtureOfGaussiansFuzzyRegressor(),
+        transformer=UnitScalar(log_dynamic_range=None),
+    )
+
+Choosing between them
+---------------------
+
+``UnitScalar`` is the recommended default. This is an empirical finding, not
+a theoretical one, and it comes from a single dataset and a single pipeline
+-- treat it as a strong prior, not a law.
+
+In the ``grad-school`` proposal-defense evaluation on UCI Concrete over ten
+seeds, min-max (``UnitScalar``) was best-or-tied in 8 of 9
+model/hyperparameter rows. Genuine z-score (``StandardScalar``) was actively
+harmful to the fuzzy models: it took a 1st-order flat MoG-TSK model to
+R^2 0.087 +/- 0.089, *below* raw untransformed features at 0.646 +/- 0.039
+(RMSE 7.8 -> 15.6 MPa), and dropped a demo-tuned mixture of experts from
+0.834 to 0.706. Rank-based controls (CART, Random Forest) moved by <= 0.002
+between the two transforms, as they must, since both are monotone -- which
+is what confirms the effect is specific to the fuzzy machinery rather than an
+artifact of the split.
+
+The working explanation is that Gaussian membership functions -- and, in that
+pipeline, extreme output-bucket means pinned to ``[0, 1]`` -- assume a
+**bounded, non-negative** domain. An unbounded, centred transform violates an
+assumption the rule construction relies on. The degradation shows up on
+*training* data too, so it is underfitting rather than overfitting.
 """
 
 import numpy as np
@@ -201,6 +262,17 @@ class UnitScalar(_FuzzyScalarBase):
             Naming a feature that is not in the data raises at ``fit`` time.
         clip: Whether ``transform`` clips values falling outside the range
             seen during ``fit`` (e.g. test data below the training min/max).
+
+            This default is a **modelling decision, not just numerical
+            hygiene**, and it is worth choosing deliberately. In a one-class
+            or anomaly-detection setup where the scaler is fitted on normal
+            data only (say, benign network traffic), every attack row that
+            falls outside the fitted range is saturated at the bounds rather
+            than extrapolated. That is often exactly what you want -- it keeps
+            membership functions inside their supported domain -- but it does
+            discard the magnitude of the excursion, which is sometimes the
+            most informative thing about an outlier. Pass ``clip=False`` when
+            you need that magnitude to survive into the model.
         copy: Whether to copy input data; ``False`` mutates it in place.
     """
 
@@ -257,6 +329,12 @@ class UnitScalar(_FuzzyScalarBase):
 class StandardScalar(_FuzzyScalarBase):
     """Standardizes features to ``mu=0``, ``sigma=1``, log-transforming
     wide-dynamic-range ones first.
+
+    Note:
+        :class:`UnitScalar` is the recommended default for the FIS estimators
+        in this package; centred, unbounded features measurably hurt them.
+        See "Choosing between them" in :mod:`tribblefis.scaling` for the
+        evidence before reaching for this class.
 
     Args:
         log_dynamic_range: See :mod:`tribblefis.scaling`. Threshold in decades
