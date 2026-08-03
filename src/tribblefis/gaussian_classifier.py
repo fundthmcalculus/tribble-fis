@@ -9,6 +9,7 @@ from sklearn.utils.multiclass import check_classification_targets
 
 from .gauss_data import AnomalyParameters, DefaultNormCornorm
 from .gauss_math import (
+    _natural_dtype,
     calculate_gaussian_correlation,
     take_top_features,
     create_gaussian_membership_dict,
@@ -27,7 +28,11 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
                  t_norm=None, t_conorm=None, allow_mixed_norms=False,
                  exclude_cross_terms=False, exclusion_order=2, exclusion_min_support=10,
                  exclusion_max_purity=0.5, exclusion_cross_margin=0.05,
-                 exclusion_max_clauses=4, exclusion_strength=1.0):
+                 exclusion_max_clauses=4, exclusion_strength=1.0,
+                 subdominant=False, subdominant_top_n=3, subdominant_max_layers=2,
+                 subdominant_min_region=20, subdominant_min_confused=8,
+                 subdominant_n_gaussians=1, subdominant_cv=3,
+                 subdominant_min_region_gain=0.03):
         """
         Initialize the MixtureOfGaussiansFuzzyClassifier.
 
@@ -96,6 +101,45 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
             exclusion_strength: Scales each negation to ``1 - strength * block``.
                     ``1.0`` is a hard veto of the block; lower values discount the
                     parent rule there instead.
+            subdominant: If True, run a layered stage after fitting that reads the
+                    model's own confusion matrix and adds a *more specific rule
+                    underneath* each rule that gets a pair wrong::
+
+                        IF rule P fires AND x is [...] THEN T (instead of P)
+
+                    The antecedent is fit on the rows ``P`` claims but that are
+                    truly ``T``, so it describes where ``P`` is wrong rather than
+                    where ``T`` lives, and it is gated on ``P``'s own firing so it
+                    is silent outside that region. Because a gated activation is
+                    capped below its parent (``T(a,b) <= min(a,b)``), sub-rules
+                    resolve by *precedence* at defuzzification rather than by
+                    argmax over strengths -- see :mod:`tribblefis.subdominant`.
+                    Off by default. Composes with ``exclude_cross_terms``: a
+                    clause withdraws a rule from a region it should not claim, a
+                    sub-rule supplies evidence the parent rule never had.
+            subdominant_top_n: Confusions addressed per layer, largest
+                    off-diagonal cell of the confusion matrix first.
+            subdominant_max_layers: Depth of the cascade. ``1`` disables chaining;
+                    at ``2`` a rule may correct a label an earlier rule produced.
+            subdominant_min_region: Minimum rows in a parent's prediction region
+                    before it is eligible for a sub-rule.
+            subdominant_min_confused: Minimum confused rows in a ``(P, T)`` cell
+                    before it earns a rule.
+            subdominant_n_gaussians: Memberships per feature in a sub-rule's own
+                    antecedent. ``1`` by default -- a single confusion region is
+                    usually unimodal and more terms mostly buys variance.
+            subdominant_cv: Folds for the out-of-fold confusion matrix that
+                    selects the pairs. In-sample confusions understate what the
+                    model actually gets wrong.
+            subdominant_min_region_gain: A tuned sub-rule is kept only when it
+                    improves accuracy over its parent's region by more than this.
+                    Defaults to 0.03 rather than 0: a rule kept on a marginal
+                    gain measured as a coin flip on held-out data (7 better, 5
+                    worse over 36 cases), and asking for a gain large enough not
+                    to be noise removed every one of those losses. A stricter
+                    floor also removes the *later layers* of a chained
+                    correction, whose rules govern smaller gains than the first,
+                    so 0.03 rather than 0.05.
         """
         self.is_fitted_: bool = False
         self.model_ = None
@@ -133,6 +177,15 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.exclusion_max_clauses = exclusion_max_clauses
         self.exclusion_strength = exclusion_strength
         self.exclusion_info_: dict | None = None
+        self.subdominant = subdominant
+        self.subdominant_top_n = subdominant_top_n
+        self.subdominant_max_layers = subdominant_max_layers
+        self.subdominant_min_region = subdominant_min_region
+        self.subdominant_min_confused = subdominant_min_confused
+        self.subdominant_n_gaussians = subdominant_n_gaussians
+        self.subdominant_cv = subdominant_cv
+        self.subdominant_min_region_gain = subdominant_min_region_gain
+        self.subdominant_info_: dict | None = None
 
     def fit(self, X, y):
         """
@@ -231,8 +284,48 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
             )
             self.model_ = self.model_.with_exclusions(clauses)
 
+        # 6. Optionally mine the layered sub-dominant cascade. Last, because the
+        #    confusion matrix it reads must be the one the *finished* rule base
+        #    produces -- refinement and exclusion clauses both change which rows
+        #    end up in which region, so pairs mined before them would address
+        #    confusions that no longer exist.
+        if self.subdominant:
+            from .subdominant import mine_subdominant_rules
+            # The out-of-fold estimator must have this stage *off*: a clone that
+            # mined its own cascade inside every fold would be measuring a
+            # different model than the one being corrected, at a cost
+            # multiplied by the fold count.
+            oof_estimator = clone(self).set_params(subdominant=False)
+            rules, self.subdominant_info_ = mine_subdominant_rules(
+                self.model_,
+                X_df.reset_index(drop=True),
+                y_series,
+                estimator=oof_estimator,
+                norms=self.anomaly_params.norms(),
+                top_n=self.subdominant_top_n,
+                max_layers=self.subdominant_max_layers,
+                min_region=self.subdominant_min_region,
+                min_confused=self.subdominant_min_confused,
+                n_gaussians=self.subdominant_n_gaussians,
+                cv=self.subdominant_cv,
+                random_state=self.random_state,
+                min_region_gain=self.subdominant_min_region_gain,
+            )
+            self.model_ = self.model_.with_subdominant(rules)
+
         self.is_fitted_ = True
         return self
+
+    @property
+    def subdominant_(self) -> tuple:
+        """The mined :class:`~tribblefis.gauss_data.SubdominantRule` cascade, if any.
+
+        Empty unless ``subdominant=True``. Pass to
+        :func:`tribblefis.subdominant.describe_subdominant` to read the rules as
+        gated exceptions; :attr:`subdominant_info_` explains an empty cascade.
+        """
+        check_is_fitted(self)
+        return self.model_.subdominant
 
     @property
     def exclusions_(self) -> tuple:
@@ -296,7 +389,58 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
             if cls in label_to_idx:
                 reordered_probs[:, i] = probabilities[:, label_to_idx[cls]]
 
+        if self.model_.subdominant:
+            reordered_probs = self._relabel_proba(X_df, firing_strengths, labels, reordered_probs)
+
         return reordered_probs
+
+    def _relabel_proba(self, X_df, firing_strengths, labels, probabilities):
+        """Carry a sub-dominant override into the probability vector, by swapping.
+
+        Sub-dominant rules resolve by precedence, not magnitude, so there is no
+        strength for them to contribute -- and leaving the probabilities alone
+        would make ``argmax(predict_proba)`` disagree with ``predict``, which
+        quietly breaks every sklearn path that assumes otherwise (calibration,
+        ROC curves, ``cross_val_predict(method="predict_proba")``).
+
+        Where an override fires, the parent's and the corrected class's entries
+        are exchanged. That is the smallest edit consistent with the decision:
+        the row still sums to one, nothing else moves, and the corrected class
+        becomes the argmax exactly because the parent was.
+        """
+        from .gauss_math import apply_subdominant
+
+        anomaly_label = (
+            self.anomaly_params.label
+            if self.anomaly_params and self.anomaly_params.include_anomaly
+            else None
+        )
+        class_labels = [label for label in labels if label != anomaly_label]
+        class_block = firing_strengths[:, : len(class_labels)]
+        base = np.asarray(
+            [class_labels[i] for i in np.argmax(class_block, axis=1)], dtype=object
+        )
+
+        feature_arrays = {
+            name: np.asarray(X_df[name].values)
+            for name in self.model_.feature_models
+            if name in X_df
+        }
+        corrected = apply_subdominant(
+            base, class_block, class_labels, self.model_,
+            feature_arrays, self.anomaly_params.norms(),
+        )
+
+        class_index = {cls: i for i, cls in enumerate(self.classes_)}
+        for row in np.flatnonzero(corrected != base):
+            source = class_index.get(base[row])
+            target = class_index.get(corrected[row])
+            if source is None or target is None:
+                continue
+            probabilities[row, source], probabilities[row, target] = (
+                probabilities[row, target], probabilities[row, source],
+            )
+        return probabilities
 
     def firing_strengths(self, X, anomaly_details: AnomalyParameters | None = None) -> tuple[np.ndarray, list]:
         """
@@ -800,7 +944,11 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
             # Out-of-region samples are frozen on the base prediction.
             frozen = frozen | (target & ~in_region)
 
-        return preds
+        # Narrow back out of the object dtype the cascade bookkeeping needs. An
+        # object array of integers is `type_of_target` "unknown" to scikit-learn,
+        # so `score`, `accuracy_score` and `cross_val_predict` all reject it
+        # against an int64 `y` -- this estimator was unusable with integer labels.
+        return _natural_dtype(preds)
 
     def predict_proba(self, X):
         """

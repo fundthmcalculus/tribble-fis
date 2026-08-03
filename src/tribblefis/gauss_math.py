@@ -772,6 +772,175 @@ def firing_strengths_and_mf_grad(
     return firing_strengths, unique_labels, dF_target_dmu, dF_target_dsigma
 
 
+# ---------------------------------------------------------------------------
+# Layered correction: sub-dominant rules.
+#
+# A gated rule's activation is `T(w_parent, a_sub)`, and every t-norm obeys
+# `T(a, b) <= min(a, b)`, so a sub-rule can never outvote the parent it is
+# correcting on magnitude. These two functions therefore live either side of
+# defuzzification rather than inside it: `subdominant_activation` computes the
+# gated strength, and `apply_subdominant` resolves it by *precedence* -- the more
+# specific rule takes the label. `tribblefis.subdominant.mine_subdominant_rules`
+# is the fitting half.
+# ---------------------------------------------------------------------------
+
+def subdominant_activation(
+    rule: "SubdominantRule",
+    parent_strength: np.ndarray,
+    feature_arrays: dict[str, np.ndarray],
+    norms: NormPair,
+) -> np.ndarray | None:
+    """Gated activation of a sub-dominant rule: ``T(w_parent, a_sub)``.
+
+    ``a_sub`` is folded exactly as any rule's antecedent is -- t-conorm over each
+    feature's memberships, t-norm across features -- and is then ANDed with the
+    parent's own firing strength. That final t-norm is the gate: the sub-rule is
+    silent wherever its parent is silent, which is what makes it an exception to
+    that rule rather than a free-standing opinion about the corrected class.
+
+    Returns ``None`` for a rule naming a feature this batch does not carry, so a
+    stale rule is skipped rather than evaluated on the wrong columns.
+    """
+    activation: np.ndarray | None = None
+    for feature_name, memberships in rule.antecedents.items():
+        feature_data = feature_arrays.get(feature_name)
+        if feature_data is None or not memberships:
+            return None
+
+        # Logic-OR within the feature.
+        feature_value = np.zeros(len(feature_data), dtype=float)
+        for mf in memberships:
+            feature_value = t_conorm(
+                feature_value, mf.evaluate(feature_data), norms.t_conorm
+            )
+        # Logic-AND across features.
+        activation = (
+            feature_value
+            if activation is None
+            else t_norm(activation, feature_value, norms.t_norm)
+        )
+
+    if activation is None:
+        return None
+    # The gate. `w_sub <= w_parent` follows, which is exactly why the decision
+    # below is by precedence and not by argmax.
+    return t_norm(parent_strength, activation, norms.t_norm)
+
+
+def apply_subdominant(
+    predictions: np.ndarray,
+    firing_strengths: np.ndarray,
+    labels: list[Any],
+    model: GaussianMixtureModel,
+    feature_arrays: dict[str, np.ndarray],
+    norms: NormPair,
+    rules: "tuple[SubdominantRule, ...] | None" = None,
+    return_trace: bool = False,
+):
+    """Resolve sub-dominant rules by precedence, layer by layer.
+
+    A sub-rule is consulted only for rows whose *current* prediction is its
+    parent -- so a row reaches layer 1 only if a layer-0 rule moved it there,
+    which is what makes the cascade layered rather than a flat vote. Where the
+    gated activation clears the rule's threshold, the more specific rule takes
+    the label.
+
+    A row may never return to a label it has already held. Without that,
+    ``P -> T`` and ``T -> P`` rules would trade a row back and forth and the
+    cascade's result would depend on iteration order; with it, every row's label
+    sequence is strictly non-repeating and the cascade terminates in at most as
+    many layers as there are classes. Ties within a layer -- two rules with the
+    same parent both firing -- go to the higher activation, then to the earlier
+    rule, so the outcome does not depend on dictionary ordering.
+
+    Args:
+        predictions: Current per-row labels (the base argmax). Not modified.
+        firing_strengths: The class firing strengths the predictions came from.
+        labels: Column labels of ``firing_strengths``.
+        model: The model the rules belong to.
+        feature_arrays: ``{feature_name: ndarray}`` for this batch.
+        norms: Resolved operator pair.
+        rules: Defaults to ``model.subdominant``.
+        return_trace: Also return a per-row list of the rules that fired.
+
+    Returns:
+        The corrected label array, or ``(labels, trace)`` when ``return_trace``.
+    """
+    rules = model.subdominant if rules is None else rules
+    # Object dtype internally so heterogeneous label types compare cleanly; the
+    # return is narrowed back below.
+    corrected = np.array(predictions, dtype=object)
+    trace: list[list] = [[] for _ in range(len(corrected))]
+    if not rules:
+        return (_natural_dtype(corrected), trace) if return_trace else _natural_dtype(corrected)
+
+    column_of = {label: i for i, label in enumerate(labels)}
+    # Labels each row has already held; a rule may not send it back to one.
+    held = [{label} for label in corrected]
+
+    for layer in sorted({rule.layer for rule in rules}):
+        layer_rules = [rule for rule in rules if rule.layer == layer]
+
+        # Score every rule in the layer against the labels as they stand at the
+        # *start* of the layer, so rules within a layer cannot chain into each
+        # other -- chaining is what the next layer is for.
+        fired: list[tuple[int, np.ndarray, Any]] = []
+        for order, rule in enumerate(layer_rules):
+            column = column_of.get(rule.parent)
+            if column is None or rule.consequent not in column_of:
+                continue
+            eligible = corrected == rule.parent
+            if not eligible.any():
+                continue
+            activation = subdominant_activation(
+                rule, firing_strengths[:, column], feature_arrays, norms
+            )
+            if activation is None:
+                continue
+            allowed = np.array(
+                [rule.consequent not in seen for seen in held], dtype=bool
+            )
+            fires = eligible & allowed & (activation >= rule.threshold)
+            if fires.any():
+                fired.append((order, np.where(fires, activation, -1.0), rule))
+
+        if not fired:
+            continue
+
+        # Highest activation wins a contested row; ties break on rule order.
+        best = np.full(len(corrected), -1.0)
+        winner: list[Any] = [None] * len(corrected)
+        for _, activation, rule in fired:
+            takes = activation > best
+            best = np.where(takes, activation, best)
+            for row in np.flatnonzero(takes):
+                winner[row] = rule
+
+        for row, rule in enumerate(winner):
+            if rule is None:
+                continue
+            corrected[row] = rule.consequent
+            held[row].add(rule.consequent)
+            trace[row].append(rule)
+
+    corrected = _natural_dtype(corrected)
+    return (corrected, trace) if return_trace else corrected
+
+
+def _natural_dtype(labels: np.ndarray) -> np.ndarray:
+    """Re-infer a label array's dtype after object-dtype bookkeeping.
+
+    The cascade works in object dtype so labels of any type compare cleanly, but
+    an object array of integers is `type_of_target` "unknown" to scikit-learn,
+    which then refuses to score it against an int64 `y`. Round-tripping through
+    a list lets NumPy pick the natural dtype back up, so `predict` returns what
+    it returned before the cascade existed.
+    """
+    if labels.size == 0:
+        return labels
+    return np.array(labels.tolist())
+
+
 def tsk_predict(X: pd.DataFrame, model: GaussianMixtureModel,  anomaly_details: AnomalyParameters | None = None) -> np.ndarray:
     """Zeroth-order TSK fuzzy model for classification.
 
@@ -781,12 +950,25 @@ def tsk_predict(X: pd.DataFrame, model: GaussianMixtureModel,  anomaly_details: 
         anomaly_details: AnomalyParameters containing anomaly detection details
 
     Returns:
-        Array of predicted class labels (0 or 1)
+        Array of predicted class labels
     """
     firing_strengths, unique_labels = tsk_firing_strengths(X, model, anomaly_details)
     predictions = np.argmax(firing_strengths, axis=1)
     # Map back to original label values if they weren't 0 and 1
-    return np.array([unique_labels[i] for i in predictions])
+    labelled = np.array([unique_labels[i] for i in predictions])
+    if not model.subdominant:
+        return labelled
+
+    # Sub-dominant rules resolve by precedence, so they act here on the label
+    # rather than earlier on the strengths -- a gated rule is capped below its
+    # parent and would be inert in the argmax above.
+    norms = anomaly_details.norms() if anomaly_details else resolve_norm_pair()
+    feature_arrays = {
+        name: np.asarray(X[name].values) for name in model.feature_models if name in X
+    }
+    return apply_subdominant(
+        labelled, firing_strengths, unique_labels, model, feature_arrays, norms
+    )
 
 
 def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierModel) -> np.ndarray:

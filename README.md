@@ -54,6 +54,48 @@ but on half the datasets tested it correctly mines nothing, and with one
 membership function per feature-label there is no outer product to reduce and it
 is an exact no-op. See `docs/cross-term-exclusion-evaluation.md`.
 
+## Layered sub-dominant rules
+
+Where cross-term exclusion repairs a rule that claims a region it should not,
+this repairs a region where the right answer needs evidence the parent rule
+never had. `subdominant=True` runs the training data through the fitted model,
+reads the top-n confusions off the resulting matrix, and adds a more specific
+rule *underneath* the one that gets each pair wrong:
+
+```
+IF   rule A fires
+AND  f2 is [~4.45+/-0.385]        <- fit on the rows A gets wrong
+THEN B   (instead of A)
+```
+
+```python
+clf = MixtureOfGaussiansFuzzyClassifier(subdominant=True)
+clf.fit(X, y)
+
+from tribblefis.subdominant import describe_subdominant
+print(describe_subdominant(clf.model_))
+```
+
+The rule is *gated* — `w_sub = T(w_A, a_sub)`, silent everywhere rule `A` is
+silent — so it is an exception to `A` rather than a competing account of `B`, and
+because it is fit only on `A`'s mistakes it can key on evidence far too weak to
+survive the global feature ranking. Corrections chain: a sub-rule's consequent
+may be another sub-rule's parent, so `subdominant_max_layers` controls depth.
+
+**Resolution is by precedence, not argmax.** Every t-norm obeys
+`T(a,b) <= min(a,b)`, so a gated rule's activation is capped *below* the rule it
+corrects — a flat argmax over firing strengths would render it inert. Where the
+activation clears the rule's threshold, the more specific rule takes the label
+and the parent's strength is untouched. `predict_proba` is relabelled to match,
+so `argmax(predict_proba) == predict` still holds.
+
+Off by default, and honestly so: on a class hidden inside another it is **+12.1
+points** held out, but on iris, wine, breast_cancer, digits and two
+`make_classification` problems it mines almost nothing (+0.0009 over 36 cases,
+never worse). The sequence classifier's experts — a different attack on the same
+confusions — also find nothing on those datasets, which suggests the structure
+simply is not there. See `docs/subdominant-rule-evaluation.md`.
+
 ## Optional compiled kernel
 
 The forward pass (`tsk_firing_strengths`, and therefore every prediction and
