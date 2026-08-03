@@ -189,6 +189,7 @@ class MimoGaussianPredictorMemory(BaseEstimator, RegressorMixin):
         tsk_order: str = "1st",
         optimize_coefficients: bool = True,
         random_state: int = 42,
+        max_samples: int | None = None,
     ):
         """
         Initialize MIMO predictor with memory.
@@ -206,6 +207,9 @@ class MimoGaussianPredictorMemory(BaseEstimator, RegressorMixin):
             tsk_order: TSK polynomial order ('0th', '1st', '2nd', '3rd', 'full-2nd')
             optimize_coefficients: Whether to optimize TSK coefficients
             random_state: Random seed for reproducibility
+            max_samples: Cap on the rows used per (feature, label-bucket) when
+                fitting Gaussian memberships in the underlying regressor.
+                ``None`` -- the default -- uses every row.
         """
         self.window_size = window_size
         self.memory_size = memory_size
@@ -217,6 +221,7 @@ class MimoGaussianPredictorMemory(BaseEstimator, RegressorMixin):
         self.tsk_order = tsk_order
         self.optimize_coefficients = optimize_coefficients
         self.random_state = random_state
+        self.max_samples = max_samples
 
         self.feature_extractor_ = MemoryWindowFeatureExtractor(
             window_size=window_size, memory_size=memory_size
@@ -275,6 +280,7 @@ class MimoGaussianPredictorMemory(BaseEstimator, RegressorMixin):
             tsk_order=self.tsk_order,
             optimize_coefficients=self.optimize_coefficients,
             random_state=self.random_state,
+            max_samples=self.max_samples,
         )
 
         X_aug_df = pd.DataFrame(X_augmented, columns=aug_feature_names)

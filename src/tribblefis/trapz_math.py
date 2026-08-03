@@ -453,39 +453,57 @@ def fit_trapezoids_em(
     return trapezoids, best_weights, best_ll
 
 
+def fit_trapezoid_mixture_1d(
+    data_1d: np.ndarray,
+    n_trapezoids: int = 0,
+    max_components: int = 4,
+    n_bins: int = 50,
+) -> tuple[list[TrapezoidMembership], int]:
+    """Fit a 1-D trapezoid mixture, choosing the component count by BIC.
+
+    Returns ``(trapezoids, n_selected)`` -- both, so the caller does not refit.
+    :func:`find_optimal_trapezoids` used to run :func:`fit_trapezoids_em` at
+    every candidate k, return only the winning *count*, and leave the caller to
+    run the same EM again at that k. The winning fit was already in hand.
+
+    BIC = n_params * log(N) - 2 * log_likelihood, with n_params = 5K - 1
+    (4 parameters per trapezoid plus K-1 free weights).
+    """
+    data_1d = np.asarray(data_1d, dtype=float)
+
+    if n_trapezoids > 0:
+        trapezoids, _weights, _ll = fit_trapezoids_em(
+            data_1d, n_components=n_trapezoids, n_bins=n_bins, max_iter=100, tol=1e-4
+        )
+        return trapezoids, n_trapezoids
+
+    N = len(data_1d)
+    best = (np.inf, [], 0)
+    for k in range(1, max_components + 1):
+        trapezoids, _weights, ll = fit_trapezoids_em(
+            data_1d, n_components=k, n_bins=n_bins, max_iter=100
+        )
+        bic = (5 * k - 1) * np.log(N) - 2 * ll
+        if bic < best[0]:
+            best = (bic, trapezoids, k)
+
+    return best[1], best[2]
+
+
 def find_optimal_trapezoids(
     data_1d: np.ndarray,
     max_components: int = 4,
     n_bins: int = 50,
 ) -> int:
-    """Select number of trapezoid components using BIC.
+    """Number of trapezoid components the data supports, by BIC.
 
-    BIC = n_params * log(N) - 2 * log_likelihood
-    For K components: n_params = 5K - 1 (4 params per trapezoid + K-1 free weights)
-
-    Args:
-        data_1d: 1D array of observations
-        max_components: Maximum number of components to try
-        n_bins: Number of histogram bins
-
-    Returns:
-        Optimal number of components (1 <= K <= max_components)
+    Thin wrapper over :func:`fit_trapezoid_mixture_1d`, kept because it is
+    public. Prefer that function directly: it returns the fit the count came
+    from rather than discarding it.
     """
-    data_1d = np.asarray(data_1d, dtype=float)
-    N = len(data_1d)
-
-    bics = []
-    for k in range(1, max_components + 1):
-        trapezoids, weights, ll = fit_trapezoids_em(
-            data_1d, n_components=k, n_bins=n_bins, max_iter=100
-        )
-
-        n_params = 5 * k - 1
-        bic = n_params * np.log(N) - 2 * ll
-        bics.append(bic)
-
-    optimal_k = np.argmin(bics) + 1
-    return optimal_k
+    return fit_trapezoid_mixture_1d(
+        data_1d, n_trapezoids=0, max_components=max_components, n_bins=n_bins
+    )[1]
 
 
 def fit_trapezoids(
@@ -494,7 +512,9 @@ def fit_trapezoids(
     column: str,
     label_value: int,
     n_trapezoids: int = 0,
-    max_samples: int = 20_000,
+    max_samples: int | None = None,
+    random_state: int = 42,
+    verbose: bool = False,
 ) -> list[TrapezoidMembership]:
     """Fit multiple trapezoidal MFs to a single variable filtered by label.
 
@@ -506,32 +526,43 @@ def fit_trapezoids(
         column: Column name to fit
         label_value: Class label to filter by
         n_trapezoids: Number of trapezoid components (0 for automatic BIC selection)
-        max_samples: Maximum samples to use
+        max_samples: Cap on the rows used for the fit; ``None`` -- the default --
+            uses every row. When a cap is given the rows are drawn at random
+            without replacement, seeded by ``random_state``. This defaulted to
+            the first 20,000 rows, which is a biased sample on ordered data and
+            an invisible one from the caller's side.
+        random_state: Seeds the subsample draw.
+        verbose: Print the automatically-selected component count.
 
     Returns:
         List of fitted TrapezoidMembership objects
     """
     data = X[column][y == label_value].dropna().values
-    data = data[:max_samples]
+
+    if max_samples is not None and 0 < max_samples < len(data):
+        rng = np.random.default_rng(random_state)
+        data = data[rng.choice(len(data), size=max_samples, replace=False)]
 
     if len(data) == 0:
         return []
 
-    # Determine number of trapezoids if not specified
-    if n_trapezoids <= 0:
-        n_trapezoids = find_optimal_trapezoids(data, max_components=4)
-        print(f"  Automatically selected {n_trapezoids} trapezoids for {column} (label {label_value})")
-
-    # Fit EM
-    trapezoids, weights, ll = fit_trapezoids_em(
-        data, n_components=n_trapezoids, n_bins=50, max_iter=100, tol=1e-4
+    trapezoids, n_selected = fit_trapezoid_mixture_1d(
+        data, n_trapezoids=n_trapezoids, max_components=4
     )
+    if verbose and n_trapezoids <= 0:
+        print(f"  Automatically selected {n_selected} trapezoids for {column} (label {label_value})")
 
     return trapezoids
 
 
 def create_trapz_membership_dict(
-    X, y, top_n_var_names: list[str], n_trapezoids: int | dict[str, int] = 0
+    X,
+    y,
+    top_n_var_names: list[str],
+    n_trapezoids: int | dict[str, int] = 0,
+    max_samples: int | None = None,
+    random_state: int = 42,
+    verbose: bool = False,
 ) -> "GaussianMixtureModel":
     """Create a trapezoid membership model for top-n variables across all class labels.
 
@@ -545,6 +576,10 @@ def create_trapz_membership_dict(
         y: Label series
         top_n_var_names: List of feature names to fit
         n_trapezoids: Number of trapezoids (0 for automatic, or dict per feature)
+        max_samples: Rows per (feature, label) used for the fit; ``None`` uses
+            all of them. See :func:`fit_trapezoids`.
+        random_state: Seeds the subsample draw.
+        verbose: Print each automatically-selected component count.
 
     Returns:
         GaussianMixtureModel containing fitted trapezoid MFs
@@ -571,7 +606,16 @@ def create_trapz_membership_dict(
             if label_n_trapezoids > 0:
                 feature_n_trapezoids = label_n_trapezoids
 
-            trapz_params = fit_trapezoids(X, y, feature_name, label_value, feature_n_trapezoids)
+            trapz_params = fit_trapezoids(
+                X,
+                y,
+                feature_name,
+                label_value,
+                feature_n_trapezoids,
+                max_samples=max_samples,
+                random_state=random_state,
+                verbose=verbose,
+            )
             label_models[label_value] = LabelModel(memberships=trapz_params)
 
         return feature_name, FeatureModel(label_models=label_models)

@@ -13,17 +13,16 @@ make the obvious assertions wrong there:
   accuracy improved. Assertions of that shape belong on ``guard="legacy"``.
 * **The search path is not something to assert on.** Reproducibility here is a
   property of the pinned ``optimizers`` revision rather than of this repository.
-  At the revision this test was written against, ``set_seed(seed)`` did not
-  reach the initial population at all -- it came from ``np.random.default_rng()``
-  with no argument, i.e. fresh OS entropy -- so a seeded refinement returned a
-  different model every call, and a pure deterministic fitness produced a
-  different evaluation count every run. Upstream ``3a57f91`` fixes that for the
-  ``n_jobs=1`` path this code uses, and above ``n_jobs=1`` the workers still
-  share a ``numpy.random.Generator`` and race on it.
+  Before upstream ``3a57f91`` -- the revision this file was originally written
+  against -- ``set_seed(seed)`` did not reach the initial population at all: it
+  came from ``np.random.default_rng()`` with no argument, i.e. fresh OS entropy,
+  so a seeded refinement returned a different model every call. The pin bumped
+  past that in #78, and ``test_optimizers_backend_is_reproducible`` now holds the
+  floor.
 
-  So the reproducibility of these calls can change under the suite without any
-  change here. Tests in this file assert invariants that hold whatever path the
-  search takes, never a specific result, which is correct either way.
+  So the reproducibility of these calls is not this file's to guarantee, and it
+  moved once already. Every other test here asserts invariants that hold whatever
+  path the search takes, never a specific result, which is correct either way.
 """
 
 import io
@@ -177,6 +176,24 @@ class TestClassifierRefinement(unittest.TestCase):
                 self.assertLess(info["val_ce"], info["init_val_ce"])
         else:
             self.assertLessEqual(info["val_acc"], info["init_val_acc"])
+
+    def test_optimizers_backend_is_reproducible(self):
+        """A seeded refinement must return the same model every time.
+
+        This is a property of the pinned `optimizers` revision, not of
+        `refine.py`. Before optimizers 3a57f91 the initial population came from
+        `np.random.default_rng()` with no argument -- fresh OS entropy -- so
+        `set_seed(seed)` did nothing and this loop produced three different
+        answers in eight tries. The test exists to make a rollback of that pin
+        fail here rather than surface as an intermittently red suite.
+        """
+        results = []
+        for _ in range(3):
+            _, refined, info = self._optimizers_refine()
+            results.append(
+                (round(info["fit"], 12), tuple(np.round(extract_gaussian_params(refined), 12)))
+            )
+        self.assertEqual(len(set(results)), 1, f"seeded refinement varied: {results}")
 
     def test_refine_flag_on_classifier_api(self):
         clf, X, y = _quiet_fit(refine=True)

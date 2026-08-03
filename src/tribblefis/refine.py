@@ -668,6 +668,34 @@ def refine_antecedents_ga(
 #   2. the search box is optionally *localized* around the heuristic
 #      (``local_scale``) so the polish-driven population stays in the heuristic's
 #      basin rather than wandering into overfit territory.
+#
+# Reproducibility, and why the `optimizers` pin has a floor
+# ---------------------------------------------------------
+# `_run_optimizer_search` calls `set_seed(seed)` so that a refinement is a pure
+# function of its `seed`. Whether that actually holds is a property of the
+# installed `optimizers` revision, not of this file:
+#
+#   * Before optimizers 3a57f91, `InputContinuousVariable.initial_random_value`
+#     fell back to `np.random.default_rng()` with **no argument** -- fresh OS
+#     entropy -- so the initial population ignored `set_seed` entirely. Every
+#     call returned a different model. Measured here on a fixed 120-row problem
+#     with `seed=0`: eight identical calls produced three different validation
+#     accuracies (0.8000 / 0.8083 / 0.8167). That is also what made
+#     `tests/test_classifier_refine.py` flaky, roughly one run in six.
+#   * From 3a57f91 the initial population draws from the package's seeded
+#     generator, and the same eight calls agree exactly.
+#
+# `uv.lock` therefore must not be rolled back past that commit; the constraint
+# is restated next to the git source in `pyproject.toml`, which is where someone
+# re-pinning would be looking.
+#
+# One caveat remains upstream: `optimizers` is only reproducible at `n_jobs=1`,
+# because above that its parallel workers share a single
+# `numpy.random.Generator`, which is not thread-safe and hands out draws in
+# scheduler order. `_run_optimizer_search` passes `n_jobs=1` -- for an unrelated
+# reason, that the fitness closure is not picklable -- so this path is safe
+# today, but a future change to that argument would silently reintroduce the
+# nondeterminism. See fundthmcalculus/optimizers#100.
 
 _OPTIMIZER_METHODS = ("ga", "pso", "aco", "multi")
 
@@ -1608,6 +1636,17 @@ def _ruspini_accuracy(rmodel, X, y) -> float:
     return float(np.mean(pred == np.asarray(y, dtype=object)))
 
 
+def _ruspini_row_evidence(rmodel, X, y):
+    """Per-row correctness and negative log-likelihood, for the guards."""
+    proba, labels = rmodel.class_proba(X)
+    col = {lab: i for i, lab in enumerate(labels)}
+    y_arr = np.asarray(y, dtype=object)
+    y_idx = np.array([col.get(v, 0) for v in y_arr])
+    pred = np.array([labels[i] for i in np.argmax(proba, axis=1)], dtype=object)
+    p = np.clip(proba[np.arange(len(y_idx)), y_idx], 1e-12, 1.0)
+    return (pred == y_arr), -np.log(p)
+
+
 def _ruspini_ce(rmodel, X, y) -> float:
     proba, labels = rmodel.class_proba(X)
     col = {lab: i for i, lab in enumerate(labels)}
@@ -1626,6 +1665,7 @@ def refine_ruspini_partition(
     n_sweeps: int = 3,
     sub_maxfun: int = 25,
     pad_frac: float = 0.05,
+    guard: str = "legacy",
     population_size: int = 40,
     num_generations: int = 20,
     local_scale: float | None = 0.3,
@@ -1644,6 +1684,18 @@ def refine_ruspini_partition(
     training cross-entropy; the refined knots are accepted only if they do not
     worsen a held-out split's accuracy (CE tiebreak), else the input model is
     returned unchanged. Returns ``(refined_rmodel, info)``.
+
+    ``guard`` keeps its ``"legacy"`` default here, unlike
+    :func:`refine_classifier_antecedents`, which dropped its guard entirely.
+    That difference is measured, not an oversight or an omission: on this search
+    the guard is a wash (``legacy`` beats ``"none"`` by 0.0049 +/- 0.0058,
+    t = 0.84 over 48 paired cases), where on the classifier it was a clear loss.
+    The base rate differs -- refinement helps 2.2x more often than it hurts here
+    against 7.1x there -- so the classifier's answer had no business being
+    assumed. With no evidence for a change, the existing behaviour stands.
+    ``guard="mcnemar"`` is the one option to avoid: significantly *worse*
+    (-0.0240 +/- 0.0094) on both searches. See
+    ``docs/refinement-guard-evaluation.md``.
     """
     y_arr = np.asarray(y_train)
     knots0 = rmodel.extract_knots()
@@ -1667,13 +1719,20 @@ def refine_ruspini_partition(
     x0 = np.clip(knots0, lo, hi)
     width = np.where((hi - lo) > 0, hi - lo, 1.0)
 
+    if guard not in GUARDS:
+        raise ValueError(f"guard={guard!r} not in {GUARDS}")
+
     from sklearn.model_selection import train_test_split
     idx = np.arange(len(X_train))
-    strat = y_arr if len(np.unique(y_arr)) > 1 else None
-    try:
-        tr_idx, val_idx = train_test_split(idx, test_size=val_fraction, random_state=seed, stratify=strat)
-    except ValueError:
-        tr_idx, val_idx = train_test_split(idx, test_size=val_fraction, random_state=seed)
+    if guard == "none":
+        # No decision to referee, so no reason to withhold data from the search.
+        tr_idx = val_idx = idx
+    else:
+        strat = y_arr if len(np.unique(y_arr)) > 1 else None
+        try:
+            tr_idx, val_idx = train_test_split(idx, test_size=val_fraction, random_state=seed, stratify=strat)
+        except ValueError:
+            tr_idx, val_idx = train_test_split(idx, test_size=val_fraction, random_state=seed)
     X_tr, y_tr = X_train.iloc[tr_idx].reset_index(drop=True), y_arr[tr_idx]
     X_val, y_val = X_train.iloc[val_idx].reset_index(drop=True), y_arr[val_idx]
 
@@ -1744,18 +1803,19 @@ def refine_ruspini_partition(
         raise ValueError(f"method={method!r} must be 'coordinate' or 'optimizers'")
 
     refined = rmodel.with_knots(best_x)
-    val_acc = _ruspini_accuracy(refined, X_val, y_val)
-    val_ce = _ruspini_ce(refined, X_val, y_val)
-    init_val_ce = _ruspini_ce(rmodel, X_val, y_val)
-    accept = (val_acc > init_val_acc) or (val_acc == init_val_acc and val_ce < init_val_ce)
+    ok_init, ll_init = _ruspini_row_evidence(rmodel, X_val, y_val)
+    ok_refined, ll_refined = _ruspini_row_evidence(refined, X_val, y_val)
+    accept, guard_info = _apply_guard(guard, ok_init, ok_refined, ll_init, ll_refined)
+    val_acc, val_ce = guard_info["val_acc"], guard_info["val_ce"]
+    init_val_ce = guard_info["init_val_ce"]
     out = refined if accept else rmodel
     if verbose:
         verdict = "accepted" if accept else "rejected (kept initial)"
-        print(f"  Ruspini refinement {verdict}: val acc {init_val_acc:.4f} -> {val_acc:.4f}, "
-              f"val CE {init_val_ce:.4f} -> {val_ce:.4f}")
+        print(f"  Ruspini refinement {verdict} [{guard}]: val acc {init_val_acc:.4f} "
+              f"-> {val_acc:.4f}, val CE {init_val_ce:.4f} -> {val_ce:.4f}")
     return out, {
         "refined": bool(accept),
         "init_val_acc": init_val_acc, "val_acc": val_acc,
         "init_val_ce": init_val_ce, "val_ce": val_ce,
-        "init_train_obj": init_fit, **info,
+        "init_train_obj": init_fit, **guard_info, **info,
     }
