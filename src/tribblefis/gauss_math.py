@@ -510,6 +510,129 @@ def t_complement(x):
     return 1 - x
 
 
+# ---------------------------------------------------------------------------
+# Second-stage admissibility reduction: negated cross-terms.
+#
+# A label's rule ANDs together one disjunction per feature, so it admits the
+# entire outer product of those disjunctions -- see `ExclusionClause`. These two
+# functions are the inference half of the correction: given cells already mined
+# from data (`tribblefis.exclusion.mine_exclusions` is the fitting half), narrow
+# each parent rule away from the cells it wrongly claims.
+# ---------------------------------------------------------------------------
+
+def block_strength(
+    clause: ExclusionClause,
+    model: GaussianMixtureModel,
+    feature_arrays: dict[str, np.ndarray],
+    norms: NormPair,
+) -> np.ndarray | None:
+    """Firing strength of the outer-product block a clause names.
+
+    Built in exactly the shape the parent rule is built in -- the t-conorm over
+    the memberships listed for each feature, then the t-norm across features --
+    but over the clause's *subsets* rather than the rule's full term lists. That
+    correspondence is the point: ``NOT (x is [X2, X4] AND y is [Y2])`` is the
+    same kind of object as the rule it narrows, so the two read together as what
+    is admitted and what is then discarded.
+
+    Because a block is itself a product of per-feature sets, it covers exactly
+    the cells its sets enumerate -- ``X2&Y2`` and ``X4&Y2`` for the clause above
+    -- and no others. A single cell is the all-singletons case.
+
+    Returns ``None`` when the clause does not address this model (an unknown
+    feature or label, an empty term set, or a membership index past the end of
+    the list), so a stale clause is skipped rather than silently mis-firing on
+    the wrong membership function.
+    :func:`tribblefis.exclusion.validate_exclusions` reports the same conditions
+    up front.
+    """
+    strength: np.ndarray | None = None
+    for feature_name, mf_indices in clause.terms:
+        feature_model = model.feature_models.get(feature_name)
+        if feature_model is None:
+            return None
+        label_model = feature_model.label_models.get(clause.label)
+        if label_model is None or not mf_indices:
+            return None
+        if any(not (0 <= i < len(label_model.memberships)) for i in mf_indices):
+            return None
+        feature_data = feature_arrays.get(feature_name)
+        if feature_data is None:
+            return None
+
+        # Logic-OR within the feature, over this clause's subset of its terms.
+        feature_value = np.zeros(len(feature_data), dtype=float)
+        for mf_index in mf_indices:
+            feature_value = t_conorm(
+                feature_value,
+                label_model.memberships[mf_index].evaluate(feature_data),
+                norms.t_conorm,
+            )
+
+        # Logic-AND across the features the block constrains.
+        strength = (
+            feature_value
+            if strength is None
+            else t_norm(strength, feature_value, norms.t_norm)
+        )
+    return strength
+
+
+def apply_exclusions(
+    firing_strengths: np.ndarray,
+    labels: list[Any],
+    model: GaussianMixtureModel,
+    feature_arrays: dict[str, np.ndarray],
+    norms: NormPair,
+    clauses: "list[ExclusionClause] | tuple[ExclusionClause, ...] | None" = None,
+) -> np.ndarray:
+    """Narrow each parent rule by its own exclusion clauses, in place.
+
+    For every clause the parent label's column becomes
+    ``T(w_L, 1 - strength * block)`` -- the rule ANDed with the (optionally
+    softened) negation of the block. Several clauses on one label chain through
+    the same t-norm, which is the direct reading of
+    ``... AND NOT block_1 AND NOT block_2``.
+
+    Only the parent label's column is touched. The blamed class is not boosted:
+    withdrawing the over-claiming rule is enough to hand the argmax to whichever
+    rule was already running second, and boosting would be a second, unrelated
+    edit to a rule whose own data never asked for it.
+
+    Args:
+        firing_strengths: ``(n_samples, n_labels)`` *class* firing strengths.
+            Pass the class block only -- an anomaly column is a function of
+            these and must be derived after this call, not before.
+        labels: Column labels of ``firing_strengths``.
+        model: The model the clauses index into.
+        feature_arrays: ``{feature_name: ndarray}`` for this batch.
+        norms: Resolved operator pair. ``t_conorm`` folds each feature's term
+            subset, and ``t_norm`` performs both the across-feature conjunction
+            inside the block and the conjunction against the parent rule.
+        clauses: Defaults to ``model.exclusions``.
+
+    Returns:
+        ``firing_strengths``, modified in place.
+    """
+    clauses = model.exclusions if clauses is None else clauses
+    if not clauses:
+        return firing_strengths
+
+    column_of = {label: i for i, label in enumerate(labels)}
+    for clause in clauses:
+        column = column_of.get(clause.label)
+        if column is None or clause.strength == 0.0:
+            continue
+        block = block_strength(clause, model, feature_arrays, norms)
+        if block is None:
+            continue
+        admissible = t_complement(np.clip(clause.strength * block, 0.0, 1.0))
+        firing_strengths[:, column] = t_norm(
+            firing_strengths[:, column], admissible, norms.t_norm
+        )
+    return firing_strengths
+
+
 def membership(x, mu, sigma, default_member: MemberFunction | None = None):
     member_fn: MemberFunction = default_member or DefaultMemberFunction
     # Add a small epsilon to sigma to avoid division by zero
@@ -581,71 +704,79 @@ def tsk_firing_strengths(
             if name in X
         }
 
+    # The anomaly column, when requested, is last and is a *function of* the
+    # class columns, so it is derived once at the end -- after both the class
+    # block has been filled (by either path below) and any exclusion clause has
+    # narrowed it. Deriving it from un-narrowed strengths would report a sample
+    # as familiar on the strength of a rule the second stage just withdrew.
+    n_class_labels = len(unique_labels) - (
+        1 if anomaly_details and anomaly_details.include_anomaly else 0
+    )
+
     # Fast path: hand the whole class-membership block to the compiled kernel.
     # It only applies to models the flat layout can hold exactly (all-Gaussian,
     # every feature carrying every label) and produces bit-identical output, so
-    # it is a pure substitution -- see `tribblefis.kernel`. The anomaly column,
-    # when requested, is still derived here from the class columns exactly as
-    # below, because it is a function of them rather than of the memberships.
+    # it is a pure substitution -- see `tribblefis.kernel`.
+    compiled = None
     if kernel.HAVE_CYTHON_KERNEL:
-        n_class_labels = len(unique_labels) - (
-            1 if anomaly_details and anomaly_details.include_anomaly else 0
-        )
         try:
             compiled = kernel.compile_model(model, list(feature_arrays))
         except kernel.NotCompilable:
             compiled = None
-        if compiled is not None:
-            firing_strengths[:, :n_class_labels] = kernel.firing_strengths(
-                compiled, compiled.feature_matrix(feature_arrays), norms
-            )
-            if n_class_labels < len(unique_labels):
-                boosted = np.clip(
-                    firing_strengths[:, :n_class_labels] + anomaly_details.threshold,
-                    0.0, 1.0,
-                )
-                firing_strengths[:, -1] = t_complement(
-                    t_conorm(boosted, None, norms.t_conorm)
-                )
-            return firing_strengths, unique_labels
 
-    for label_idx, label_value in enumerate(unique_labels):
-        if anomaly_details and label_value == anomaly_details.label:
-            # Anomaly label is treated as a special case
-            # We'll use a complementary membership function for it
-            boosted = np.clip(firing_strengths[:, :-1] + anomaly_details.threshold, 0.0, 1.0)
-            firing_strengths[:, label_idx] = t_complement(
-                t_conorm(boosted, None, norms.t_conorm)
-            )
-            continue
+    if compiled is not None:
+        firing_strengths[:, :n_class_labels] = kernel.firing_strengths(
+            compiled, compiled.feature_matrix(feature_arrays), norms
+        )
+    else:
+        for label_idx, label_value in enumerate(unique_labels[:n_class_labels]):
+            # Initialize membership for this label across all features
+            # Using product as T-norm (AND operator)
+            label_membership = np.ones(n_samples)
 
-        # Initialize membership for this label across all features
-        # Using product as T-norm (AND operator)
-        label_membership = np.ones(n_samples)
+            for feature_name, feature_model in model.feature_models.items():
+                if label_value not in feature_model.label_models:
+                    continue
 
-        for feature_name, feature_model in model.feature_models.items():
-            if label_value not in feature_model.label_models:
-                continue
+                feature_data = feature_arrays.get(feature_name)
+                if feature_data is None:
+                    continue
+                label_model = feature_model.label_models[label_value]
 
-            feature_data = feature_arrays.get(feature_name)
-            if feature_data is None:
-                continue
-            label_model = feature_model.label_models[label_value]
+                # If multiple membership functions exist for a feature-label pair,
+                # we combine them (e.g., using OR/max or weighted sum)
+                feature_membership = np.zeros(n_samples)
+                for mf in label_model.memberships:
+                    # Evaluate membership function (works for both Gaussian and Trapezoid)
+                    # Logic-OR
+                    feature_membership = t_conorm(
+                        feature_membership, mf.evaluate(feature_data), norms.t_conorm
+                    )
 
-            # If multiple membership functions exist for a feature-label pair,
-            # we combine them (e.g., using OR/max or weighted sum)
-            feature_membership = np.zeros(n_samples)
-            for mf in label_model.memberships:
-                # Evaluate membership function (works for both Gaussian and Trapezoid)
-                # Logic-OR
-                feature_membership = t_conorm(
-                    feature_membership, mf.evaluate(feature_data), norms.t_conorm
-                )
+                # Logic-AND
+                label_membership = t_norm(label_membership, feature_membership, norms.t_norm)
 
-            # Logic-AND
-            label_membership = t_norm(label_membership, feature_membership, norms.t_norm)
+            firing_strengths[:, label_idx] = label_membership
 
-        firing_strengths[:, label_idx] = label_membership
+    # Second stage: withdraw each rule from the outer-product cells the data says
+    # belong to another class. A no-op for a model with no mined clauses, which
+    # is every model that has not been through `mine_exclusions`.
+    if model.exclusions:
+        apply_exclusions(
+            firing_strengths[:, :n_class_labels],
+            unique_labels[:n_class_labels],
+            model,
+            feature_arrays,
+            norms,
+        )
+
+    if n_class_labels < len(unique_labels):
+        # Anomaly label: a complementary membership, high exactly where every
+        # class rule is weak.
+        boosted = np.clip(
+            firing_strengths[:, :n_class_labels] + anomaly_details.threshold, 0.0, 1.0
+        )
+        firing_strengths[:, -1] = t_complement(t_conorm(boosted, None, norms.t_conorm))
 
     # For zeroth-order TSK classification, the output is typically the class
     # with the maximum firing strength (defuzzification)

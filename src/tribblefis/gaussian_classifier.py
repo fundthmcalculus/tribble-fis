@@ -24,7 +24,10 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
 
     def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, norm_conorm=DefaultNormCornorm, member_function="gaussian", trapz_method="fast", random_state=42,
                  refine=False, refine_method="coordinate", refine_l2_shrink=0.05,
-                 t_norm=None, t_conorm=None, allow_mixed_norms=False, max_samples=None):
+                 t_norm=None, t_conorm=None, allow_mixed_norms=False, max_samples=None,
+                 exclude_cross_terms=False, exclusion_order=2, exclusion_min_support=10,
+                 exclusion_max_purity=0.5, exclusion_cross_margin=0.05,
+                 exclusion_max_clauses=4, exclusion_strength=1.0):
         """
         Initialize the MixtureOfGaussiansFuzzyClassifier.
 
@@ -67,6 +70,37 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
                     -- uses every row; pass an int to bound fit time on large
                     datasets. Ignored by ``trapz_method="fast"``, which was
                     never subsampled.
+            exclude_cross_terms: If True, run a second stage after fitting that
+                    mines *negated cross-terms* from the training data and appends
+                    them to the rules that need them. Each label's rule is a
+                    conjunction of per-feature disjunctions, so it admits the whole
+                    outer product of its terms -- ``x is [X1, X2, X4] AND y is
+                    [Y1, Y2]`` fires for all six pairings, including any that in
+                    truth belong to another class. Mining finds those cells, merges
+                    adjacent ones into blocks, and adds
+                    ``AND NOT (x is [X2, X4] AND y is [Y2])`` to the offending rule
+                    alone -- written in the same form as the rule itself, so the
+                    two read together as what is admitted and what is discarded.
+                    Off by default; it only ever has anything to find when features
+                    carry more than one membership function per label (``n_gaussians``
+                    > 1, or automatic fitting that chose several). See
+                    :mod:`tribblefis.exclusion`, :attr:`exclusions_`, and
+                    :func:`tribblefis.exclusion.describe_rules`.
+            exclusion_order: How many features a mined cell spans. ``2`` (pairs) by
+                    default; a sequence like ``(2, 3)`` also considers larger cells.
+            exclusion_min_support: Minimum training rows behind a cell (and behind
+                    the class blamed for it) before a rule may be narrowed on it.
+            exclusion_max_purity: A cell is a candidate only when at most this
+                    fraction of its rows really are the parent class.
+            exclusion_cross_margin: How much worse a cell must be than each of its
+                    single-feature terms to count as genuine cross-confusion rather
+                    than a badly placed membership function.
+            exclusion_max_clauses: Cap on clauses per rule, worst confusion first.
+                    Applied after merging, so a block that four cells agree on
+                    costs one clause of the budget rather than four.
+            exclusion_strength: Scales each negation to ``1 - strength * block``.
+                    ``1.0`` is a hard veto of the block; lower values discount the
+                    parent rule there instead.
         """
         self.is_fitted_: bool = False
         self.model_ = None
@@ -97,6 +131,14 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.refine_method = refine_method
         self.refine_l2_shrink = refine_l2_shrink
         self.refine_info_: dict | None = None
+        self.exclude_cross_terms = exclude_cross_terms
+        self.exclusion_order = exclusion_order
+        self.exclusion_min_support = exclusion_min_support
+        self.exclusion_max_purity = exclusion_max_purity
+        self.exclusion_cross_margin = exclusion_cross_margin
+        self.exclusion_max_clauses = exclusion_max_clauses
+        self.exclusion_strength = exclusion_strength
+        self.exclusion_info_: dict | None = None
 
     def fit(self, X, y):
         """
@@ -176,8 +218,40 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
                 verbose=False,
             )
 
+        # 5. Optionally mine the second-stage admissibility reduction. This runs
+        #    *after* refinement on purpose: refinement rewrites the very
+        #    memberships a clause names, and its objective knows nothing about
+        #    clauses, so cells mined first would be scored against antecedents
+        #    that no longer exist.
+        if self.exclude_cross_terms:
+            from .exclusion import mine_exclusions
+            clauses, self.exclusion_info_ = mine_exclusions(
+                self.model_,
+                X_df.reset_index(drop=True),
+                y_series,
+                norms=self.anomaly_params.norms(),
+                order=self.exclusion_order,
+                min_support=self.exclusion_min_support,
+                max_purity=self.exclusion_max_purity,
+                cross_margin=self.exclusion_cross_margin,
+                max_clauses_per_label=self.exclusion_max_clauses,
+                strength=self.exclusion_strength,
+            )
+            self.model_ = self.model_.with_exclusions(clauses)
+
         self.is_fitted_ = True
         return self
+
+    @property
+    def exclusions_(self) -> tuple:
+        """The mined :class:`~tribblefis.gauss_data.ExclusionClause` set, if any.
+
+        Empty unless ``exclude_cross_terms=True``. Pass to
+        :func:`tribblefis.exclusion.describe_exclusions` to read them as rule
+        exceptions; :attr:`exclusion_info_` explains an empty result.
+        """
+        check_is_fitted(self)
+        return self.model_.exclusions
 
     def predict(self, X):
         """
@@ -354,6 +428,13 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         refine_method="coordinate",
         refine_l2_shrink=0.05,
         max_samples=None,
+        exclude_cross_terms=False,
+        exclusion_order=2,
+        exclusion_min_support=10,
+        exclusion_max_purity=0.5,
+        exclusion_cross_margin=0.05,
+        exclusion_max_clauses=4,
+        exclusion_strength=1.0,
     ):
         """
         Args:
@@ -392,6 +473,13 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
             cv: Number of folds for the cross-validated confusion estimate used
                 to find confused classes. Falls back to in-sample predictions
                 when a class has too few samples to split.
+            exclude_cross_terms, exclusion_*: Passed through to every layer. See
+                :class:`MixtureOfGaussiansFuzzyClassifier`. This is the *within*-rule
+                half of cross-class confusion — a rule withdrawing from an
+                outer-product cell that belongs to another class — where the
+                experts are the *between*-rule half. They are independent: a
+                clause never moves a decision boundary the experts arbitrate, and
+                an expert never repairs a rule that over-claims a cell.
         """
         self.is_fitted_: bool = False
         # layers_[0] is the base model; layers_[1:] mirror experts_.
@@ -422,6 +510,13 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         self.refine_method = refine_method
         self.refine_l2_shrink = refine_l2_shrink
         self.max_samples = max_samples
+        self.exclude_cross_terms = exclude_cross_terms
+        self.exclusion_order = exclusion_order
+        self.exclusion_min_support = exclusion_min_support
+        self.exclusion_max_purity = exclusion_max_purity
+        self.exclusion_cross_margin = exclusion_cross_margin
+        self.exclusion_max_clauses = exclusion_max_clauses
+        self.exclusion_strength = exclusion_strength
 
     def _make_layer(self) -> MixtureOfGaussiansFuzzyClassifier:
         return MixtureOfGaussiansFuzzyClassifier(
@@ -433,6 +528,19 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
             refine_method=self.refine_method,
             refine_l2_shrink=self.refine_l2_shrink,
             max_samples=self.max_samples,
+            # Cross-term exclusion and the experts address different failures and
+            # compose: a clause narrows one rule away from a cell it should never
+            # have claimed, while an expert re-decides a whole confused pair with
+            # freshly selected features. Every layer gets the setting, so the base
+            # model's rules are already narrowed before the confusion matrix that
+            # picks the experts is measured.
+            exclude_cross_terms=self.exclude_cross_terms,
+            exclusion_order=self.exclusion_order,
+            exclusion_min_support=self.exclusion_min_support,
+            exclusion_max_purity=self.exclusion_max_purity,
+            exclusion_cross_margin=self.exclusion_cross_margin,
+            exclusion_max_clauses=self.exclusion_max_clauses,
+            exclusion_strength=self.exclusion_strength,
         )
 
     def _anomaly_params(self) -> AnomalyParameters:
