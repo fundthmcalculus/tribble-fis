@@ -11,11 +11,19 @@ make the obvious assertions wrong there:
 * **The default guard is ``"none"``.** Since #66 a refinement is accepted
   unconditionally, so ``info["refined"]`` says nothing about whether held-out
   accuracy improved. Assertions of that shape belong on ``guard="legacy"``.
-* **The search is not reproducible.** ``optimizers`` is called under
-  ``set_seed(seed)`` with ``n_jobs=1``, and it still varies run to run -- given a
-  pure deterministic fitness it makes a different number of evaluations every
-  time. Nothing in this repository can pin that down, so tests here assert
-  invariants that hold whatever path the search takes, never a specific result.
+* **The search path is not something to assert on.** Reproducibility here is a
+  property of the pinned ``optimizers`` revision rather than of this repository.
+  At the revision this test was written against, ``set_seed(seed)`` did not
+  reach the initial population at all -- it came from ``np.random.default_rng()``
+  with no argument, i.e. fresh OS entropy -- so a seeded refinement returned a
+  different model every call, and a pure deterministic fitness produced a
+  different evaluation count every run. Upstream ``3a57f91`` fixes that for the
+  ``n_jobs=1`` path this code uses, and above ``n_jobs=1`` the workers still
+  share a ``numpy.random.Generator`` and race on it.
+
+  So the reproducibility of these calls can change under the suite without any
+  change here. Tests in this file assert invariants that hold whatever path the
+  search takes, never a specific result, which is correct either way.
 """
 
 import io
@@ -120,11 +128,10 @@ class TestClassifierRefinement(unittest.TestCase):
 
         This is deliberately *not* an assertion about `val_acc`. That is a
         different metric on different rows, and with the default `guard="none"`
-        nothing referees it; see the two tests below. It is also not an
-        assertion about the search *path*: the `optimizers` package is not
-        reproducible under `set_seed` -- with a pure deterministic fitness it
-        makes a different number of evaluations on every run -- so any test here
-        has to assert an invariant that holds whatever the search does.
+        nothing referees it; see the two tests below. Nor is it an assertion
+        about the search *path* -- whether a seeded run reproduces depends on the
+        pinned `optimizers` revision (see the module docstring), so this asserts
+        an invariant that holds whatever the search does.
         """
         model, refined, info = self._optimizers_refine()
 
