@@ -7,7 +7,8 @@ from sklearn.pipeline import make_pipeline
 
 from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
 from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
-from tribblefis.scaling import StandardScalar, UnitScalar
+from tribblefis import scaling
+from tribblefis.scaling import StandardFuzzyScalar, UnitFuzzyScalar
 
 
 def _wide_range_column(rng, n):
@@ -256,11 +257,11 @@ class _SharedScalarTests:
         self.assertTrue(np.all(np.isfinite(Xt)))
 
 
-class TestUnitScalar(_SharedScalarTests, unittest.TestCase):
-    scalar_cls = UnitScalar
+class TestUnitFuzzyScalar(_SharedScalarTests, unittest.TestCase):
+    scalar_cls = UnitFuzzyScalar
 
     def test_output_bounded_to_unit_interval(self):
-        scaler = UnitScalar()
+        scaler = UnitFuzzyScalar()
         Xt = scaler.fit_transform(self.X)
         self.assertGreaterEqual(Xt.min(), 0.0)
         self.assertLessEqual(Xt.max(), 1.0)
@@ -268,24 +269,24 @@ class TestUnitScalar(_SharedScalarTests, unittest.TestCase):
         np.testing.assert_allclose(Xt.max(axis=0), [1.0, 1.0], atol=1e-10)
 
     def test_custom_feature_range(self):
-        scaler = UnitScalar(feature_range=(-1.0, 1.0))
+        scaler = UnitFuzzyScalar(feature_range=(-1.0, 1.0))
         Xt = scaler.fit_transform(self.X)
         self.assertGreaterEqual(Xt.min(), -1.0)
         self.assertLessEqual(Xt.max(), 1.0)
 
     def test_clips_out_of_range_values_at_transform_time(self):
-        scaler = UnitScalar().fit(self.X)
+        scaler = UnitFuzzyScalar().fit(self.X)
         X_test = self.X.copy()
         X_test.iloc[0, X_test.columns.get_loc("narrow")] = 1e9
         Xt = scaler.transform(X_test)
         self.assertLessEqual(Xt.max(), 1.0)
 
 
-class TestStandardScalar(_SharedScalarTests, unittest.TestCase):
-    scalar_cls = StandardScalar
+class TestStandardFuzzyScalar(_SharedScalarTests, unittest.TestCase):
+    scalar_cls = StandardFuzzyScalar
 
     def test_output_has_zero_mean_unit_variance(self):
-        scaler = StandardScalar()
+        scaler = StandardFuzzyScalar()
         Xt = scaler.fit_transform(self.X)
         np.testing.assert_allclose(Xt.mean(axis=0), [0.0, 0.0], atol=1e-8)
         np.testing.assert_allclose(Xt.std(axis=0), [1.0, 1.0], atol=1e-8)
@@ -293,13 +294,86 @@ class TestStandardScalar(_SharedScalarTests, unittest.TestCase):
     def test_not_bounded_to_unit_interval(self):
         # Sanity check that this is genuinely z-score, not min-max in disguise:
         # a value several sigma out should transform well outside [0, 1].
-        scaler = StandardScalar().fit(self.X)
+        scaler = StandardFuzzyScalar().fit(self.X)
         X_test = self.X.copy()
         X_test.iloc[0, X_test.columns.get_loc("narrow")] = (
             self.X["narrow"].mean() + 10 * self.X["narrow"].std()
         )
         Xt = scaler.transform(X_test)
         self.assertGreater(Xt[0, X_test.columns.get_loc("narrow")], 1.0)
+
+
+class TestBackwardsCompatibleAliases(unittest.TestCase):
+    """The ``*FuzzyScalar`` names are canonical, but the shorter names shipped
+    first and are imported across the ``grad-school`` workspace
+    (``reproduce/tables/_fuzzy_models.py``,
+    ``reproduce/tables/table_hyperparam_normalization.py``, and nine
+    ``FuzzySystemsExperiments/*.py`` scripts). Breaking them is the concrete
+    regression this test exists to catch."""
+
+    def test_aliases_are_the_same_class_objects(self):
+        self.assertIs(scaling.UnitScalar, scaling.UnitFuzzyScalar)
+        self.assertIs(scaling.StandardScalar, scaling.StandardFuzzyScalar)
+
+    def test_old_import_form_still_works(self):
+        from tribblefis.scaling import StandardScalar, UnitScalar
+
+        self.assertIs(UnitScalar, UnitFuzzyScalar)
+        self.assertIs(StandardScalar, StandardFuzzyScalar)
+
+    def test_instances_of_alias_are_instances_of_canonical(self):
+        """Aliases are bindings, not subclasses, so ``isinstance`` must agree
+        in both directions -- downstream code type-checks on these."""
+        self.assertIsInstance(scaling.UnitScalar(), UnitFuzzyScalar)
+        self.assertIsInstance(UnitFuzzyScalar(), scaling.UnitScalar)
+        self.assertIsInstance(scaling.StandardScalar(), StandardFuzzyScalar)
+        self.assertIsInstance(StandardFuzzyScalar(), scaling.StandardScalar)
+
+    def test_alias_and_canonical_behave_identically(self):
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame(
+            {"wide": _wide_range_column(rng, 100), "narrow": rng.uniform(10.0, 20.0, 100)}
+        )
+        for alias, canonical in [
+            (scaling.UnitScalar, UnitFuzzyScalar),
+            (scaling.StandardScalar, StandardFuzzyScalar),
+        ]:
+            with self.subTest(canonical=canonical.__name__):
+                np.testing.assert_allclose(
+                    alias(log_features=["wide"]).fit_transform(X),
+                    canonical(log_features=["wide"]).fit_transform(X),
+                    atol=1e-12,
+                )
+
+    def test_no_alias_denotes_the_wrong_transform(self):
+        """The defect this naming exists to prevent: a symbol whose name says
+        "standard" must not compute min-max, and vice versa. Checked
+        behaviourally, through every public name the module exports."""
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame({"a": rng.uniform(1.0, 50.0, 200), "b": rng.uniform(-30.0, 5.0, 200)})
+
+        for name in ["UnitScalar", "UnitFuzzyScalar"]:
+            with self.subTest(name=name):
+                Xt = getattr(scaling, name)(log_features=[]).fit_transform(X)
+                # Min-max: every column lands exactly on [0, 1].
+                np.testing.assert_allclose(Xt.min(axis=0), [0.0, 0.0], atol=1e-10)
+                np.testing.assert_allclose(Xt.max(axis=0), [1.0, 1.0], atol=1e-10)
+
+        for name in ["StandardScalar", "StandardFuzzyScalar"]:
+            with self.subTest(name=name):
+                Xt = getattr(scaling, name)(log_features=[]).fit_transform(X)
+                # z-score: zero mean, unit sigma -- and NOT bounded to [0, 1].
+                np.testing.assert_allclose(Xt.mean(axis=0), [0.0, 0.0], atol=1e-8)
+                np.testing.assert_allclose(Xt.std(axis=0), [1.0, 1.0], atol=1e-8)
+                self.assertLess(Xt.min(), 0.0)
+
+    def test_standard_scalar_docstring_warns_against_fis_use(self):
+        """The honest name is still the one reached for from memory, so the
+        docstring carries the guardrail. Assert it is actually there."""
+        doc = StandardFuzzyScalar.__doc__
+        self.assertIn("not the recommended default", doc)
+        self.assertIn("UnitFuzzyScalar", doc)
+        self.assertIn("0.646", doc)  # the raw-features baseline it falls below
 
 
 if __name__ == "__main__":

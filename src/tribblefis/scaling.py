@@ -7,22 +7,36 @@ estimator in this package -- callers who want it compose one of the scalers
 below into an ``sklearn.pipeline.Pipeline`` in front of the estimator::
 
     from sklearn.pipeline import make_pipeline
-    from tribblefis.scaling import UnitScalar
+    from tribblefis.scaling import UnitFuzzyScalar
     from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
 
-    pipe = make_pipeline(UnitScalar(), MixtureOfGaussiansFuzzyClassifier())
+    pipe = make_pipeline(UnitFuzzyScalar(), MixtureOfGaussiansFuzzyClassifier())
     pipe.fit(X_train, y_train)
 
 Two scalers are offered, differing only in the final normalization:
 
-- :class:`UnitScalar` -- min-max bounding to ``[0, 1]`` (or a custom range).
-  **The recommended default for FIS estimators in this package** (see
+- :class:`UnitFuzzyScalar` -- min-max bounding to ``[0, 1]`` (or a custom
+  range). **The recommended default for FIS estimators in this package** (see
   "Choosing between them" below).
-- :class:`StandardScalar` -- genuine z-score standardization (``mu=0``,
-  ``sigma=1``), for callers who specifically need centred features.
+- :class:`StandardFuzzyScalar` -- genuine z-score standardization (``mu=0``,
+  ``sigma=1``), for callers who specifically need centred features. Not
+  recommended for FIS estimators; see the warning on the class.
 
 Both mirror sklearn scalers' ``fit``/``transform``/``fit_transform``/
 ``inverse_transform``/``get_feature_names_out`` surface.
+
+Each name says what its class computes, and only what it computes:
+``Unit`` for unit-interval bounding, ``Standard`` for standardization. That
+precision is deliberate. A previous helper in this codebase was *named* for
+standardization while *computing* min-max, and the mislabelling propagated
+into every document that cited it -- so "standard" here never means
+"recommended", and the recommended scaler is never called "standard".
+
+The shorter names ``UnitScalar`` and ``StandardScalar`` are retained as
+aliases for backwards compatibility, since they shipped first and are still
+imported downstream. They are the same class objects, not wrappers. New code
+should prefer the canonical ``*FuzzyScalar`` names, which match
+:class:`_FuzzyScalarBase`.
 
 Which features get logged
 -------------------------
@@ -44,7 +58,7 @@ threshold: the features ordered by dynamic range are ``Slag`` (4.25 decades),
 ``Superplasticizer``. The desired subset is not a prefix of that ordering, so
 no scalar threshold selects it::
 
-    UnitScalar(log_features=["Slag", "FlyAsh", "Age"])
+    UnitFuzzyScalar(log_features=["Slag", "FlyAsh", "Age"])
 
 Getting a DataFrame back
 ------------------------
@@ -54,11 +68,11 @@ dictionaries keyed by feature). ``set_output`` comes free with
 ``TransformerMixin``, so there is no need to re-wrap the output in
 ``pd.DataFrame(...)`` by hand::
 
-    scaler = UnitScalar(log_features=["Slag", "Age"]).set_output(transform="pandas")
+    scaler = UnitFuzzyScalar(log_features=["Slag", "Age"]).set_output(transform="pandas")
     X_scaled = scaler.fit_transform(X_train)   # a DataFrame, columns preserved
 
     # ...or, in a pipeline:
-    pipe = make_pipeline(UnitScalar(), MixtureOfGaussiansFuzzyRegressor())
+    pipe = make_pipeline(UnitFuzzyScalar(), MixtureOfGaussiansFuzzyRegressor())
     pipe.fit(X_train, y_train)
 
 Scaling a regression target
@@ -70,7 +84,7 @@ scalers are feature scalers, but a target is just a one-column frame, so the
 idiom is a one-liner and this package deliberately adds no separate target
 API::
 
-    y_scaler = UnitScalar(log_dynamic_range=None)      # or log_features=[]
+    y_scaler = UnitFuzzyScalar(log_dynamic_range=None)      # or log_features=[]
     y_scaled = y_scaler.fit_transform(y.to_frame()).ravel()
     y_pred = y_scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).ravel()
 
@@ -80,19 +94,19 @@ the fit/inverse plumbing::
 
     TransformedTargetRegressor(
         regressor=MixtureOfGaussiansFuzzyRegressor(),
-        transformer=UnitScalar(log_dynamic_range=None),
+        transformer=UnitFuzzyScalar(log_dynamic_range=None),
     )
 
 Choosing between them
 ---------------------
 
-``UnitScalar`` is the recommended default. This is an empirical finding, not
+``UnitFuzzyScalar`` is the recommended default. This is an empirical finding, not
 a theoretical one, and it comes from a single dataset and a single pipeline
 -- treat it as a strong prior, not a law.
 
 In the ``grad-school`` proposal-defense evaluation on UCI Concrete over ten
-seeds, min-max (``UnitScalar``) was best-or-tied in 8 of 9
-model/hyperparameter rows. Genuine z-score (``StandardScalar``) was actively
+seeds, min-max (``UnitFuzzyScalar``) was best-or-tied in 8 of 9
+model/hyperparameter rows. Genuine z-score (``StandardFuzzyScalar``) was actively
 harmful to the fuzzy models: it took a 1st-order flat MoG-TSK model to
 R^2 0.087 +/- 0.089, *below* raw untransformed features at 0.646 +/- 0.039
 (RMSE 7.8 -> 15.6 MPa), and dropped a demo-tuned mixture of experts from
@@ -117,8 +131,8 @@ from sklearn.utils.validation import check_is_fitted
 class _FuzzyScalarBase(TransformerMixin, BaseEstimator):
     """Shared DataFrame bookkeeping and log-detection for the scalars below.
 
-    Not part of the public API -- use :class:`StandardScalar` or
-    :class:`UnitScalar`.
+    Not part of the public API -- use :class:`StandardFuzzyScalar` or
+    :class:`UnitFuzzyScalar`.
     """
 
     def _as_dataframe(self, X):
@@ -243,7 +257,7 @@ class _FuzzyScalarBase(TransformerMixin, BaseEstimator):
         return np.asarray(self.feature_names_in_, dtype=object)
 
 
-class UnitScalar(_FuzzyScalarBase):
+class UnitFuzzyScalar(_FuzzyScalarBase):
     """Bounds features to ``[0, 1]`` (or ``feature_range``), log-transforming
     wide-dynamic-range ones first.
 
@@ -326,15 +340,41 @@ class UnitScalar(_FuzzyScalarBase):
         return self._undo_log(X_df).to_numpy()
 
 
-class StandardScalar(_FuzzyScalarBase):
+class StandardFuzzyScalar(_FuzzyScalarBase):
     """Standardizes features to ``mu=0``, ``sigma=1``, log-transforming
     wide-dynamic-range ones first.
 
-    Note:
-        :class:`UnitScalar` is the recommended default for the FIS estimators
-        in this package; centred, unbounded features measurably hurt them.
-        See "Choosing between them" in :mod:`tribblefis.scaling` for the
-        evidence before reaching for this class.
+    .. warning::
+
+        **This is not the recommended default for the FIS estimators in this
+        package. Use :class:`UnitFuzzyScalar` unless you specifically need
+        centred features and know why.**
+
+        Despite the name, "standard" here describes the *transform* (z-score
+        standardization), not a recommendation. This class produces
+        **unbounded, centred** output, which conflicts directly with the
+        bounded, non-negative input domain that Gaussian membership functions
+        -- and output-bucket means pinned to ``[0, 1]`` -- assume. Feeding
+        centred features to a FIS violates an assumption the rule
+        construction relies on, and it measurably degrades results.
+
+        Measured on UCI Concrete over ten seeds: this scaler took a 1st-order
+        flat MoG-TSK model to R^2 0.087 +/- 0.089, which is *below raw
+        untransformed features* at 0.646 +/- 0.039 (RMSE 7.8 -> 15.6 MPa),
+        and dropped a demo-tuned mixture of experts from 0.834 to 0.706. Over
+        the same runs :class:`UnitFuzzyScalar` was best-or-tied in 8 of 9
+        model/hyperparameter rows. Rank-based controls (CART, Random Forest)
+        moved by <= 0.002 between the two transforms, as they must, since both
+        are monotone -- which is what localises the damage to the fuzzy
+        machinery rather than the split. The degradation appears on
+        *training* data too, so it is underfitting, not overfitting.
+
+        That is one dataset and one pipeline, so treat it as a strong prior
+        rather than a law -- but the burden of proof is on using this class,
+        not on avoiding it. Legitimate reasons to use it do exist (a
+        downstream consumer that requires zero-mean input, or comparing
+        against a z-score baseline); "it sounds like the standard choice" is
+        not one of them.
 
     Args:
         log_dynamic_range: See :mod:`tribblefis.scaling`. Threshold in decades
@@ -382,3 +422,13 @@ class StandardScalar(_FuzzyScalarBase):
         unscaled = X * self.scale_ + self.mean_
         X_df = pd.DataFrame(unscaled, columns=self.feature_names_in_)
         return self._undo_log(X_df).to_numpy()
+
+
+# Backwards-compatible aliases. The ``*FuzzyScalar`` names above are canonical
+# -- they carry the ``Fuzzy`` infix of :class:`_FuzzyScalarBase`, and each says
+# what it actually computes. These shorter names shipped first and are still
+# imported across the ``grad-school`` workspace, so they remain supported and
+# are deliberately *not* deprecation-warned: they are the same objects, not
+# wrappers, and ``isinstance`` checks against either name behave identically.
+UnitScalar = UnitFuzzyScalar
+StandardScalar = StandardFuzzyScalar
