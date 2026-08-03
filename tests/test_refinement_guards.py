@@ -177,3 +177,51 @@ def test_rejecting_returns_the_starting_model_untouched():
         assert np.array_equal(
             R.extract_gaussian_params(out), R.extract_gaussian_params(model)
         )
+
+
+# ---------------------------------------------------------------------------
+# The Ruspini refiner keeps its guard. That is a measured difference from the
+# classifier, not an oversight, so it is pinned here -- otherwise the next
+# person to notice the inconsistency will "fix" it.
+# ---------------------------------------------------------------------------
+
+def _ruspini_problem(n=300, seed=0):
+    from tribblefis.gauss_math import create_gaussian_membership_dict
+    from tribblefis.ruspini import ruspinize_model
+
+    rng = np.random.default_rng(seed)
+    centers = rng.normal(0, 3, size=(3, 3))
+    y = rng.integers(0, 3, size=n)
+    cols = ["a", "b", "c"]
+    X = pd.DataFrame(centers[y] + rng.normal(0, 1, size=(n, 3)), columns=cols)
+    gm = create_gaussian_membership_dict(X, pd.Series(y), top_n_var_names=cols,
+                                         n_gaussians=1)
+    return X, y, ruspinize_model(gm, X, y)
+
+
+def test_ruspini_guard_default_is_legacy_and_is_deliberate():
+    """The classifier dropped its guard; this one measured as a wash
+    (+0.0049 +/- 0.0058), so it keeps it. See docs/refinement-guard-evaluation.md."""
+    import inspect
+
+    assert inspect.signature(
+        R.refine_ruspini_partition).parameters["guard"].default == "legacy"
+    assert inspect.signature(
+        R.refine_classifier_antecedents).parameters["guard"].default == "none"
+
+
+@pytest.mark.parametrize("guard", R.GUARDS)
+def test_ruspini_accepts_every_guard(guard):
+    X, y, rm = _ruspini_problem(seed=1)
+    out, info = R.refine_ruspini_partition(
+        rm, X, y, guard=guard, n_sweeps=1, seed=0, verbose=False)
+    assert info["guard"] == guard
+    assert np.all(np.isfinite(out.extract_knots()))
+    if guard == "none":
+        assert info["refined"] is True
+
+
+def test_ruspini_rejects_an_unknown_guard():
+    X, y, rm = _ruspini_problem(seed=2)
+    with pytest.raises(ValueError, match="guard"):
+        R.refine_ruspini_partition(rm, X, y, guard="vibes", verbose=False)
