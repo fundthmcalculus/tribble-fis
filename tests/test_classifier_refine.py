@@ -3,8 +3,27 @@
 A zeroth-order TSK classifier has no consequents, so its Gaussian ``(mu, sigma)``
 antecedents *are* the whole model. These tests cover the two refinement backends
 (``coordinate`` and the `optimizers`-package ``optimizers`` search), the
-never-worse-on-validation acceptance guard, and the ``refine=True`` wiring on the
-public classifier API.
+acceptance guards, and the ``refine=True`` wiring on the public classifier API.
+
+A note on what is safe to assert about the ``optimizers`` backend. Two things
+make the obvious assertions wrong there:
+
+* **The default guard is ``"none"``.** Since #66 a refinement is accepted
+  unconditionally, so ``info["refined"]`` says nothing about whether held-out
+  accuracy improved. Assertions of that shape belong on ``guard="legacy"``.
+* **The search path is not something to assert on.** Reproducibility here is a
+  property of the pinned ``optimizers`` revision rather than of this repository.
+  At the revision this test was written against, ``set_seed(seed)`` did not
+  reach the initial population at all -- it came from ``np.random.default_rng()``
+  with no argument, i.e. fresh OS entropy -- so a seeded refinement returned a
+  different model every call, and a pure deterministic fitness produced a
+  different evaluation count every run. Upstream ``3a57f91`` fixes that for the
+  ``n_jobs=1`` path this code uses, and above ``n_jobs=1`` the workers still
+  share a ``numpy.random.Generator`` and race on it.
+
+  So the reproducibility of these calls can change under the suite without any
+  change here. Tests in this file assert invariants that hold whatever path the
+  search takes, never a specific result, which is correct either way.
 """
 
 import io
@@ -88,16 +107,76 @@ class TestClassifierRefinement(unittest.TestCase):
         if not info["refined"]:
             self.assertIs(out, model)
 
-    def test_optimizers_backend_runs_and_guards(self):
+    def _optimizers_refine(self, **kwargs):
         X, y, model = self._heuristic_model()
-        refined, info = refine_classifier_antecedents(
-            model, X, y, method="optimizers", optimizer_method="ga",
-            local_grad_optim="perturb", population_size=16, num_generations=5,
-            local_scale=0.25, l2_shrink=0.05, seed=0, verbose=False,
+        params = dict(
+            method="optimizers", optimizer_method="ga", local_grad_optim="perturb",
+            population_size=16, num_generations=5, local_scale=0.25,
+            l2_shrink=0.05, seed=0, verbose=False,
         )
+        params.update(kwargs)
+        refined, info = refine_classifier_antecedents(model, X, y, **params)
+        return model, refined, info
+
+    def test_optimizers_backend_never_returns_a_worse_training_objective(self):
+        """The invariant `_run_optimizer_search` actually provides.
+
+        It seeds the heuristic into the solution archive and falls back to it
+        explicitly if the search does not beat it, so `fit <= init_fit` holds on
+        the objective the search minimises -- the k-fold cross-entropy, on the
+        rows it trained on.
+
+        This is deliberately *not* an assertion about `val_acc`. That is a
+        different metric on different rows, and with the default `guard="none"`
+        nothing referees it; see the two tests below. Nor is it an assertion
+        about the search *path* -- whether a seeded run reproduces depends on the
+        pinned `optimizers` revision (see the module docstring), so this asserts
+        an invariant that holds whatever the search does.
+        """
+        model, refined, info = self._optimizers_refine()
+
         self.assertEqual(refined.n_membership_functions, model.n_membership_functions)
+        self.assertIn("fit", info)
+        self.assertLessEqual(info["fit"], info["init_fit"])
+
+    def test_no_guard_promises_nothing_about_held_out_accuracy(self):
+        """`guard="none"` is the default and accepts unconditionally.
+
+        Dropping the acceptance guard (#66) was measured as worth +1.5 points in
+        expectation, and the price is exactly this: `refined` is True whether or
+        not held-out accuracy improved. An earlier version of this suite
+        asserted `val_acc >= init_val_acc` whenever `refined` was True, which
+        the code stopped guaranteeing at that commit -- it passed only because
+        the search usually does improve, and failed roughly one run in six.
+
+        Asserting the *absence* of a guarantee keeps that assertion from coming
+        back on the strength of a green run.
+        """
+        _, _, info = self._optimizers_refine()
+
+        self.assertTrue(info["refined"])
+        self.assertEqual(info["guard"], "none")
+        # Both metrics are still reported -- they are diagnostics, not contracts.
+        self.assertIn("val_acc", info)
+        self.assertIn("init_val_acc", info)
+
+    def test_legacy_guard_does_promise_held_out_improvement(self):
+        """The contract the old assertion belonged to, tested where it holds.
+
+        `guard="legacy"` accepts only on a better held-out accuracy, or an equal
+        one with lower cross-entropy. That decision is a deterministic function
+        of the two models, so it is testable regardless of how the search got
+        there.
+        """
+        _, _, info = self._optimizers_refine(guard="legacy")
+
+        self.assertEqual(info["guard"], "legacy")
         if info["refined"]:
             self.assertGreaterEqual(info["val_acc"], info["init_val_acc"])
+            if info["val_acc"] == info["init_val_acc"]:
+                self.assertLess(info["val_ce"], info["init_val_ce"])
+        else:
+            self.assertLessEqual(info["val_acc"], info["init_val_acc"])
 
     def test_refine_flag_on_classifier_api(self):
         clf, X, y = _quiet_fit(refine=True)
