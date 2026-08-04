@@ -60,6 +60,25 @@ no scalar threshold selects it::
 
     UnitFuzzyScalar(log_features=["Slag", "FlyAsh", "Age"])
 
+Pre-log flooring
+----------------
+
+Both scalers floor logged features to the training minimum before taking the
+logarithm, to ensure the log is well-defined (``log`` is undefined for values
+below −1). At transform time, any value below the fitted training minimum is
+silently shifted to the minimum before the log is applied. This flooring:
+
+- Applies to **both** :class:`UnitFuzzyScalar` and :class:`StandardFuzzyScalar`.
+- Applies only to features selected for logging (by ``log_features`` or
+  automatic detection via ``log_dynamic_range``).
+- Preserves domain safety but discards the magnitude of out-of-range
+  excursions below the training minimum (similar to ``clip=True`` on
+  :class:`UnitFuzzyScalar`, but unconditional and log-feature-only).
+
+For :class:`StandardFuzzyScalar`, this means logged features are partially
+bounded below, even though the class otherwise advertises unbounded output.
+Unlogged features are not floored and remain truly unbounded.
+
 Getting a DataFrame back
 ------------------------
 
@@ -139,7 +158,7 @@ class _FuzzyScalarBase(TransformerMixin, BaseEstimator):
 
     def _as_dataframe(self, X):
         if isinstance(X, pd.DataFrame):
-            return X.copy() if self.copy else X
+            return X.copy()
         feature_names = getattr(self, "feature_names_in_", None)
         if feature_names is None:
             feature_names = [f"feature_{i}" for i in range(np.asarray(X).shape[1])]
@@ -289,7 +308,6 @@ class UnitFuzzyScalar(_FuzzyScalarBase):
             discard the magnitude of the excursion, which is sometimes the
             most informative thing about an outlier. Pass ``clip=False`` when
             you need that magnitude to survive into the model.
-        copy: Whether to copy input data; ``False`` mutates it in place.
     """
 
     def __init__(
@@ -298,13 +316,11 @@ class UnitFuzzyScalar(_FuzzyScalarBase):
         log_dynamic_range=3.0,
         log_features=None,
         clip=True,
-        copy=True,
     ):
         self.feature_range = feature_range
         self.log_dynamic_range = log_dynamic_range
         self.log_features = log_features
         self.clip = clip
-        self.copy = copy
 
     def fit(self, X, y=None):
         X_df = self._as_dataframe(X)
@@ -313,11 +329,14 @@ class UnitFuzzyScalar(_FuzzyScalarBase):
 
         self.log_features_, self.log_shift_ = self._resolve_log_features(X_df)
         X_log = self._apply_log(X_df)
-        self.data_min_ = X_log.min(axis=0).to_numpy()
-        self.data_max_ = X_log.max(axis=0).to_numpy()
+        self.data_min_ = X_log.min(axis=0)
+        self.data_max_ = X_log.max(axis=0)
         data_range = self.data_max_ - self.data_min_
         # Constant features would divide by zero; map them to the range's low end.
-        self.scale_ = np.where(data_range > 0, data_range, 1.0)
+        self.scale_ = pd.Series(
+            np.where(data_range > 0, data_range, 1.0),
+            index=self.feature_names_in_
+        )
         return self
 
     def transform(self, X):
@@ -326,8 +345,8 @@ class UnitFuzzyScalar(_FuzzyScalarBase):
         X_log = self._apply_log(X_df)
 
         lo, hi = self.feature_range
-        scaled = (X_log.to_numpy() - self.data_min_) / self.scale_
-        scaled = scaled * (hi - lo) + lo
+        scaled = (X_log - self.data_min_) / self.scale_
+        scaled = scaled.to_numpy() * (hi - lo) + lo
         if self.clip:
             scaled = np.clip(scaled, lo, hi)
         return scaled
@@ -351,7 +370,7 @@ class UnitFuzzyScalar(_FuzzyScalarBase):
                 )
 
         unscaled = (X - lo) / (hi - lo)
-        unscaled = unscaled * self.scale_ + self.data_min_
+        unscaled = unscaled * self.scale_.to_numpy() + self.data_min_.to_numpy()
         X_df = pd.DataFrame(unscaled, columns=self.feature_names_in_)
         return self._undo_log(X_df).to_numpy()
 
@@ -404,13 +423,11 @@ class StandardFuzzyScalar(_FuzzyScalarBase):
             an error but this one wins. ``[]`` means "log nothing" and is
             distinct from the default ``None``, which means "auto-detect".
             Naming a feature that is not in the data raises at ``fit`` time.
-        copy: Whether to copy input data; ``False`` mutates it in place.
     """
 
-    def __init__(self, log_dynamic_range=3.0, log_features=None, copy=True):
+    def __init__(self, log_dynamic_range=3.0, log_features=None):
         self.log_dynamic_range = log_dynamic_range
         self.log_features = log_features
-        self.copy = copy
 
     def fit(self, X, y=None):
         X_df = self._as_dataframe(X)
@@ -419,23 +436,26 @@ class StandardFuzzyScalar(_FuzzyScalarBase):
 
         self.log_features_, self.log_shift_ = self._resolve_log_features(X_df)
         X_log = self._apply_log(X_df)
-        self.mean_ = X_log.mean(axis=0).to_numpy()
-        std = X_log.std(axis=0, ddof=0).to_numpy()
+        self.mean_ = X_log.mean(axis=0)
+        std = X_log.std(axis=0, ddof=0)
         self.var_ = std**2
         # Constant features would divide by zero; leave them at their mean (0 after centering).
-        self.scale_ = np.where(std > 0, std, 1.0)
+        self.scale_ = pd.Series(
+            np.where(std > 0, std, 1.0),
+            index=self.feature_names_in_
+        )
         return self
 
     def transform(self, X):
         check_is_fitted(self)
         X_df = self._as_dataframe(X)[self.feature_names_in_]
         X_log = self._apply_log(X_df)
-        return (X_log.to_numpy() - self.mean_) / self.scale_
+        return ((X_log - self.mean_) / self.scale_).to_numpy()
 
     def inverse_transform(self, X):
         check_is_fitted(self)
         X = np.asarray(X, dtype=float)
-        unscaled = X * self.scale_ + self.mean_
+        unscaled = X * self.scale_.to_numpy() + self.mean_.to_numpy()
         X_df = pd.DataFrame(unscaled, columns=self.feature_names_in_)
         return self._undo_log(X_df).to_numpy()
 
