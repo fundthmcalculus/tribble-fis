@@ -663,9 +663,12 @@ def solve_tsk_consequents(
     pinned_vals: list[float] = []
     if pin_extremes and n_rules >= 2 and y_bucket_mean is not None:
         ybm = np.asarray(y_bucket_mean, dtype=float).ravel()
-        if ybm.size >= n_rules:
+        # Only apply constraints if y_bucket_mean is large enough to index all bucket labels
+        max_bucket_label = int(np.max(labels_train))
+        if ybm.size > max_bucket_label:
             for rule_idx in (0, n_rules - 1):
-                value = float(ybm[rule_idx])
+                bucket_label = labels_train[rule_idx]
+                value = float(ybm[bucket_label])
                 if np.isfinite(value):
                     pinned_cols.append(rule_idx * n_coeffs_per_rule)
                     pinned_vals.append(value)
@@ -756,8 +759,8 @@ def predict_tsk(
         X_rule = X[top_n_todo].to_numpy()
     feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs)
     y_pred = np.zeros(len(X))
-    for ij, rule_id in enumerate(labels):
-        y_pred += (y_bucket_mean[rule_id] + feats @ corr_terms[rule_id, :]) * norm_fs[:, ij]
+    for ij, _rule_id in enumerate(labels):
+        y_pred += (y_bucket_mean[ij] + feats @ corr_terms[ij, :]) * norm_fs[:, ij]
     return y_pred
 
 
