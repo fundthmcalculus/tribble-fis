@@ -28,6 +28,7 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         top_p=0.95,
         n_gaussians=0,
         n_output_buckets=2,
+        output_partition="uniform",
         tsk_order="1st",
         optimize_coefficients=True,
         consequent_basis="raw",
@@ -51,6 +52,9 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
                    >= (1 - top_p). Ignored if top_n > 0.
             n_gaussians: Number of Gaussians per feature per label (0 for automatic).
             n_output_buckets: Number of output buckets for partitioning y during training.
+            output_partition: "uniform" for equal-width buckets (default), or
+                "quantile" for equal-frequency buckets with pinned extreme centroids,
+                which is what this estimator shipped with before.
             tsk_order: TSK polynomial order ('0th', '1st', '2nd', '3rd', 'full-2nd').
             optimize_coefficients: Retained for API compatibility. Consequents are
                 always solved in closed form (the exact firing-weighted ridge
@@ -92,6 +96,11 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         self.top_p = top_p
         self.n_gaussians = n_gaussians
         self.n_output_buckets = n_output_buckets
+        # Equal-WIDTH output buckets by default. "quantile" restores the previous
+        # equal-frequency behaviour, including the pinned extreme centroids that
+        # shipped with it. See `regression.partition_output` for why uniform is the
+        # default and for what to do when the target is badly skewed.
+        self.output_partition = output_partition
         self.tsk_order = tsk_order
         self.optimize_coefficients = optimize_coefficients
         self.consequent_basis = consequent_basis
@@ -144,7 +153,8 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         y_series = pd.Series(y_array, name="y_value")
 
         # Partition output into buckets
-        y_partitioned, self.y_bucket_mean_ = partition_output(self.n_output_buckets, y_series)
+        y_partitioned, self.y_bucket_mean_ = partition_output(
+            self.n_output_buckets, y_series, method=self.output_partition)
 
         # Calculate feature differentiators
         self.feature_differentiators_ = calculate_gaussian_correlation(X_df, y_partitioned["y_bucket"])

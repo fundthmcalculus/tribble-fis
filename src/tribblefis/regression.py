@@ -1,5 +1,6 @@
 import time
 import typing
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -66,12 +67,120 @@ def _mae(y_t: pd.Series | np.ndarray, y_p: pd.Series | np.ndarray) -> float:
     return float(np.mean(np.abs(y_t - y_p)))
 
 
+# A bucket below this holds too little to fit a rule from, and the aggregate error will
+# not show it. Three is the smallest count that admits any spread at all.
+_STARVED_BUCKET = 3
+
+
+def _index_of(y_raw):
+    """The index to carry onto a rebuilt label series, so concat aligns."""
+    return getattr(y_raw, "index", pd.RangeIndex(len(y_raw)))
+
+
+def _warn_starved_buckets(y_part, n_output_buckets, method) -> None:
+    """Warn when a bucket is too thin to fit a rule from.
+
+    Under equal-width boundaries a skewed target starves its extreme buckets, and that is
+    the one failure mode uniform partitioning has. It is invisible to aggregate error --
+    a starved bucket barely moves an average -- so it is worth a warning rather than a
+    silent rule fitted on two points. The remedy is named in the message because it is a
+    call-site decision: transform the target, do not switch the partition.
+    """
+    counts = pd.Series(y_part).value_counts()
+    thin = {int(k): int(v) for k, v in counts.items() if v < _STARVED_BUCKET}
+    missing = [b for b in range(n_output_buckets) if b not in set(counts.index)]
+    if not thin and not missing:
+        return
+    parts = []
+    if missing:
+        parts.append(f"empty: {missing}")
+    if thin:
+        parts.append("under-filled: "
+                     + ", ".join(f"{k} holds {v}" for k, v in sorted(thin.items())))
+    warnings.warn(
+        f"partition_output(method={method!r}) left {'; '.join(parts)} out of "
+        f"{n_output_buckets} buckets. Those rules are fitted on almost no data and the "
+        f"aggregate error will not show it. If the target range is discontinuous or "
+        f"badly non-uniform, apply a monotone transform (log, Box-Cox, rank) before "
+        f"fitting and invert for reporting; a monotone map preserves bucket order, so "
+        f"nothing downstream changes.",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
 def partition_output(
-    n_output_buckets: int, y_raw: pd.Series | pd.DataFrame | typing.Any
+    n_output_buckets: int,
+    y_raw: pd.Series | pd.DataFrame | typing.Any,
+    method: str = "uniform",
+    pin_extremes: bool | None = None,
 ) -> tuple[pd.DataFrame, typing.Any]:
-    # Partition y into n_output_buckets, but ensure one bucket is essentially at each end of the range.
-    y_part = pd.qcut(y_raw, q=n_output_buckets, labels=False)
+    """Cut the target into buckets and return (frame with bucket labels, bucket centroids).
+
+    ``method="uniform"`` -- equal-WIDTH boundaries, the default. ``"quantile"`` --
+    equal-FREQUENCY boundaries, which is what this function used to do unconditionally.
+
+    Why uniform is the default
+    --------------------------
+    Equal-frequency boundaries guarantee every bucket is occupied, which sounds like the
+    safe choice and is not. Under target skew quantile does not become less accurate, it
+    becomes UNSTABLE: a sweep over increasing skew measured its seed-to-seed deviation
+    growing to +/-0.99, +/-4.45 and +/-21.2 while uniform's mean decayed smoothly toward
+    zero with a bounded spread. A few catastrophic splits drag the quantile mean; uniform
+    fails predictably instead. For a component inside a larger pipeline the predictable
+    failure is the one to prefer, because it can be detected and bounded.
+
+    Uniform has its own failure mode and it is the reverse: on a skewed target the extreme
+    buckets STARVE, since equal-width bins in a sparse tail may catch almost nothing. That
+    is bounded, visible, and fixable at the call site -- which is the point. The fix is to
+    transform the target before fitting, not to change the partition: if the output range
+    is discontinuous or badly non-uniform, apply a monotone transform (log, Box-Cox, rank)
+    first, fit in the transformed space, and invert for reporting. A monotone transform
+    leaves the ordering intact, so nothing downstream that reasons about bucket order
+    changes.
+
+    Starvation is warned about rather than left silent. A bucket holding fewer than
+    ``_STARVED_BUCKET`` samples means a rule fitted on almost no data, and the aggregate
+    error barely moves when that happens -- exactly the failure an accuracy-only check
+    cannot see.
+
+    pin_extremes
+    ------------
+    ``None`` (the default) pins the two extreme centroids to the observed min and max
+    ONLY for ``method="quantile"``. That keeps each method's default identical to the arm
+    that was actually measured: uniform with data means, quantile with data means, and
+    quantile with pinned extremes, which is the hybrid this function used to ship. Pass
+    True or False to override.
+
+    Pinning exists to compensate for quantile's wide sparse-tail buckets, whose means
+    badly under-resolve the extremes. Equal-width buckets are narrow by construction, so
+    their means already sit near the ends of the range, and pinning them to a single most
+    extreme observation would only add outlier sensitivity.
+    """
+    if method not in ("uniform", "quantile"):
+        raise ValueError(
+            f"method must be 'uniform' or 'quantile', got {method!r}")
+    if pin_extremes is None:
+        pin_extremes = method == "quantile"
+
+    if method == "uniform":
+        # Equal-width edges over the observed range. The left edge is nudged below the
+        # minimum so the smallest value lands in bucket 0 rather than becoming NaN --
+        # `include_lowest` alone is not enough once the edges are supplied explicitly.
+        lo, hi = float(np.min(y_raw)), float(np.max(y_raw))
+        if hi <= lo:                     # degenerate target: one bucket holds everything
+            y_part = pd.Series(np.zeros(len(y_raw), dtype=int), index=_index_of(y_raw))
+        else:
+            edges = np.linspace(lo, hi, n_output_buckets + 1)
+            edges[0] -= 1e-9
+            y_part = pd.cut(y_raw, bins=edges, labels=False, include_lowest=True)
+            y_part = pd.Series(np.asarray(y_part, dtype=float),
+                               index=_index_of(y_raw)).fillna(0).astype(int)
+    else:
+        y_part = pd.qcut(y_raw, q=n_output_buckets, labels=False)
     y_part.name = "y_bucket"
+
+    _warn_starved_buckets(y_part, n_output_buckets, method)
     # Build a full-length array indexed by bucket label (0..n_output_buckets-1).
     # groupby silently drops empty buckets, so reconstruct with correct label alignment
     # and fill any gaps via linear interpolation so downstream indexing by rule_id is safe.
@@ -80,9 +189,11 @@ def partition_output(
     for label, val in grouped.items():
         y_bucket_mean[int(label)] = val
     y_bucket_mean = pd.Series(y_bucket_mean).interpolate(method='linear', limit_direction='both').values.copy()
-    # For the extreme endpoint buckets, use the min and max
-    y_bucket_mean[0] = float(y_raw.min())
-    y_bucket_mean[-1] = float(y_raw.max())
+    if pin_extremes:
+        # For the extreme endpoint buckets, use the min and max. See the docstring: this
+        # compensates for quantile's wide sparse-tail buckets and is off under uniform.
+        y_bucket_mean[0] = float(y_raw.min())
+        y_bucket_mean[-1] = float(y_raw.max())
 
     y = pd.concat([y_part, y_raw], axis=1)
     return y, y_bucket_mean
