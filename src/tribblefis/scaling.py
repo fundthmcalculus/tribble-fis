@@ -122,6 +122,8 @@ assumption the rule construction relies on. The degradation shows up on
 *training* data too, so it is underfitting rather than overfitting.
 """
 
+import warnings
+
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -334,6 +336,20 @@ class UnitFuzzyScalar(_FuzzyScalarBase):
         check_is_fitted(self)
         X = np.asarray(X, dtype=float)
         lo, hi = self.feature_range
+
+        if self.clip:
+            on_bounds = np.isclose(X, lo) | np.isclose(X, hi)
+            if np.any(on_bounds):
+                warnings.warn(
+                    "inverse_transform detected values sitting exactly on the bounds "
+                    f"{(lo, hi)}. Since clip=True, these may be clipped artifacts from "
+                    "transform(), and the round-trip inverse_transform(transform(X)) may not "
+                    "recover the original values outside the fitted range. "
+                    "See https://github.com/fundthmcalculus/tribble-fis/issues/74 for details.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
         unscaled = (X - lo) / (hi - lo)
         unscaled = unscaled * self.scale_ + self.data_min_
         X_df = pd.DataFrame(unscaled, columns=self.feature_names_in_)
