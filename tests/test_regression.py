@@ -151,6 +151,24 @@ class TestConsequentSolver(unittest.TestCase):
         )
         return X, y_part, y_bucket_mean, model
 
+    @staticmethod
+    def _pinned(y_bucket_mean, lo, hi):
+        """`y_bucket_mean` with the two end values replaced by `lo` and `hi`.
+
+        The pin is `solve_tsk_consequents`' contract, not `partition_output`'s: the
+        solver holds whatever it is handed at the ends. Three tests below used to
+        read the pin off `partition_output`'s return, which was only pinned because
+        its default happened to be the quantile hybrid. When that default moved to
+        uniform they failed while the solver they test was unchanged -- a test
+        coupled to a precondition it never stated.
+
+        Callers pass sentinels *outside* the target range, so an assertion cannot
+        pass by the solver re-deriving min and max on its own.
+        """
+        pinned = np.asarray(y_bucket_mean, dtype=float).copy()
+        pinned[0], pinned[-1] = lo, hi
+        return pinned
+
     def test_build_basis_shapes_and_raw_layout(self):
         """Raw basis reproduces the legacy [x, x^2, x^3] hstack layout exactly."""
         X_rule = np.arange(6.0).reshape(3, 2)
@@ -228,31 +246,34 @@ class TestConsequentSolver(unittest.TestCase):
         self.assertLessEqual(mse_cf, mse_lbfgs + 1e-9)
 
     def test_extreme_bucket_means_are_pinned(self):
-        """The extreme bucket means (first and last) should be pinned to the actual
-        min and max of the target, and these should NOT be overwritten by
-        solve_tsk_consequents when pin_extremes=True (default)."""
+        """With pin_extremes=True (the default) the first and last bucket means come
+        back exactly as supplied, and the solve re-derives only the free ones.
+
+        The sentinels sit outside the target's range, so passing this requires the
+        solver to have honoured the values handed in -- it cannot pass by computing
+        the target min and max itself.
+        """
         X, y_part, y_bucket_mean, model = self._make_model_and_data()
         y_true = y_part["y_value"].values
-        y_min = y_true.min()
-        y_max = y_true.max()
+        lo, hi = y_true.min() - 1.0, y_true.max() + 1.0
+        pinned = self._pinned(y_bucket_mean, lo, hi)
 
-        # partition_output should have pinned the extremes
-        self.assertAlmostEqual(y_bucket_mean[0], y_min, places=10,
-                              msg="First bucket mean should be pinned to min of target")
-        self.assertAlmostEqual(y_bucket_mean[-1], y_max, places=10,
-                              msg="Last bucket mean should be pinned to max of target")
-
-        # Solve consequents with pin_extremes=True (default)
         corr, means_solved = solve_tsk_consequents(
-            X, model, self.TOP, y_bucket_mean, y_part,
+            X, model, self.TOP, pinned, y_part,
             n_output_buckets=self.N_BUCKETS, order="1st", l2_reg=0.0, verbose=False,
         )
 
-        # After solving, the extremes should still be pinned
-        self.assertAlmostEqual(means_solved[0], y_min, places=10,
-                              msg="First bucket mean should remain pinned to min after solve_tsk_consequents")
-        self.assertAlmostEqual(means_solved[-1], y_max, places=10,
-                              msg="Last bucket mean should remain pinned to max after solve_tsk_consequents")
+        self.assertAlmostEqual(means_solved[0], lo, places=10,
+                              msg="the first bucket mean must survive the solve unchanged")
+        self.assertAlmostEqual(means_solved[-1], hi, places=10,
+                              msg="the last bucket mean must survive the solve unchanged")
+        # The middle coefficients are solved, not held: a solve that simply echoed
+        # its input would pass the two assertions above.
+        if len(means_solved) > 2:
+            self.assertFalse(
+                np.allclose(means_solved[1:-1], np.asarray(pinned, float)[1:-1]),
+                "the free bucket means were echoed back, not solved",
+            )
 
     def test_pinned_solve_is_the_constrained_optimum(self):
         """Pinning must cost accuracy only where the constraint binds.
@@ -305,10 +326,9 @@ class TestConsequentSolver(unittest.TestCase):
         cost the constraint at the *other* extreme -- half a pin is still worth
         having. The NaN end comes back finite and freely solved."""
         X, y_part, y_bucket_mean, model = self._make_model_and_data()
-        y_max = y_part["y_value"].values.max()
+        hi = y_part["y_value"].values.max() + 1.0
 
-        with_nan = np.asarray(y_bucket_mean, dtype=float).copy()
-        with_nan[0] = np.nan
+        with_nan = self._pinned(y_bucket_mean, np.nan, hi)
 
         corr, means = solve_tsk_consequents(
             X, model, self.TOP, with_nan, y_part,
@@ -317,7 +337,7 @@ class TestConsequentSolver(unittest.TestCase):
         )
         self.assertTrue(np.all(np.isfinite(means)), "NaN leaked into the bucket means")
         self.assertTrue(np.all(np.isfinite(corr)), "NaN leaked into the corrections")
-        self.assertAlmostEqual(means[-1], y_max, places=10,
+        self.assertAlmostEqual(means[-1], hi, places=10,
                                msg="the finite extreme should still be pinned")
 
     def test_pinning_is_skipped_for_a_single_rule(self):
@@ -366,17 +386,18 @@ class TestConsequentSolver(unittest.TestCase):
             X, y_part["y_bucket"], top_n_var_names=self.TOP, n_gaussians=1
         )
 
+        y_true = y_part["y_value"].values
+        lo, hi = y_true.min() - 1.0, y_true.max() + 1.0
         corr, means = solve_tsk_consequents(
-            X, model, self.TOP, y_bucket_mean, y_part,
+            X, model, self.TOP, self._pinned(y_bucket_mean, lo, hi), y_part,
             n_output_buckets=self.N_BUCKETS, order="1st", l2_reg=0.0, verbose=False,
         )
 
         self.assertTrue(np.all(np.isfinite(means)))
         self.assertTrue(np.all(np.isfinite(corr)))
         # The constraint still holds on the fallback path.
-        y_true = y_part["y_value"].values
-        self.assertAlmostEqual(means[0], y_true.min(), places=10)
-        self.assertAlmostEqual(means[-1], y_true.max(), places=10)
+        self.assertAlmostEqual(means[0], lo, places=10)
+        self.assertAlmostEqual(means[-1], hi, places=10)
 
     def test_issue_36_near_singular_design_returns_bounded_coefficients(self):
         """Issue #36: near-singular designs must not return astronomically large coefficients.
