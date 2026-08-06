@@ -233,6 +233,38 @@ class TriangularMembership(NamedTuple):
 AnyMembership = GaussianMembership | TrapezoidMembership | TriangularMembership
 
 
+class IT2GaussianMembership(NamedTuple):
+    """An interval type-2 Gaussian membership function.
+
+    Consists of an upper membership function (UMF) and lower membership function (LMF),
+    both Gaussians. The region between them is the footprint of uncertainty (FoU).
+    """
+    upper_mf: GaussianMembership
+    lower_mf: GaussianMembership
+    id: Optional[uuid.UUID] = None
+
+    @staticmethod
+    def create(
+        upper_mu: float, upper_sigma: float,
+        lower_mu: float, lower_sigma: float
+    ) -> "IT2GaussianMembership":
+        return IT2GaussianMembership(
+            upper_mf=GaussianMembership(mu=upper_mu, sigma=upper_sigma),
+            lower_mf=GaussianMembership(mu=lower_mu, sigma=lower_sigma),
+            id=uuid.uuid4()
+        )
+
+    def evaluate(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Evaluate both upper and lower MFs at given points.
+
+        Returns:
+            (y_upper, y_lower) - both are numpy arrays of same shape as x
+        """
+        y_upper = self.upper_mf.evaluate(x)
+        y_lower = self.lower_mf.evaluate(x)
+        return y_upper, y_lower
+
+
 class Rule(NamedTuple):
     """A fuzzy rule mapping input membership functions to an output label."""
 
@@ -440,3 +472,70 @@ def _is_close(g1: AnyMembership, g2: AnyMembership, rtol: float = 1e-2, atol: fl
             )
         )
     return False
+
+
+# Interval Type-2 FIS Data Structures
+class IT2LabelModel(NamedTuple):
+    """A collection of IT2 membership functions for a specific output class label."""
+
+    memberships: list[IT2GaussianMembership]
+
+    def augment(self, other_label_model: "IT2LabelModel") -> "IT2LabelModel":
+        """Augment this IT2LabelModel with another, combining membership functions."""
+        new_memberships = self.memberships.copy()
+        new_memberships.extend(other_label_model.memberships)
+        return IT2LabelModel(new_memberships)
+
+
+class IT2FeatureModel(NamedTuple):
+    """A collection of IT2LabelModels for a specific feature."""
+
+    label_models: dict[int, IT2LabelModel]
+
+    @property
+    def ordered_keys(self) -> list[int]:
+        return list(sorted(self.label_models.keys()))
+
+    def augment(self, other_feature_model: "IT2FeatureModel") -> "IT2FeatureModel":
+        """Augment this IT2FeatureModel with another."""
+        new_label_models = self.label_models.copy()
+        for label, other_label_model in other_feature_model.label_models.items():
+            if label in new_label_models:
+                new_label_models[label] = new_label_models[label].augment(other_label_model)
+            else:
+                new_label_models[label] = other_label_model
+        return IT2FeatureModel(new_label_models)
+
+
+class IT2GaussianMixtureModel(NamedTuple):
+    """An interval type-2 Gaussian mixture model with IT2 memberships."""
+
+    feature_models: dict[str, IT2FeatureModel]
+
+    @property
+    def n_rules(self) -> int:
+        return len(list(self.feature_models.values())[0].label_models.keys())
+
+    @property
+    def n_features(self) -> int:
+        return len(self.feature_models)
+
+    @property
+    def all_membership_fcns(self) -> list[IT2GaussianMembership]:
+        """Get all IT2 membership functions across all features and labels."""
+        return [
+            mf
+            for feature_model in self.feature_models.values()
+            for label_model in feature_model.label_models.values()
+            for mf in label_model.memberships
+        ]
+
+    @property
+    def all_output_labels(self) -> list[int]:
+        return list(set([label for fm in self.feature_models.values() for label in fm.ordered_keys]))
+
+    @property
+    def n_classes(self) -> int:
+        if not self.feature_models:
+            return 0
+        return list(self.feature_models.values())[0].ordered_keys[-1] + 1
