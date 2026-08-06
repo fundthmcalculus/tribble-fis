@@ -1,4 +1,5 @@
 from concurrent.futures.thread import ThreadPoolExecutor
+from itertools import combinations
 from typing import Any
 
 import numpy as np
@@ -212,6 +213,106 @@ def fit_gaussians(
     return gaussians
 
 
+_VALID_DIFFERENTIATION_METHODS = {"bhattacharyya", "wasserstein", "composite"}
+
+
+def _pairwise_label_distance(
+    data_label_ij: np.ndarray, data_label_jk: np.ndarray, method: str, data_min: float, data_max: float
+) -> float:
+    """One label-pair's distance for a numeric 1-D series, under `method`.
+
+    `data_min`/`data_max` are the *overall* series' range (not just these two
+    labels'), matching the PDF comparison grid `calculate_gaussian_correlation`
+    always used -- factored out so `calculate_interaction_scores` can score a
+    derived (product) column with the identical metric, not a re-derivation of it.
+    """
+    if method in ("bhattacharyya", "composite"):
+        # Fit Gaussian distributions
+        mu_ij, std_ij = stats.norm.fit(data_label_ij)
+        mu_jk, std_jk = stats.norm.fit(data_label_jk)
+
+        # Create probability distributions over same range
+        x_range = np.linspace(data_min, data_max, 100)
+        pdf_ij = stats.norm.pdf(x_range, mu_ij, std_ij)
+        pdf_jk = stats.norm.pdf(x_range, mu_jk, std_jk)
+
+        # Normalize PDFs to sum to 1 for proper probability distributions
+        pdf_ij = pdf_ij / np.sum(pdf_ij)
+        pdf_jk = pdf_jk / np.sum(pdf_jk)
+
+        # Bhattacharyya distance = 1 - Bhattacharyya coefficient
+        bhattacharyya_coeff = np.sum(np.sqrt(pdf_ij * pdf_jk))
+        bhatta_diff = 1 - bhattacharyya_coeff
+
+    if method in ("wasserstein", "composite"):
+        # Wasserstein distance (non-parametric, no distribution assumption)
+        w_distance = wasserstein_distance(data_label_ij, data_label_jk)
+        # Normalize by pooled standard deviation for scale invariance
+        pooled_std = np.sqrt((np.var(data_label_ij) + np.var(data_label_jk)) / 2)
+        if pooled_std > 1e-10:
+            w_distance = w_distance / pooled_std
+
+    if method == "bhattacharyya":
+        return bhatta_diff
+
+    if method == "wasserstein":
+        return w_distance
+
+    # method == "composite"
+    # Jensen-Shannon distance (0 = identical, 1 = completely different)
+    js_diff = jensenshannon(pdf_ij, pdf_jk)
+    # Overlap coefficient, converted to a "higher = more different" scale
+    overlap_diff = 1 - np.sum(np.minimum(pdf_ij, pdf_jk))
+    # Squash the unbounded pooled-std-normalized wasserstein distance
+    # onto the same [0, 1) scale as the other three measures so it
+    # doesn't dominate or get drowned out in the blend.
+    wasserstein_diff = w_distance / (1 + w_distance)
+
+    # Deliberately excludes the removed histogram-correlation term
+    # (different scale, crashed on zero-variance features).
+    diff_vals = np.array([bhatta_diff, js_diff, overlap_diff, wasserstein_diff])
+    diff_vals = diff_vals[np.isfinite(diff_vals)]
+
+    if len(diff_vals) == 0:
+        return 0.0
+    arithmetic_mean = np.mean(diff_vals)
+    geometric_mean = np.prod(diff_vals) ** (1 / len(diff_vals))
+    # Average of both means: geometric term requires every measure to agree,
+    # so one measure's blind spot can't alone drive the score high.
+    return (arithmetic_mean + geometric_mean) / 2
+
+
+def _differentiation_score(data: pd.Series, y: pd.Series, unique_labels, method: str) -> float:
+    """Sum `_pairwise_label_distance` over every pair of labels in `unique_labels`.
+
+    Shared by `calculate_gaussian_correlation` (scoring a raw feature column)
+    and `calculate_interaction_scores` (scoring a derived product column) --
+    the metric must be identical in both places for the interaction "lift"
+    comparison to mean anything.
+    """
+    data_min, data_max = data.min(), data.max()
+    score = 0.0
+    for ij in range(len(unique_labels)):
+        for jk in range(ij + 1, len(unique_labels)):
+            data_label_ij = data[y == unique_labels[ij]].values
+            data_label_jk = data[y == unique_labels[jk]].values
+            score += _pairwise_label_distance(data_label_ij, data_label_jk, method, data_min, data_max)
+    return score
+
+
+def _encode_if_categorical(series: pd.Series, full_column: pd.Series) -> pd.Series:
+    """Map a categorical/string/integer column to integer codes; pass numeric data through."""
+    if (
+        series.dtype == "object"
+        or pd.api.types.is_string_dtype(series.dtype)
+        or pd.api.types.is_integer_dtype(series.dtype)
+    ):
+        unique_values = sorted(full_column.unique())
+        value_to_index = {val: i for i, val in enumerate(unique_values)}
+        return series.map(value_to_index)
+    return series
+
+
 def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tuple[Any, Any]]:
     """Calculate distance metric between distributions for each feature across different labels.
 
@@ -244,95 +345,16 @@ def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tu
     Raises:
         ValueError: If method is not recognized
     """
-    valid_methods = {"bhattacharyya", "wasserstein", "composite"}
-    if method not in valid_methods:
-        raise ValueError(f"method must be one of {valid_methods}, got {method!r}")
+    if method not in _VALID_DIFFERENTIATION_METHODS:
+        raise ValueError(f"method must be one of {_VALID_DIFFERENTIATION_METHODS}, got {method!r}")
 
     unique_labels = y.unique()
 
     def process_column(column):
         """Process a single column and return its differentiation score"""
         series = X[column].dropna()
-        if (
-            series.dtype == "object"
-            or pd.api.types.is_string_dtype(series.dtype)
-            or pd.api.types.is_integer_dtype(series.dtype)
-        ):
-            # For categorical (strings or integers), encode them as indices
-            unique_values = sorted(X[column].unique())
-            value_to_index = {val: i for i, val in enumerate(unique_values)}
-            data = series.map(value_to_index)
-        else:
-            data = series
-
-        differentiation_score = 0
-
-        for ij in range(len(unique_labels)):
-            for jk in range(ij + 1, len(unique_labels)):
-                # Get data for each label
-                data_label_ij = data[y == unique_labels[ij]].values
-                data_label_jk = data[y == unique_labels[jk]].values
-
-                if method in ("bhattacharyya", "composite"):
-                    # Fit Gaussian distributions
-                    mu_ij, std_ij = stats.norm.fit(data_label_ij)
-                    mu_jk, std_jk = stats.norm.fit(data_label_jk)
-
-                    # Create probability distributions over same range
-                    x_range = np.linspace(data.min(), data.max(), 100)
-                    pdf_ij = stats.norm.pdf(x_range, mu_ij, std_ij)
-                    pdf_jk = stats.norm.pdf(x_range, mu_jk, std_jk)
-
-                    # Normalize PDFs to sum to 1 for proper probability distributions
-                    pdf_ij = pdf_ij / np.sum(pdf_ij)
-                    pdf_jk = pdf_jk / np.sum(pdf_jk)
-
-                    # Bhattacharyya distance = 1 - Bhattacharyya coefficient
-                    bhattacharyya_coeff = np.sum(np.sqrt(pdf_ij * pdf_jk))
-                    bhatta_diff = 1 - bhattacharyya_coeff
-
-                if method in ("wasserstein", "composite"):
-                    # Wasserstein distance (non-parametric, no distribution assumption)
-                    w_distance = wasserstein_distance(data_label_ij, data_label_jk)
-                    # Normalize by pooled standard deviation for scale invariance
-                    pooled_std = np.sqrt((np.var(data_label_ij) + np.var(data_label_jk)) / 2)
-                    if pooled_std > 1e-10:
-                        w_distance = w_distance / pooled_std
-
-                if method == "bhattacharyya":
-                    distance = bhatta_diff
-
-                elif method == "wasserstein":
-                    distance = w_distance
-
-                elif method == "composite":
-                    # Jensen-Shannon distance (0 = identical, 1 = completely different)
-                    js_diff = jensenshannon(pdf_ij, pdf_jk)
-                    # Overlap coefficient, converted to a "higher = more different" scale
-                    overlap_diff = 1 - np.sum(np.minimum(pdf_ij, pdf_jk))
-                    # Squash the unbounded pooled-std-normalized wasserstein distance
-                    # onto the same [0, 1) scale as the other three measures so it
-                    # doesn't dominate or get drowned out in the blend.
-                    wasserstein_diff = w_distance / (1 + w_distance)
-
-                    # Deliberately excludes the removed histogram-correlation term
-                    # (different scale, crashed on zero-variance features).
-                    diff_vals = np.array([bhatta_diff, js_diff, overlap_diff, wasserstein_diff])
-                    diff_vals = diff_vals[np.isfinite(diff_vals)]
-
-                    if len(diff_vals) == 0:
-                        distance = 0.0
-                    else:
-                        arithmetic_mean = np.mean(diff_vals)
-                        geometric_mean = np.prod(diff_vals) ** (1 / len(diff_vals))
-                        # Average of both means: geometric term requires every
-                        # measure to agree, so one measure's blind spot can't
-                        # alone drive the score high.
-                        distance = (arithmetic_mean + geometric_mean) / 2
-
-                differentiation_score += distance
-
-        return column, differentiation_score
+        data = _encode_if_categorical(series, X[column])
+        return column, _differentiation_score(data, y, unique_labels, method)
 
     # Use ThreadPoolExecutor to process columns in parallel
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -356,6 +378,106 @@ def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tu
     print("=" * 80)
 
     return feature_differentiators
+
+
+def calculate_interaction_scores(
+    X: pd.DataFrame,
+    y: pd.Series,
+    feature_differentiators: list[tuple[Any, Any]],
+    method: str = "wasserstein",
+    candidate_pool: list[Any] | None = None,
+    max_pairs: int = 2000,
+) -> list[tuple[Any, Any, float]]:
+    """Score every candidate feature *pair* for interaction "lift" beyond either alone.
+
+    `calculate_gaussian_correlation` is univariate by construction -- it can
+    never see that two individually weak features are jointly informative.
+    This scores the elementwise product of each candidate pair with the
+    *identical* distance metric (`_differentiation_score`), so the comparison
+    against each feature's own individual score is apples-to-apples:
+
+        lift(i, j) = score(z_i * z_j) - max(score(i), score(j))
+
+    A positive lift means the joint value separates labels/buckets better
+    than either input alone -- the same idea as Friedman's H-statistic or
+    interaction information, phrased in this module's own metric rather than
+    a new one, so it costs no new dependency and stays comparable to the
+    univariate scores it's meant to rescue features against.
+
+    Args:
+        X: Feature dataframe (the *pre-selection* frame -- pass every feature
+            `calculate_gaussian_correlation` was given, not just the
+            survivors of `take_top_features`, or a jointly-informative pair
+            can never be found in the first place).
+        y: Label/output-bucket series, aligned with `X`.
+        feature_differentiators: This dataset's own output from
+            `calculate_gaussian_correlation` (used for each feature's
+            individual score in the lift formula, and to restrict scoring to
+            finite-scored features).
+        method: Same distance-metric choice as `calculate_gaussian_correlation`;
+            must match it for the lift comparison to be meaningful.
+        candidate_pool: Feature subset to consider pairs from. `None` (default)
+            considers every feature `feature_differentiators` scored.
+        max_pairs: Raises rather than silently grinding through an
+            accidentally huge candidate pool -- pairs grow as
+            `n_choose_2`, and this is an O(n_pairs) distance computation per
+            pair, not a cheap one.
+
+    Returns:
+        `(feature_i, feature_j, lift)` tuples, sorted by lift descending,
+        normalized so the top *positive* lift is 1.0 (mirrors
+        `calculate_gaussian_correlation`'s own normalization). Non-positive
+        lifts are kept (a caller filtering for "worth adding" should filter
+        on sign, not assume everything returned is a genuine interaction).
+
+    Raises:
+        ValueError: If `method` is invalid, or the candidate pool's pair
+            count exceeds `max_pairs`.
+    """
+    if method not in _VALID_DIFFERENTIATION_METHODS:
+        raise ValueError(f"method must be one of {_VALID_DIFFERENTIATION_METHODS}, got {method!r}")
+
+    individual_score = {col: score for col, score in feature_differentiators}
+    pool = list(candidate_pool) if candidate_pool is not None else list(individual_score)
+    pool = [f for f in pool if f in individual_score]
+
+    pairs = list(combinations(pool, 2))
+    if len(pairs) > max_pairs:
+        raise ValueError(
+            f"{len(pool)} candidate features produce {len(pairs)} pairs, exceeding "
+            f"max_pairs={max_pairs}. Interaction scoring is O(n_pairs) distance "
+            f"computations, not O(n) like univariate ranking -- narrow "
+            f"`candidate_pool` (e.g. to features already close to the "
+            f"`take_top_features` threshold) or raise `max_pairs` explicitly if "
+            f"you mean to pay for the wider search."
+        )
+
+    unique_labels = y.unique()
+    results: list[tuple[Any, Any, float]] = []
+    for fi, fj in pairs:
+        zi = _encode_if_categorical(X[fi].dropna(), X[fi])
+        zj = _encode_if_categorical(X[fj].dropna(), X[fj])
+        common = zi.index.intersection(zj.index)
+        if len(common) < 2:
+            continue
+        zi, zj, y_common = zi.loc[common], zj.loc[common], y.loc[common]
+
+        std_i, std_j = zi.std(), zj.std()
+        if std_i <= 1e-12 or std_j <= 1e-12:
+            continue  # a constant feature has no interaction to offer
+        product = ((zi - zi.mean()) / std_i) * ((zj - zj.mean()) / std_j)
+
+        joint_score = _differentiation_score(product, y_common, unique_labels, method)
+        lift = joint_score - max(individual_score[fi], individual_score[fj])
+        if np.isfinite(lift):
+            results.append((fi, fj, lift))
+
+    results.sort(key=lambda t: t[2], reverse=True)
+    if results:
+        max_lift = results[0][2]
+        if max_lift > 0:
+            results = [(fi, fj, lift / max_lift) for fi, fj, lift in results]
+    return results
 
 
 def create_gaussian_membership_dict(
@@ -868,6 +990,66 @@ def take_top_features(
     top_n_vars = feature_differentiators[:top_n]
     top_n_todo = [s for s, v in top_n_vars]
     return top_n, top_n_todo
+
+
+def take_top_interactions(
+    interaction_scores: list[tuple[Any, Any, float]], top_p: float = 0.95, top_n: int = -1
+) -> list[tuple[Any, Any]]:
+    """Select interacting pairs from a `calculate_interaction_scores` ranking.
+
+    Same threshold semantics as `take_top_features`, applied to lift instead
+    of individual score, and additionally restricted to *positive* lift --
+    unlike a feature's own differentiation score, a pair's lift is a
+    difference and a non-positive one means the pair adds nothing over its
+    better half alone, regardless of where it'd fall against a `top_p`/`top_n`
+    cut applied to magnitude.
+
+    Args:
+        interaction_scores: `(feature_i, feature_j, lift)` triples, normalized
+            so the top positive lift is 1.0, sorted descending (as returned
+            by `calculate_interaction_scores`).
+        top_p: Per-pair lift threshold, not cumulative coverage -- a pair is
+            kept when its normalized lift is >= (1 - top_p). Ignored if
+            top_n > 0.
+        top_n: If > 0, keep exactly the top_n highest-lift pairs (still
+            requiring positive lift) and ignore top_p.
+
+    Returns:
+        List of `(feature_i, feature_j)` pairs kept.
+    """
+    positive = [(fi, fj, lift) for fi, fj, lift in interaction_scores if lift > 0]
+    if top_n > 0:
+        return [(fi, fj) for fi, fj, _ in positive[:top_n]]
+    kept_n = sum(lift >= (1 - top_p) for _, _, lift in positive)
+    return [(fi, fj) for fi, fj, _ in positive[:kept_n]]
+
+
+def rescue_interacting_features(
+    top_features: list[Any], feature_differentiators: list[tuple[Any, Any]], kept_pairs: list[tuple[Any, Any]]
+) -> list[Any]:
+    """Union any feature in a kept interacting pair into the selected feature list.
+
+    This is the actual fix to `calculate_gaussian_correlation`'s univariate
+    blind spot: a feature that scored under `take_top_features`'s threshold
+    but participates in a kept pair (`take_top_interactions`) would otherwise
+    never reach the model at all, cross term or not. Order follows
+    `feature_differentiators`' own (descending-score) order, so a rescued
+    feature slots in by its individual rank rather than being appended at
+    the end.
+
+    Args:
+        top_features: `take_top_features`'s survivors (already selected).
+        feature_differentiators: The full (unfiltered) ranking, used only for
+            ordering the merged result.
+        kept_pairs: `take_top_interactions`'s output.
+
+    Returns:
+        `top_features` plus any rescued features, in `feature_differentiators`
+        order.
+    """
+    rescued = {f for pair in kept_pairs for f in pair}
+    keep = set(top_features) | rescued
+    return [f for f, _ in feature_differentiators if f in keep]
 
 
 def calculate_top_k_accuracy(y_true, firing_strengths, labels, max_k: int = 5):

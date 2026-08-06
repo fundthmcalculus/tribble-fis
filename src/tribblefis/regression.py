@@ -771,6 +771,7 @@ def select_interaction_terms(
     y_bucket_mean: pd.Series | ndarray,
     max_pairs: int | None = None,
     random_state: int = 42,
+    candidate_pairs: list[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int]]:
     """Screen full-2nd cross-product terms with a LassoCV, returning the pairs worth keeping.
 
@@ -779,13 +780,22 @@ def select_interaction_terms(
     cross features, then keep only the interaction pairs whose coefficient is
     non-zero (optionally capped at the `max_pairs` largest by magnitude). Pass the
     returned list as `cross_pairs` to `solve_tsk_consequents`/`predict_tsk`.
+
+    Args:
+        candidate_pairs: Restrict the screen to these (index-space) pairs
+            instead of every pair among `top_n_todo` -- e.g. the shortlist
+            `gauss_math.calculate_interaction_scores`/`take_top_interactions`
+            already flagged as worth considering, turning this from an
+            `O(n^2)` screen into a final sparsity pass over a handful of
+            candidates. `None` (default) reproduces the original all-pairs
+            behavior exactly.
     """
     from sklearn.linear_model import LassoCV
     from sklearn.preprocessing import StandardScaler
 
     X_rule = X_train[top_n_todo].to_numpy()
     n_features = X_rule.shape[1]
-    all_pairs = list(combinations(range(n_features), 2))
+    all_pairs = candidate_pairs if candidate_pairs is not None else list(combinations(range(n_features), 2))
     if not all_pairs:
         return []
 
