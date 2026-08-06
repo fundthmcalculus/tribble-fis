@@ -30,17 +30,17 @@ def hand_crafted_it2_model():
     # Feature "x" with IT2 memberships for each class
 
     # For Class 0: "low" membership centered at x = -1
-    # Upper: mu = -0.5, sigma = 1.0  (wider, more permissive)
-    # Lower: mu = -1.5, sigma = 0.8  (narrower, more restrictive)
-    low_upper = GaussianMembership(mu=-0.5, sigma=1.0, id=uuid.uuid4())
-    low_lower = GaussianMembership(mu=-1.5, sigma=0.8, id=uuid.uuid4())
+    # Upper: mu = -1, sigma = 1.2  (wider, more permissive)
+    # Lower: mu = -1, sigma = 0.6  (narrower, more restrictive)
+    low_upper = GaussianMembership(mu=-1.0, sigma=1.2, id=uuid.uuid4())
+    low_lower = GaussianMembership(mu=-1.0, sigma=0.6, id=uuid.uuid4())
     it2_low = IT2GaussianMembership(upper_mf=low_upper, lower_mf=low_lower)
 
     # For Class 1: "high" membership centered at x = 1
-    # Upper: mu = 1.5, sigma = 1.0  (wider, more permissive)
-    # Lower: mu = 0.5, sigma = 0.8  (narrower, more restrictive)
-    high_upper = GaussianMembership(mu=1.5, sigma=1.0, id=uuid.uuid4())
-    high_lower = GaussianMembership(mu=0.5, sigma=0.8, id=uuid.uuid4())
+    # Upper: mu = 1, sigma = 1.2  (wider, more permissive)
+    # Lower: mu = 1, sigma = 0.6  (narrower, more restrictive)
+    high_upper = GaussianMembership(mu=1.0, sigma=1.2, id=uuid.uuid4())
+    high_lower = GaussianMembership(mu=1.0, sigma=0.6, id=uuid.uuid4())
     it2_high = IT2GaussianMembership(upper_mf=high_upper, lower_mf=high_lower)
 
     # Build model structure
@@ -60,7 +60,7 @@ def hand_crafted_it2_model():
 def test_hand_crafted_it2_firing_strengths(hand_crafted_it2_model):
     """Test that IT2 firing strengths are computed correctly for hand-crafted model."""
     model = hand_crafted_it2_model
-    norms = resolve_norm_pair("probability")
+    norms = resolve_norm_pair("probability")  # Returns a NormPair NamedTuple
 
     # Test points
     X = pd.DataFrame({"x": [-2, -1, 0, 1, 2]})

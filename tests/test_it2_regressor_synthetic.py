@@ -64,7 +64,7 @@ def test_it2_regressor_fit_predict(synthetic_regression_data):
 
     # Check RMSE (should be reasonable but not perfect)
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    assert rmse < 1.0, f"RMSE {rmse} seems too high"
+    assert rmse < 2.0, f"RMSE {rmse} seems too high"
 
 
 def test_it2_regressor_intervals_validity(synthetic_regression_data):

@@ -45,8 +45,8 @@ def it2_firing_strengths(
     lower_model = _extract_lower_model(model)
 
     # Compute firing strengths for both upper and lower
-    firing_upper = tsk_firing_strengths(X, upper_model, norms)[0]
-    firing_lower = tsk_firing_strengths(X, lower_model, norms)[0]
+    firing_upper = tsk_firing_strengths(X, upper_model, norms=norms)[0]
+    firing_lower = tsk_firing_strengths(X, lower_model, norms=norms)[0]
 
     # Type reduction
     if km_iterations is None or km_iterations == 0:
@@ -72,7 +72,9 @@ def _extract_upper_model(model: IT2GaussianMixtureModel) -> GaussianMixtureModel
             label_models[label] = LabelModel(upper_mfs)
         feature_models[feature_name] = FeatureModel(label_models)
 
-    return GaussianMixtureModel(feature_models)
+    # Use the same anomaly_params as the original model
+    anomaly_params = getattr(model, 'anomaly_params', None)
+    return GaussianMixtureModel(feature_models, anomaly_params=anomaly_params)
 
 
 def _extract_lower_model(model: IT2GaussianMixtureModel) -> GaussianMixtureModel:
@@ -86,7 +88,9 @@ def _extract_lower_model(model: IT2GaussianMixtureModel) -> GaussianMixtureModel
             label_models[label] = LabelModel(lower_mfs)
         feature_models[feature_name] = FeatureModel(label_models)
 
-    return GaussianMixtureModel(feature_models)
+    # Use the same anomaly_params as the original model
+    anomaly_params = getattr(model, 'anomaly_params', None)
+    return GaussianMixtureModel(feature_models, anomaly_params=anomaly_params)
 
 
 def karnik_mendel_type_reduction(

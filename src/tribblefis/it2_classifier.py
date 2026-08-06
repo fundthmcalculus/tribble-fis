@@ -8,17 +8,11 @@ from sklearn.utils.multiclass import check_classification_targets
 
 from .gauss_data import (
     IT2GaussianMembership,
-    IT2TrapezoidMembership,
-    IT2TriangularMembership,
     IT2FeatureModel,
     IT2LabelModel,
     IT2GaussianMixtureModel,
     GaussianMembership,
-    TrapezoidMembership,
-    TriangularMembership,
     DefaultNormCornorm,
-    DefaultMemberFunction,
-    MemberFunction,
     resolve_norm_pair,
 )
 from .gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
@@ -44,13 +38,9 @@ class IntervalType2FuzzyClassifier(BaseEstimator, ClassifierMixin):
     n_gaussians : int, default=0
         Number of Gaussians per feature per label (0 for automatic).
 
-    member_function : str, default="gaussian"
-        Type of membership function: "gaussian", "trap" (trapezoid), "triangular".
-
     uncertainty_width : float, default=0.5
-        Controls the footprint of uncertainty. Interpretation depends on member_function:
-        - gaussian: upper_mu = mu + uncertainty_width * sigma, lower_mu = mu - uncertainty_width * sigma
-        - trap/triangular: proportional expansion of parameters
+        Controls the footprint of uncertainty. For Gaussian MFs:
+        upper_sigma = sigma * (1 + uncertainty_width), lower_sigma = sigma * (1 - uncertainty_width/2)
 
     km_iterations : int | None, default=10
         Number of Karnik-Mendel iterations for type reduction.
@@ -65,6 +55,12 @@ class IntervalType2FuzzyClassifier(BaseEstimator, ClassifierMixin):
         parameters are then used as the center points for the uncertainty expansion.
         Refinement is applied to the base Type-1 model, improving the discriminative
         power of both upper and lower membership functions.
+
+    refine_method : str, default="coordinate"
+        Method for antecedent refinement: "coordinate" (block coordinate descent) or "none".
+
+    refine_l2_shrink : float, default=0.05
+        L2 regularization strength during refinement.
 
     random_state : int, default=42
         Seed for reproducibility.
@@ -89,7 +85,6 @@ class IntervalType2FuzzyClassifier(BaseEstimator, ClassifierMixin):
         top_n=-1,
         top_p=0.95,
         n_gaussians=0,
-        member_function=DefaultMemberFunction,
         uncertainty_width=0.5,
         km_iterations=10,
         norm_conorm=DefaultNormCornorm,
@@ -102,7 +97,6 @@ class IntervalType2FuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.top_n = top_n
         self.top_p = top_p
         self.n_gaussians = n_gaussians
-        self.member_function = member_function
         self.uncertainty_width = uncertainty_width
         self.km_iterations = km_iterations
         self.norm_conorm = norm_conorm
@@ -154,7 +148,6 @@ class IntervalType2FuzzyClassifier(BaseEstimator, ClassifierMixin):
             top_n=self.top_n,
             top_p=self.top_p,
             n_gaussians=self.n_gaussians,
-            member_function=self.member_function,
             norm_conorm=self.norm_conorm,
             refine=self.refine,
             refine_method=self.refine_method,
@@ -227,11 +220,11 @@ class IntervalType2FuzzyClassifier(BaseEstimator, ClassifierMixin):
         return firing_upper, firing_lower
 
     def _convert_to_it2(self, type1_model) -> IT2GaussianMixtureModel:
-        """Convert a Type-1 model to IT2, preserving membership function types.
+        """Convert a Type-1 model to IT2.
 
-        For each membership function, creates upper and lower bounds based on type:
-        - Gaussian: upper_mu = mu + k*sigma, lower_mu = mu - k*sigma
-        - Trapezoid/Triangle: proportional parameter expansion
+        For each Gaussian membership (mu, sigma), creates:
+            upper_mf: mu, sigma * (1 + uncertainty_width)  [wider, more permissive]
+            lower_mf: mu, sigma * (1 - uncertainty_width/2)  [narrower, more restrictive]
         """
         feature_models = {}
 
@@ -241,70 +234,25 @@ class IntervalType2FuzzyClassifier(BaseEstimator, ClassifierMixin):
             for label, type1_label_model in type1_feature_model.label_models.items():
                 it2_mfs = []
 
-                for mf in type1_label_model.memberships:
-                    if isinstance(mf, GaussianMembership):
-                        # Gaussian: shift means by uncertainty_width * sigma
-                        upper_mf = GaussianMembership(
-                            mu=mf.mu + self.uncertainty_width * mf.sigma,
-                            sigma=mf.sigma,
-                            id=mf.id,
-                        )
-                        lower_mf = GaussianMembership(
-                            mu=mf.mu - self.uncertainty_width * mf.sigma,
-                            sigma=mf.sigma,
-                            id=mf.id,
-                        )
-                        it2_mf = IT2GaussianMembership(
-                            upper_mf=upper_mf,
-                            lower_mf=lower_mf,
-                        )
+                for gauss_mf in type1_label_model.memberships:
+                    # Create upper and lower bounds by expanding/shrinking sigma
+                    # Upper: wider sigma (more permissive, fires more readily)
+                    # Lower: narrower sigma (more restrictive, fires less readily)
+                    upper_mf = GaussianMembership(
+                        mu=gauss_mf.mu,
+                        sigma=gauss_mf.sigma * (1.0 + self.uncertainty_width),
+                        id=gauss_mf.id,
+                    )
+                    lower_mf = GaussianMembership(
+                        mu=gauss_mf.mu,
+                        sigma=gauss_mf.sigma * max(0.1, 1.0 - self.uncertainty_width),
+                        id=gauss_mf.id,
+                    )
 
-                    elif isinstance(mf, TrapezoidMembership):
-                        # Trapezoid: expand parameters symmetrically
-                        delta = self.uncertainty_width * (mf.d - mf.a) / 4
-                        upper_mf = TrapezoidMembership(
-                            a=mf.a - delta,
-                            b=mf.b - delta / 2,
-                            c=mf.c + delta / 2,
-                            d=mf.d + delta,
-                            id=mf.id,
-                        )
-                        lower_mf = TrapezoidMembership(
-                            a=mf.a + delta,
-                            b=mf.b + delta / 2,
-                            c=mf.c - delta / 2,
-                            d=mf.d - delta,
-                            id=mf.id,
-                        )
-                        it2_mf = IT2TrapezoidMembership(
-                            upper_mf=upper_mf,
-                            lower_mf=lower_mf,
-                        )
-
-                    elif isinstance(mf, TriangularMembership):
-                        # Triangle: expand parameters symmetrically
-                        # For apex-based expansion
-                        delta_b = self.uncertainty_width * (mf.c - mf.a) / 6
-                        upper_mf = TriangularMembership(
-                            a=mf.a - delta_b if not np.isinf(mf.a) else mf.a,
-                            b=mf.b,
-                            c=mf.c + delta_b if not np.isinf(mf.c) else mf.c,
-                            id=mf.id,
-                        )
-                        lower_mf = TriangularMembership(
-                            a=mf.a + delta_b if not np.isinf(mf.a) else mf.a,
-                            b=mf.b,
-                            c=mf.c - delta_b if not np.isinf(mf.c) else mf.c,
-                            id=mf.id,
-                        )
-                        it2_mf = IT2TriangularMembership(
-                            upper_mf=upper_mf,
-                            lower_mf=lower_mf,
-                        )
-
-                    else:
-                        raise ValueError(f"Unsupported membership function type: {type(mf)}")
-
+                    it2_mf = IT2GaussianMembership(
+                        upper_mf=upper_mf,
+                        lower_mf=lower_mf,
+                    )
                     it2_mfs.append(it2_mf)
 
                 label_models[label] = IT2LabelModel(it2_mfs)

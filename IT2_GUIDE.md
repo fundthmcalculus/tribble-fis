@@ -63,61 +63,31 @@ y_lower, y_upper = reg.predict_intervals(X_test)
 
 ## Membership Function Types
 
-The IT2-FIS supports three membership function types via the `member_function` parameter:
-
-### Gaussian (default: `"gaussian"`)
-
-Classic bell-curve membership functions. **Recommended** for most applications.
+The IT2-FIS supports Gaussian membership functions. This is the standard and recommended choice for most applications.
 
 ```python
-clf = IntervalType2FuzzyClassifier(member_function="gaussian", uncertainty_width=0.5)
+clf = IntervalType2FuzzyClassifier(uncertainty_width=0.5)
 ```
 
-**Uncertainty expansion**: For a learned Gaussian (μ, σ):
-- Upper: μ + 0.5σ with same σ
-- Lower: μ - 0.5σ with same σ
-
-### Trapezoidal (`"trap"`)
-
-Piecewise-linear membership functions defined by (a, b, c, d) with flat plateau.
-
-```python
-clf = IntervalType2FuzzyClassifier(member_function="trap", uncertainty_width=0.3)
-```
-
-**Uncertainty expansion**: Proportional expansion of all four parameters (a, b, c, d).
-
-### Triangular (`"triangular"`)
-
-Piecewise-linear membership functions defined by (a, b, c) with single apex at b.
-
-```python
-clf = IntervalType2FuzzyClassifier(member_function="triangular", uncertainty_width=0.3)
-```
-
-**Uncertainty expansion**: Symmetric expansion around apex at b.
+**Uncertainty expansion**: For a learned Gaussian (μ, σ), the IT2-FIS creates upper and lower bounds:
+- Upper: μ with σ × (1 + 0.5) = σ × 1.5 (wider, more permissive)
+- Lower: μ with σ × max(0.1, 1 - 0.5) = σ × 0.5 (narrower, more restrictive)
 
 ---
 
 ## Key Parameters
 
-### `member_function` (default: `"gaussian"`)
-
-Type of membership function: `"gaussian"`, `"trap"`, or `"triangular"`.
-
-The IT2-FIS automatically converts any Type-1 membership type to its IT2 variant by creating upper and lower bounds.
-
 ### `uncertainty_width` (default: 0.5)
 
-Controls the footprint of uncertainty (FoU). For each learned Gaussian membership function with parameters (μ, σ):
+Controls the footprint of uncertainty (FoU) by expanding the sigma of upper/lower membership functions:
 
-- **Upper bound**: μ + uncertainty_width × σ
-- **Lower bound**: μ - uncertainty_width × σ
+- **Upper membership**: σ × (1 + uncertainty_width) — wider, more permissive
+- **Lower membership**: σ × max(0.1, 1 - uncertainty_width) — narrower, more restrictive
 
-**Effect**: Larger values create wider uncertainty intervals, representing greater ambiguity near decision boundaries.
+**Effect**: Larger values create wider uncertainty intervals, representing greater ambiguity.
 
 ```
-uncertainty_width = 0.2  → narrow intervals, crisp predictions
+uncertainty_width = 0.2  → narrow intervals, tighter bounds
 uncertainty_width = 0.5  → moderate intervals (recommended)
 uncertainty_width = 1.0  → wide intervals, more conservative
 ```
@@ -244,42 +214,6 @@ Hand-crafted IT2 model with known semantics:
 - Checks symmetry properties
 
 ## Advanced Usage Examples
-
-### Trapezoidal IT2-FIS with Refinement
-
-```python
-from tribblefis.it2_classifier import IntervalType2FuzzyClassifier
-
-clf = IntervalType2FuzzyClassifier(
-    top_n=3,
-    member_function="trap",      # Use trapezoid memberships
-    uncertainty_width=0.3,        # Smaller bounds for crisp trapezoids
-    km_iterations=10,
-    refine=True,                  # Refine before IT2 conversion
-    refine_l2_shrink=0.1,        # Moderate regularization
-    random_state=42,
-)
-clf.fit(X_train, y_train)
-
-# Get refined and bounded predictions
-y_pred = clf.predict(X_test)
-upper, lower = clf.predict_intervals(X_test)
-```
-
-### Triangular IT2-FIS for Interpretability
-
-Triangular memberships (especially with Ruspini partitions) are more interpretable:
-
-```python
-clf = IntervalType2FuzzyClassifier(
-    top_n=5,
-    member_function="triangular",   # Interpretable triangle shape
-    uncertainty_width=0.2,
-    km_iterations=20,               # Higher precision for IT2 boundaries
-    refine=False,                   # Skip refinement for simplicity
-)
-clf.fit(X_train, y_train)
-```
 
 ### Regression with Uncertainty Quantification
 
