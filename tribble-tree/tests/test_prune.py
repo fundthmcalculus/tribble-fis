@@ -1,21 +1,11 @@
-"""Tests for cost-complexity-style pruning (fuzzytree/prune.py) and model
-persistence (fuzzytree/persistence.py)."""
+"""Tests for post-hoc split-gain pruning (fuzzytree/prune.py)."""
 
-import tempfile
 import unittest
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, r2_score
 
-from fuzzytree import (
-    FuzzyClassificationTree,
-    FuzzyRegressionTree,
-    HierarchicalFuzzyExpertsRegressor,
-    load_model,
-    save_model,
-)
+from fuzzytree import FuzzyClassificationTree, FuzzyRegressionTree
 
 
 def _rng(seed=0):
@@ -71,57 +61,6 @@ class TestPruning(unittest.TestCase):
         self.assertEqual(clf.n_leaves_, 1)
         proba = clf.predict_proba(X)
         np.testing.assert_allclose(proba.sum(axis=1), 1.0, rtol=1e-6)
-
-
-class TestPersistence(unittest.TestCase):
-    def test_regression_tree_round_trip(self):
-        rng = _rng(2)
-        n = 400
-        x = rng.uniform(-3, 3, n)
-        X = pd.DataFrame({"x": x})
-        z = x / (x**2 + 1) + rng.normal(0, 0.01, n)
-        m = FuzzyRegressionTree(tsk_order="1st", max_depth=2, n_terms=3, min_soft_count=10).fit(X, z)
-
-        with tempfile.TemporaryDirectory() as d:
-            path = Path(d) / "tree.pkl"
-            save_model(m, path)
-            loaded = load_model(path)
-            np.testing.assert_allclose(m.predict(X), loaded.predict(X))
-            self.assertEqual(type(loaded), type(m))
-
-    def test_hme_round_trip(self):
-        rng = _rng(9)
-        n = 800
-        a, b = rng.uniform(0, 10, n), rng.uniform(0, 10, n)
-        X = pd.DataFrame({"a": a, "b": b})
-        y = np.where(a < 5, 2 * b, -3 * b + 40) + rng.normal(0, 0.3, n)
-        m = HierarchicalFuzzyExpertsRegressor(
-            max_depth=2, n_gate_terms=2, min_soft_count=50, min_expert_samples=50,
-            expert_kwargs={"n_output_buckets": 3, "tsk_order": "1st"},
-        ).fit(X, y)
-
-        with tempfile.TemporaryDirectory() as d:
-            path = Path(d) / "hme.pkl"
-            save_model(m, path)
-            loaded = load_model(path)
-            np.testing.assert_allclose(m.predict(X), loaded.predict(X))
-            self.assertEqual(r2_score(y, loaded.predict(X)), r2_score(y, m.predict(X)))
-
-    def test_save_unfitted_raises(self):
-        m = FuzzyRegressionTree()
-        with tempfile.TemporaryDirectory() as d:
-            with self.assertRaises(ValueError):
-                save_model(m, Path(d) / "unfit.pkl")
-
-    def test_load_non_model_file_raises(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = Path(d) / "notamodel.pkl"
-            import pickle
-
-            with open(path, "wb") as f:
-                pickle.dump({"foo": "bar"}, f)
-            with self.assertRaises(ValueError):
-                load_model(path)
 
 
 if __name__ == "__main__":

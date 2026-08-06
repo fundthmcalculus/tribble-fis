@@ -199,18 +199,6 @@ then prune back independently with `ccp_alpha`.
 FuzzyRegressionTree(max_depth=4, min_gain=1e-4, ccp_alpha=0.05).fit(X, y)
 ```
 
-## Persistence
-
-`save_model`/`load_model` pickle a fitted tree, MIMO wrapper, or HME to/from disk,
-stamped with a format version and class name so a stale or unrelated file fails loudly
-at load time instead of silently.
-
-```python
-from fuzzytree import save_model, load_model
-save_model(model, "model.pkl")
-model2 = load_model("model.pkl")
-```
-
 ## Files
 
 `plan.py` (variable plan + precedence) · `terms.py` (linguistic terms) · `splitter.py`
@@ -218,8 +206,8 @@ model2 = load_model("model.pkl")
 solve/predict) · `builder.py` (recursive build) · `prune.py` (post-hoc split-gain
 pruning) · `regressor.py` / `classifier.py` (single-tree estimators) · `hme.py`
 (hierarchical mixture of fuzzy experts) · `em.py` (EM refinement of the HME) ·
-`persistence.py` (save/load) · `render.py` (text + matplotlib for both) · `tests/` ·
-`demo_concrete.py` (regression) · `demo_phishing.py` (classification).
+`render.py` (text + matplotlib for both) · `tests/` · `demo_concrete.py` (regression) ·
+`demo_phishing.py` (classification).
 
 ## Running
 
