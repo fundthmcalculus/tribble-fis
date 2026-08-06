@@ -174,6 +174,9 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
 
         if isinstance(X, np.ndarray):
             X = pd.DataFrame(X, columns=self.feature_names_in_)
+        else:
+            # Ensure DataFrame has correct column names
+            X = pd.DataFrame(X.values, columns=self.feature_names_in_)
 
         _, _, firing_crisp, _ = it2_firing_strengths(
             X, self.model_, self.norms_, km_iterations=self.km_iterations
@@ -210,6 +213,9 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
 
         if isinstance(X, np.ndarray):
             X = pd.DataFrame(X, columns=self.feature_names_in_)
+        else:
+            # Ensure DataFrame has correct column names
+            X = pd.DataFrame(X.values, columns=self.feature_names_in_)
 
         firing_upper, firing_lower, _, _ = it2_firing_strengths(
             X, self.model_, self.norms_, km_iterations=None
@@ -230,8 +236,11 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
         For each Gaussian membership (mu, sigma), creates:
             upper_mf: mu, sigma * (1 + uncertainty_width)  [wider, more permissive]
             lower_mf: mu, sigma * (1 - uncertainty_width/2)  [narrower, more restrictive]
+
+        Ensures all sigmas are at least 1e-4 to avoid degenerate memberships.
         """
         feature_models = {}
+        min_sigma = 1e-4
 
         for feature_name, type1_feature_model in type1_model.feature_models.items():
             label_models = {}
@@ -240,17 +249,20 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
                 it2_mfs = []
 
                 for gauss_mf in type1_label_model.memberships:
+                    # Ensure base sigma is not zero or negligible
+                    base_sigma = max(gauss_mf.sigma, min_sigma)
+
                     # Create upper and lower bounds by expanding/shrinking sigma
                     # Upper: wider sigma (more permissive, fires more readily)
                     # Lower: narrower sigma (more restrictive, fires less readily)
                     upper_mf = GaussianMembership(
                         mu=gauss_mf.mu,
-                        sigma=gauss_mf.sigma * (1.0 + self.uncertainty_width),
+                        sigma=base_sigma * (1.0 + self.uncertainty_width),
                         id=gauss_mf.id,
                     )
                     lower_mf = GaussianMembership(
                         mu=gauss_mf.mu,
-                        sigma=gauss_mf.sigma * max(0.1, 1.0 - self.uncertainty_width),
+                        sigma=base_sigma * max(0.1, 1.0 - self.uncertainty_width),
                         id=gauss_mf.id,
                     )
 
