@@ -492,9 +492,9 @@ def _predict_workload(
     def setup():
         X, y = make_dataset(n_samples, n_features, n_labels, seed=2)
         model = make_model(n_features, n_labels, 3, seed=2)
-        from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+        from tribblefis.gaussian_classifier import TribbleClassifier
 
-        clf = MixtureOfGaussiansFuzzyClassifier()
+        clf = TribbleClassifier()
         # Inject the synthetic model rather than fitting: `fit` runs KMeans/BIC
         # selection, which is a separate cost with its own optimizations and
         # would swamp the inference time this workload exists to measure.
@@ -511,7 +511,7 @@ def _predict_workload(
     return Workload(
         name=name,
         description=(
-            f"MixtureOfGaussiansFuzzyClassifier.predict_proba: {n_samples} samples "
+            f"TribbleClassifier.predict_proba: {n_samples} samples "
             f"x {n_features} features x {n_labels} labels x 3 MF"
         ),
         setup=setup,

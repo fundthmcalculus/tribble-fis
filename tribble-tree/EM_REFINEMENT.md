@@ -87,7 +87,7 @@ Treat the fitted HME as a generative mixture. For an input `x`:
     ```
     p(y | x, ℓ) = N(y ; f_ℓ(x), σ_ℓ²)
     ```
-    `f_ℓ` is `MixtureOfGaussiansFuzzyRegressor.predict`; `σ_ℓ²` is a new per-expert
+    `f_ℓ` is `TribbleRegressor.predict`; `σ_ℓ²` is a new per-expert
     noise variance the current model does not store.
   - **Classification:** categorical from the expert classifier:
     ```
@@ -199,7 +199,7 @@ over the group — again a standard weighted-moment update.
 ## 5. The weighting obstacle and three ways around it
 
 Every M-step fit is **weighted by responsibilities**, but the stock sub-FIS
-(`MixtureOfGaussiansFuzzyRegressor` / `...Classifier`) and `build_split_terms` do not
+(`TribbleRegressor` / `...Classifier`) and `build_split_terms` do not
 accept per-sample weights. Options, in order of fidelity:
 
 - **Option A — weighted solve (recommended, principled).** Add an optional

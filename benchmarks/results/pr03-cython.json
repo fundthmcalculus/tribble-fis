@@ -58,7 +58,7 @@
     },
     {
       "name": "predict-large",
-      "description": "MixtureOfGaussiansFuzzyClassifier.predict_proba: 50000 samples x 20 features x 8 labels x 3 MF",
+      "description": "TribbleClassifier.predict_proba: 50000 samples x 20 features x 8 labels x 3 MF",
       "tags": [
         "predict"
       ],

@@ -3,7 +3,7 @@
 Uses the UCI Concrete Compressive Strength dataset shipped with the repo
 (``gaussian_mixture/Concrete_Data.csv``): 8 mixture/age features predict the
 compressive strength (MPa). Fits a ``FuzzyRegressionTree`` and the flat
-``MixtureOfGaussiansFuzzyRegressor`` baseline, prints accuracy for both, renders
+``TribbleRegressor`` baseline, prints accuracy for both, renders
 the tree as human-readable IF-THEN rules (with physically meaningful thresholds
 in raw units), and saves a matplotlib tree diagram.
 
@@ -36,7 +36,7 @@ from fuzzytree import (
     render_hme_text,
     render_tree_text,
 )
-from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
+from tribblefis.gaussian_regressor import TribbleRegressor
 
 DATA_PATH = os.path.join(
     os.path.dirname(__file__), "..", "gaussian_mixture", "Concrete_Data.csv"
@@ -77,10 +77,10 @@ def main():
     print("ACCURACY COMPARISON (predicting concrete compressive strength, MPa)")
     print("=" * 74)
 
-    baseline = MixtureOfGaussiansFuzzyRegressor(
+    baseline = TribbleRegressor(
         n_output_buckets=3, tsk_order="1st", top_n=-1, random_state=42
     ).fit(X_tr, y_tr)
-    report("Flat TRIBBLE (MixtureOfGaussiansFuzzyRegressor)", y_te, baseline.predict(X_te))
+    report("Flat TRIBBLE (TribbleRegressor)", y_te, baseline.predict(X_te))
 
     tree0 = FuzzyRegressionTree(
         tsk_order="0th", criterion="variance", max_depth=3, n_terms=2, top_n=4, min_soft_count=20

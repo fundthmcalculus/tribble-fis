@@ -1,7 +1,7 @@
 """Sklearn-style fuzzy regression tree estimator (and a MIMO wrapper).
 
 ``FuzzyRegressionTree`` mirrors the parameters and fit/predict flow of
-``tribblefis.gaussian_regressor.MixtureOfGaussiansFuzzyRegressor`` so it is a
+``tribblefis.gaussian_regressor.TribbleRegressor`` so it is a
 drop-in alternative, but produces a *hierarchical* model: each internal node
 splits on one input variable, and each leaf holds a local TSK consequent solved by
 the shared closed-form ridge least squares.

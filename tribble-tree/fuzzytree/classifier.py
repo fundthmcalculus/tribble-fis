@@ -1,6 +1,6 @@
 """Sklearn-style fuzzy classification tree.
 
-Mirrors ``tribblefis.gaussian_classifier.MixtureOfGaussiansFuzzyClassifier`` at the
+Mirrors ``tribblefis.gaussian_classifier.TribbleClassifier`` at the
 API level but produces a hierarchical soft tree. Splits default to the Yuan-Shaw
 classification-ambiguity criterion; each leaf stores a fuzzy-weighted class
 distribution, and prediction is the firing-weighted vote across leaves.

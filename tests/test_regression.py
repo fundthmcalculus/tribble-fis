@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 
-from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
+from tribblefis.gaussian_regressor import TribbleRegressor
 from tribblefis.gauss_math import create_gaussian_membership_dict
 from tribblefis.regression import (
     partition_output,
@@ -90,7 +90,7 @@ def test_gaussian_mixture_regression_2d():
     metrics = []
 
     for order in orders:
-        regressor = MixtureOfGaussiansFuzzyRegressor(
+        regressor = TribbleRegressor(
             top_n=-1,
             n_gaussians=-1,
             n_output_buckets=5,

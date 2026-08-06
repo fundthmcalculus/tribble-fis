@@ -18,7 +18,7 @@ with an EM loop that alternates:
 Only ``fuzzytree`` is touched; nothing under ``src/tribblefis`` changes.
 
 Expert M-step, by expert kind:
-  * Regression sub-FIS (``MixtureOfGaussiansFuzzyRegressor``): the antecedent
+  * Regression sub-FIS (``TribbleRegressor``): the antecedent
     Gaussian memberships are frozen (re-fitting them weighted would need a
     weighted GMM, which the upstream estimator has no hook for); only the
     closed-form TSK consequents are refit, weighted by the posterior, mirroring
@@ -27,7 +27,7 @@ Expert M-step, by expert kind:
     is "Option A" from EM_REFINEMENT.md Sec.5, restricted to the cheap
     consequents-only variant the doc recommends.
   * Constant-fallback experts (tiny leaves): a straight posterior-weighted mean.
-  * Classification sub-FIS (``MixtureOfGaussiansFuzzyClassifier``): zeroth-order
+  * Classification sub-FIS (``TribbleClassifier``): zeroth-order
     -- the antecedents *are* the whole model, so there is no separate
     consequent to weight-refit. Its M-step is "Option B": a posterior-weighted
     bootstrap resample followed by an ordinary (unmodified) refit.

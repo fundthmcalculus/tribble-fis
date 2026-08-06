@@ -5,8 +5,8 @@ import pandas as pd
 from sklearn.base import clone
 from sklearn.pipeline import make_pipeline
 
-from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
-from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
+from tribblefis.gaussian_classifier import TribbleClassifier
+from tribblefis.gaussian_regressor import TribbleRegressor
 from tribblefis import scaling
 from tribblefis.scaling import StandardFuzzyScalar, UnitFuzzyScalar
 
@@ -230,21 +230,21 @@ class _SharedScalarTests:
     def test_log_features_in_pipeline(self):
         y = self.X["wide"] * 2 + self.X["narrow"]
         pipe = make_pipeline(
-            self.scalar_cls(log_features=["wide"]), MixtureOfGaussiansFuzzyRegressor()
+            self.scalar_cls(log_features=["wide"]), TribbleRegressor()
         )
         pipe.fit(self.X, y)
         self.assertEqual(len(pipe.predict(self.X)), len(y))
 
     def test_pipeline_with_classifier(self):
         y = (self.X["wide"] > np.median(self.X["wide"])).astype(int)
-        pipe = make_pipeline(self.scalar_cls(), MixtureOfGaussiansFuzzyClassifier())
+        pipe = make_pipeline(self.scalar_cls(), TribbleClassifier())
         pipe.fit(self.X, y)
         preds = pipe.predict(self.X)
         self.assertEqual(len(preds), len(y))
 
     def test_pipeline_with_regressor(self):
         y = self.X["wide"] * 2 + self.X["narrow"]
-        pipe = make_pipeline(self.scalar_cls(), MixtureOfGaussiansFuzzyRegressor())
+        pipe = make_pipeline(self.scalar_cls(), TribbleRegressor())
         pipe.fit(self.X, y)
         preds = pipe.predict(self.X)
         self.assertEqual(len(preds), len(y))

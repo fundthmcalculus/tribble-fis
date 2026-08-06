@@ -1,7 +1,7 @@
 """Bagged / random-subspace ensemble of Gaussian fuzzy classifiers.
 
 This module implements candidate #1 from the iris_v2 improvement goal:
-a random-forest-style ensemble of :class:`MixtureOfGaussiansFuzzyClassifier`
+a random-forest-style ensemble of :class:`TribbleClassifier`
 sub-models combined by popularity (hard) or averaged-probability (soft) voting.
 
 Design
@@ -41,7 +41,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_is_fitted
 
-from .gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+from .gaussian_classifier import TribbleClassifier
 from .calibrated_fuzzy_classifier import CalibratedGaussianFuzzyClassifier
 
 
@@ -89,7 +89,7 @@ class BaggedFuzzyClassifier(BaseEstimator, ClassifierMixin):
             return CalibratedGaussianFuzzyClassifier(
                 n_gaussians=self.n_gaussians, top_p=self.top_p, random_state=self.random_state
             )
-        return MixtureOfGaussiansFuzzyClassifier(
+        return TribbleClassifier(
             n_gaussians=self.n_gaussians, top_p=self.top_p,
             norm_conorm="probability", random_state=self.random_state,
         )
