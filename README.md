@@ -2,6 +2,30 @@
 
 Building FIS using a consequent first approach.
 
+## ANFIS
+
+`tribblefis.anfis` implements the canonical Jang (1993) ANFIS network:
+grid-Cartesian rules, product t-norm, closed-form consequent least squares
+alternated with a vectorized batch gradient step on every premise parameter.
+It is a different rule structure from the rest of the package (see
+`docs/anfis-design.md` for why, and for a measured comparison against
+`gaussian_regressor.MixtureOfGaussiansFuzzyRegressor`), so it lives
+alongside it rather than inside it.
+
+```python
+from tribblefis.anfis import ANFISRegressor
+
+reg = ANFISRegressor(n_terms=3, n_epochs=200, learning_rate=0.05)
+reg.fit(X_train, y_train)
+y_pred = reg.predict(X_test)
+print(reg.describe_rules()[0])  # "IF x0 is term_0 AND x1 is term_1 THEN y = ..."
+```
+
+Rules are the Cartesian product of per-feature terms (`n_terms ** n_features`),
+so this is the right tool for a handful of features with a few terms each --
+past that, `fit` raises `RuleExplosionError` and points at the mixture
+regressor, whose implicit rule base doesn't grow that way.
+
 ## Optional compiled kernel
 
 The forward pass (`tsk_firing_strengths`, and therefore every prediction and

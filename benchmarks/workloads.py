@@ -440,6 +440,74 @@ def _refine_classifier_workload(
 
 
 # ---------------------------------------------------------------------------
+# ANFIS training workload.
+#
+# Unlike `_refine_classifier_workload` (one membership function moved at a
+# time, cached per-cell folds -- see `kernel.IncrementalFIS`), one ANFIS epoch
+# touches every premise parameter at once via the tensor-reshape trick in
+# `anfis._premise_gradients`. This workload is what proves that stays cheap
+# as rules grow combinatorially with `n_terms`.
+# ---------------------------------------------------------------------------
+
+def _anfis_dataset(n_samples: int, n_features: int, seed: int) -> tuple[pd.DataFrame, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    cols = [f"x{i}" for i in range(n_features)]
+    X = pd.DataFrame(rng.uniform(-3.0, 3.0, size=(n_samples, n_features)), columns=cols)
+    weights = rng.normal(0.0, 1.0, size=max(n_features - 1, 0))
+    y = np.sin(X[cols[0]].to_numpy())
+    if n_features > 1:
+        y = y + X[cols[1:]].to_numpy() @ weights
+    return X, y
+
+
+def _anfis_fit_workload(
+    name: str, n_samples: int, n_features: int, n_terms: int, n_epochs: int, repeats: int,
+) -> Workload:
+    def setup():
+        from tribblefis.anfis import init_anfis_model
+
+        X, y = _anfis_dataset(n_samples, n_features, seed=0)
+        model = init_anfis_model(X, list(X.columns), n_terms=n_terms)
+        return model, X, y
+
+    def run(state):
+        from tribblefis.anfis import fit_anfis
+
+        model, X, y = state
+        # `fit_anfis` mutates the model it is given (Adam updates its mu/sigma
+        # lists in place); `.copy()` is what makes every repeat start from the
+        # same untrained grid partition instead of continuing the last one.
+        refined, history = fit_anfis(
+            model.copy(), X, y, n_epochs=n_epochs, learning_rate=0.05, seed=1, verbose=False,
+        )
+        return refined, history
+
+    def checksum(result):
+        refined, history = result
+        params = np.concatenate(
+            [*refined.mu, *refined.sigma, refined.consequent.ravel()]
+        )
+        # Both where training landed and how well it did must be stable: a
+        # faster implementation that lands somewhere else, or converges to a
+        # worse fit, is a different algorithm, not a speedup.
+        return _array_checksum(params) + float(history[-1]["val_mse"])
+
+    return Workload(
+        name=name,
+        description=(
+            f"anfis.fit_anfis: {n_samples} samples x {n_features} features x "
+            f"{n_terms} terms/feature ({n_terms ** n_features} rules), {n_epochs} epochs"
+        ),
+        setup=setup,
+        run=run,
+        checksum=checksum,
+        repeats=repeats,
+        warmups=0,
+        tags=("train", "anfis"),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Deployed-estimator workload.
 # ---------------------------------------------------------------------------
 
@@ -511,6 +579,12 @@ def all_workloads() -> list[Workload]:
         _refine_classifier_workload(
             "refine-classifier-wide", 4_000, 20, 6, 3, n_sweeps=1, repeats=2
         ),
+        # ANFIS's rule count is n_terms**n_features (Cartesian, not additive
+        # like the classifier's), so the "wide" row here grows the terms per
+        # feature rather than the feature count -- that is the axis its
+        # combinatorial rule base is actually sensitive to.
+        _anfis_fit_workload("anfis-fit", 2_000, 3, n_terms=3, n_epochs=30, repeats=3),
+        _anfis_fit_workload("anfis-fit-wide", 2_000, 3, n_terms=5, n_epochs=15, repeats=2),
         # CPU/GPU pairs. Each `-cpu` row is the same shape, the same seed and the
         # same timing boundary as the `-gpu*` row beneath it, so the two can be
         # read against each other directly.
