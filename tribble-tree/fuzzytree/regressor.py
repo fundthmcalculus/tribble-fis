@@ -23,7 +23,9 @@ from tribblefis.regression import partition_output
 from .builder import build_tree
 from .firing import DEFAULT_T_NORM, compute_leaf_firing
 from .plan import VariablePlan
+from .prune import prune_tree
 from .solve import predict_leaves, solve_leaf_consequents
+from .splitter import get_criterion
 
 
 class FuzzyRegressionTree(BaseEstimator, RegressorMixin):
@@ -48,6 +50,13 @@ class FuzzyRegressionTree(BaseEstimator, RegressorMixin):
         n_score_buckets: Output quantile buckets used only to form pseudo-classes
             for the 'ambiguity'/'info_gain'/'differentiation' criteria.
         term_style: 'trapezoid' (default, nameable bands) or 'gaussian'.
+        ccp_alpha: Post-hoc split-gain pruning threshold (see
+            ``fuzzytree.prune``): collapses any node whose own split gain
+            (under ``criterion``) falls below this value. 0 (default) disables
+            pruning entirely, reproducing the tree exactly as
+            ``max_depth``/``max_leaves``/``min_gain`` built it. Only useful set
+            higher than ``min_gain``, since ``build_tree`` never creates a
+            split scoring below ``min_gain`` in the first place.
     """
 
     def __init__(
@@ -67,6 +76,7 @@ class FuzzyRegressionTree(BaseEstimator, RegressorMixin):
         t_norm: str = DEFAULT_T_NORM,
         n_score_buckets: int = 3,
         term_style: str = "trapezoid",
+        ccp_alpha: float = 0.0,
         random_state: int = 42,
     ):
         self.variable_plan = variable_plan
@@ -84,6 +94,7 @@ class FuzzyRegressionTree(BaseEstimator, RegressorMixin):
         self.t_norm = t_norm
         self.n_score_buckets = n_score_buckets
         self.term_style = term_style
+        self.ccp_alpha = ccp_alpha
         self.random_state = random_state
 
     def _resolve_plan(self) -> VariablePlan:
@@ -136,6 +147,17 @@ class FuzzyRegressionTree(BaseEstimator, RegressorMixin):
             min_gain=self.min_gain,
             max_leaves=self.max_leaves,
         )
+
+        if self.ccp_alpha > 0:
+            self.tree_, self.n_leaves_ = prune_tree(
+                self.tree_,
+                X_top,
+                get_criterion(plan.criterion),
+                y_value,
+                y_bucket,
+                self.ccp_alpha,
+                t_norm_name=self.t_norm,
+            )
 
         leaf_firing = compute_leaf_firing(self.tree_, X_top, self.n_leaves_, self.t_norm)
         self.corr_terms_, self.leaf_mean_ = solve_leaf_consequents(
@@ -190,6 +212,7 @@ class MimoFuzzyTreeRegressor(BaseEstimator, RegressorMixin):
         t_norm: str = DEFAULT_T_NORM,
         n_score_buckets: int = 3,
         term_style: str = "trapezoid",
+        ccp_alpha: float = 0.0,
         random_state: int = 42,
     ):
         self.variable_plan = variable_plan
@@ -207,6 +230,7 @@ class MimoFuzzyTreeRegressor(BaseEstimator, RegressorMixin):
         self.t_norm = t_norm
         self.n_score_buckets = n_score_buckets
         self.term_style = term_style
+        self.ccp_alpha = ccp_alpha
         self.random_state = random_state
 
     def _make_tree(self) -> FuzzyRegressionTree:
@@ -226,6 +250,7 @@ class MimoFuzzyTreeRegressor(BaseEstimator, RegressorMixin):
             t_norm=self.t_norm,
             n_score_buckets=self.n_score_buckets,
             term_style=self.term_style,
+            ccp_alpha=self.ccp_alpha,
             random_state=self.random_state,
         )
 

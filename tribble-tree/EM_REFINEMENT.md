@@ -1,9 +1,41 @@
 # EM Refinement of the Hierarchical Fuzzy Experts (design note)
 
-**Status:** design only — no implementation. This document specifies how the
-hierarchical mixture of fuzzy experts (`fuzzytree/hme.py`) could be refined with a
-true Expectation-Maximization (EM) loop, replacing the current one-shot greedy
-build. It is written so an implementer can follow it directly.
+**Status:** implemented in `fuzzytree/em.py` (call `.refine_em(X, y)` on a
+fitted `HierarchicalFuzzyExpertsRegressor`/`Classifier`). This document is the
+design spec it follows; the sections below describe the intended algorithm,
+and the implementation notes at the bottom of this status box record where
+the shipped code took a pragmatic option among those the spec lists.
+
+Implementation notes:
+- **Regression M-step** uses Option A (§5): expert antecedents (the sub-FIS
+  Gaussian memberships) stay frozen; only the closed-form TSK consequents and
+  per-leaf `sigma2_` are refit, weighted by the posterior. This is an exact
+  weighted-MLE step, so the incomplete-data log-likelihood is monotone in
+  practice.
+- **Classification M-step** uses Option B (§5): the classifier sub-FIS has no
+  separable consequent (it's zeroth-order; the antecedents *are* the whole
+  model), so its experts are refit via posterior-weighted importance
+  resampling followed by an unmodified `.fit()`. This is stochastic and only
+  approximates the weighted MLE, so it can occasionally decrease the
+  log-likelihood for one step.
+- **Gate M-step**: Gaussian gate terms (`gate_style="gaussian"`) get the exact
+  closed-form weighted mean/variance update in §4.2 and can genuinely
+  *sharpen* (shrink sigma) around a sharp regime boundary -- this is the
+  headline validation case in §10 and is covered by
+  `tests/test_em_refinement.py`. The default trapezoid gates only get their
+  knots (not their ramp width) re-derived from responsibility-weighted
+  quantiles, since a trapezoid's ramp width is a fixed function of its knot
+  spacing and has no free parameter to sharpen -- `gate_style="gaussian"` is
+  recommended whenever `refine_em` will be called.
+- **No-worse guarantee** (§10): rather than hoping every M-step improves,
+  both drivers snapshot the model's parameters at whichever iteration had the
+  best observed log-likelihood and restore that snapshot before returning --
+  a real safeguard, not just documented intent, needed in particular for the
+  stochastic classification M-step.
+- **Structural EM** (§9), **multi-input gates**, and **annealed E-steps**
+  remain out of scope, as originally specified.
+
+---
 
 ---
 
