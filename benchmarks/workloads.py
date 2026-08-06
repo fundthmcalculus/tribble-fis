@@ -440,6 +440,49 @@ def _refine_classifier_workload(
 
 
 # ---------------------------------------------------------------------------
+# Interaction-score workload.
+#
+# `calculate_interaction_scores` is the new O(n_features^2) cost center this
+# candidate-cross-term-detection feature introduces (every other cost in this
+# file is O(n_features) or O(n_rules)) -- this workload is what keeps that
+# growth honest as feature counts rise.
+# ---------------------------------------------------------------------------
+
+def _interaction_score_workload(
+    name: str, n_samples: int, n_features: int, n_labels: int, repeats: int,
+) -> Workload:
+    def setup():
+        X, y = make_dataset(n_samples, n_features, n_labels, seed=3)
+        return X, pd.Series(y)
+
+    def run(state):
+        from tribblefis.gauss_math import calculate_gaussian_correlation, calculate_interaction_scores
+
+        X, y = state
+        diffs = calculate_gaussian_correlation(X, y)
+        return calculate_interaction_scores(X, y, diffs)
+
+    def checksum(result):
+        # Order-sensitive: a re-ranking that changed which pair comes out on
+        # top, not just how fast, must move this number.
+        flat = np.array([lift for _fi, _fj, lift in result], dtype=float)
+        return _array_checksum(flat)
+
+    return Workload(
+        name=name,
+        description=(
+            f"calculate_interaction_scores: {n_samples} samples x {n_features} "
+            f"features x {n_labels} labels ({n_features * (n_features - 1) // 2} pairs)"
+        ),
+        setup=setup,
+        run=run,
+        checksum=checksum,
+        repeats=repeats,
+        tags=("interaction",),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Deployed-estimator workload.
 # ---------------------------------------------------------------------------
 
@@ -511,6 +554,10 @@ def all_workloads() -> list[Workload]:
         _refine_classifier_workload(
             "refine-classifier-wide", 4_000, 20, 6, 3, n_sweeps=1, repeats=2
         ),
+        # Pairs grow as n_choose_2, not linearly like everything above --
+        # "wide" here means more features, the axis this cost actually scales on.
+        _interaction_score_workload("interaction-score", 800, 10, 4, repeats=5),
+        _interaction_score_workload("interaction-score-wide", 800, 30, 4, repeats=3),
         # CPU/GPU pairs. Each `-cpu` row is the same shape, the same seed and the
         # same timing boundary as the `-gpu*` row beneath it, so the two can be
         # read against each other directly.

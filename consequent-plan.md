@@ -155,6 +155,17 @@ interactions via Lasso / elastic-net (`sklearn.linear_model.LassoCV` /
 interactions before the final ridge solve. Improves test R² vs. dense full-2nd
 when many cross-terms are noise.
 
+**Done.** `regression.select_interaction_terms` implemented the LassoCV screen
+but was never wired into the estimator (no call sites anywhere in the repo,
+zero test coverage) until `MixtureOfGaussiansFuzzyRegressor(select_interactions=True)`.
+It is now also fed a *pre-filtered* candidate shortlist rather than every
+`n_choose_2` pair, from a new, earlier detection pass
+(`gauss_math.calculate_interaction_scores`) that runs *during* feature
+selection -- addressing a gap this plan didn't anticipate: a feature that is
+only informative jointly with another can be dropped by `take_top_features`
+before `full-2nd`'s cross terms, or this Lasso screen, ever see it. See
+`docs/interaction-detection.md`.
+
 ### Phase 1 integration
 
 - Wire `MixtureOfGaussiansFuzzyRegressor.fit` (`gaussian_regressor.py`) to use
