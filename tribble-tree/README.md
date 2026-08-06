@@ -1,7 +1,7 @@
 # fuzzytree — a hierarchical fuzzy tree for TRIBBLE
 
 `fuzzytree` turns TRIBBLE's TSK fuzzy inference into a **hierarchical, human-readable
-tree**. Where the flat `MixtureOfGaussiansFuzzyRegressor` produces a few *long* rules
+tree**. Where the flat `TribbleRegressor` produces a few *long* rules
 (each an AND over every selected variable, keyed to output quantile buckets), a fuzzy
 tree produces *short* rules — one per root→leaf path — that mention only the variables
 on that path, in order of importance:
@@ -220,7 +220,7 @@ uv run python tribble-tree/demo_phishing.py     # classification
 **Regression — UCI Concrete Compressive Strength:**
 
 ```
-Flat TRIBBLE (MixtureOfGaussiansFuzzyRegressor)   R2=0.658   RMSE=9.381 MPa
+Flat TRIBBLE (TribbleRegressor)   R2=0.658   RMSE=9.381 MPa
 Fuzzy tree (0th-order, constant leaves)           R2=0.460   RMSE=11.799 MPa
 Fuzzy tree (1st-order, linear leaves)             R2=0.746   RMSE=8.091 MPa
 Hierarchical fuzzy experts (gated sub-FIS)        R2=0.791   RMSE=7.342 MPa
@@ -233,7 +233,7 @@ HME goes further, routing to a full sub-FIS per region, and here is the most acc
 **Classification — PhiUSIIL Phishing URL dataset (subsampled):**
 
 ```
-Flat TRIBBLE (MixtureOfGaussiansFuzzyClassifier)  acc=0.998   F1(phish)=0.998
+Flat TRIBBLE (TribbleClassifier)  acc=0.998   F1(phish)=0.998
 Fuzzy tree (ambiguity splits)                     acc=0.968   F1(phish)=0.972
 Fuzzy tree (fuzzy info-gain splits)               acc=0.969   F1(phish)=0.972
 Hierarchical fuzzy experts (gated sub-FIS)        acc=0.996   F1(phish)=0.997

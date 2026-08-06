@@ -896,7 +896,7 @@ def refine_antecedents_optimizers(
 
 def _normalize_proba(fs: np.ndarray, n_labels: int) -> np.ndarray:
     """Row-normalise firing strengths, with zero-firing rows falling back to
-    uniform -- the same rule as ``MixtureOfGaussiansFuzzyClassifier.predict_proba``.
+    uniform -- the same rule as ``TribbleClassifier.predict_proba``.
 
     Written as a masked ``divide`` rather than boolean fancy-indexing
     (``proba[nz] = fs[nz] / row[nz]``), which materialised three whole-array
@@ -1181,7 +1181,7 @@ class _CrossEntropy:
 def _classifier_proba(X: pd.DataFrame, model: GaussianMixtureModel,
                       norms: NormPair | None = None):
     """Row-normalised firing strengths -> class probabilities, plus the label
-    order. Mirrors ``MixtureOfGaussiansFuzzyClassifier.predict_proba`` (zero-firing
+    order. Mirrors ``TribbleClassifier.predict_proba`` (zero-firing
     rows fall back to uniform) so the fitness matches the deployed forward pass."""
     fs, labels = tsk_firing_strengths(X, model, norms=norms)
     return _normalize_proba(fs, len(labels)), labels
@@ -1436,7 +1436,7 @@ def refine_classifier_antecedents(
     ``norms`` selects the (t-norm, t-conorm) pair the objective is evaluated
     under, and must match what the deployed model uses -- the firing strengths,
     and so the entire loss surface, depend on it. Callers that hold an operator
-    choice (``MixtureOfGaussiansFuzzyClassifier.norm_conorm``) must pass it; the
+    choice (``TribbleClassifier.norm_conorm``) must pass it; the
     default reproduces the library-wide default pair.
 
     ``incremental=False`` turns off the cached per-cell evaluation that

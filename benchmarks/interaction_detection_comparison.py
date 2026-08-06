@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
+from tribblefis.gaussian_regressor import TribbleRegressor
 from tribblefis.regression import _rsquared
 
 _SEEDS = (0, 1, 2)
@@ -53,13 +53,13 @@ def run_problem(name: str) -> dict:
     for seed in _SEEDS:
         X, y, top_n = make_problem(name, seed)
 
-        without = MixtureOfGaussiansFuzzyRegressor(
+        without = TribbleRegressor(
             tsk_order="full-2nd", top_n=top_n, n_output_buckets=6, random_state=seed,
         )
         without.fit(X, y)
         r2_without.append(_rsquared(y, without.predict(X)))
 
-        with_detect = MixtureOfGaussiansFuzzyRegressor(
+        with_detect = TribbleRegressor(
             tsk_order="full-2nd", top_n=top_n, n_output_buckets=6, random_state=seed,
             detect_interactions=True, select_interactions=True,
         )

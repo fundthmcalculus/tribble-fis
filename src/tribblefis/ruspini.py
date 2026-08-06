@@ -383,7 +383,7 @@ def ruspinize_model(
 class RuspiniFuzzyClassifier(BaseEstimator, ClassifierMixin):
     """A triangular, Ruspini-partitioned fuzzy classifier.
 
-    Fits a Gaussian :class:`MixtureOfGaussiansFuzzyClassifier` to derive the
+    Fits a Gaussian :class:`TribbleClassifier` to derive the
     per-class landmarks, converts it to an explicit Ruspini triangular model
     (:func:`ruspinize_model`), and -- optionally -- refines the partition's apex
     knots against a cross-entropy objective with the `optimizers` package
@@ -413,7 +413,7 @@ class RuspiniFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.random_state = random_state
 
     def fit(self, X, y):
-        from .gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+        from .gaussian_classifier import TribbleClassifier
 
         if isinstance(X, pd.DataFrame):
             self.feature_names_in_ = X.columns.tolist()
@@ -424,7 +424,7 @@ class RuspiniFuzzyClassifier(BaseEstimator, ClassifierMixin):
         y_arr = np.asarray(y)
         self.classes_ = np.unique(y_arr)
 
-        base = MixtureOfGaussiansFuzzyClassifier(
+        base = TribbleClassifier(
             top_n=self.top_n, top_p=self.top_p, n_gaussians=self.n_gaussians,
             member_function="gaussian",
             random_state=self.random_state,

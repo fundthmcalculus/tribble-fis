@@ -41,8 +41,8 @@ from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.utils.validation import check_is_fitted
 
 from tribblefis.gauss_math import calculate_gaussian_correlation, take_top_features
-from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
-from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
+from tribblefis.gaussian_classifier import TribbleClassifier
+from tribblefis.gaussian_regressor import TribbleRegressor
 from tribblefis.regression import partition_output
 
 from .builder import build_tree
@@ -238,7 +238,7 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
     """Hierarchical mixture of fuzzy experts for regression.
 
     Internal nodes softly route on a fuzzy gate variable; each leaf is a
-    ``MixtureOfGaussiansFuzzyRegressor`` sub-FIS. The output is the gate-weighted
+    ``TribbleRegressor`` sub-FIS. The output is the gate-weighted
     blend of the leaf experts.
 
     ``gate_style="gaussian"`` is recommended if you plan to call
@@ -267,7 +267,7 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
         for leaf in _leaves(self.tree_):
             idx = self._expert_training_index(R, leaf.leaf_id)
             if len(idx) >= self.min_expert_samples and np.ptp(y_value[idx]) > _EPS:
-                expert = MixtureOfGaussiansFuzzyRegressor(**base_kwargs)
+                expert = TribbleRegressor(**base_kwargs)
                 expert.fit(X_df.iloc[idx], y_value[idx])
                 feats = list(getattr(expert, "top_features_", []))
                 kind = "sub-FIS"
@@ -314,7 +314,7 @@ class HierarchicalFuzzyExpertsClassifier(_BaseHierarchicalExperts, ClassifierMix
     """Hierarchical mixture of fuzzy experts for classification.
 
     Internal nodes softly route on a fuzzy gate variable; each leaf is a
-    ``MixtureOfGaussiansFuzzyClassifier`` sub-FIS. Class probabilities are the
+    ``TribbleClassifier`` sub-FIS. Class probabilities are the
     gate-weighted blend of the leaf experts' probabilities.
     """
 
@@ -345,7 +345,7 @@ class HierarchicalFuzzyExpertsClassifier(_BaseHierarchicalExperts, ClassifierMix
             idx = self._expert_training_index(R, leaf.leaf_id)
             present = np.unique(y_idx[idx]) if len(idx) else np.array([], dtype=int)
             if len(idx) >= self.min_expert_samples and len(present) >= 2:
-                clf = MixtureOfGaussiansFuzzyClassifier(**base_kwargs)
+                clf = TribbleClassifier(**base_kwargs)
                 clf.fit(X_df.iloc[idx], self.classes_[y_idx[idx]])
                 expert = _AlignedClassifier(clf, self.classes_)
                 feats = list(getattr(clf, "top_features_", []))

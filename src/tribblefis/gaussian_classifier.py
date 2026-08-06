@@ -16,7 +16,7 @@ from .gauss_math import (
     tsk_firing_strengths,
 )
 
-class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
+class TribbleClassifier(BaseEstimator, ClassifierMixin):
     """
     Gaussian Mixture Classifier that wraps the TSK-based Gaussian Mixture model.
     It follows scikit-learn's ClassifierMixin interface.
@@ -26,7 +26,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
                  refine=False, refine_method="coordinate", refine_l2_shrink=0.05,
                  t_norm=None, t_conorm=None, allow_mixed_norms=False, max_samples=None):
         """
-        Initialize the MixtureOfGaussiansFuzzyClassifier.
+        Initialize the TribbleClassifier.
 
         Args:
             top_n: Number of top features to select based on differentiation score.
@@ -277,9 +277,9 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         return self
 
 
-class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
+class TribbleSequenceClassifier(BaseEstimator, ClassifierMixin):
     """
-    A base :class:`MixtureOfGaussiansFuzzyClassifier` refined by *local experts*.
+    A base :class:`TribbleClassifier` refined by *local experts*.
 
     The idea, inspired by ``gaussian_mixture/iris_v2.py``, is to keep a single
     global model that spans every class and then bolt on small, focused *binary*
@@ -294,7 +294,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
        enough (at least ``min_confused`` predicted rows), the true class ``T``
        it is *most* mistaken for (at least ``min_class_samples`` rows) is found
        and a **local expert** — a fresh binary
-       :class:`MixtureOfGaussiansFuzzyClassifier` trained only on the ``P`` and
+       :class:`TribbleClassifier` trained only on the ``P`` and
        ``T`` rows — is added. Because the expert re-selects features and re-fits
        Gaussians on just that pair, it can key on evidence that separates ``P``
        from ``T`` even when that evidence is too weak to survive the global
@@ -360,7 +360,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
             top_n, top_p, n_gaussians, member_function, norm_conorm, random_state,
             max_samples:
                 Passed through to every underlying
-                :class:`MixtureOfGaussiansFuzzyClassifier` (base and experts).
+                :class:`TribbleClassifier` (base and experts).
             max_layers: Maximum number of models in the cascade *including* the
                 base model. The cascade may be shorter if fewer confused regions
                 are worth an expert.
@@ -395,7 +395,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         """
         self.is_fitted_: bool = False
         # layers_[0] is the base model; layers_[1:] mirror experts_.
-        self.layers_: list[MixtureOfGaussiansFuzzyClassifier] = []
+        self.layers_: list[TribbleClassifier] = []
         # Each entry is (region_class P, confused true class T, expert_model,
         # tuned anomaly threshold).
         self.experts_: list[tuple] = []
@@ -423,8 +423,8 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         self.refine_l2_shrink = refine_l2_shrink
         self.max_samples = max_samples
 
-    def _make_layer(self) -> MixtureOfGaussiansFuzzyClassifier:
-        return MixtureOfGaussiansFuzzyClassifier(
+    def _make_layer(self) -> TribbleClassifier:
+        return TribbleClassifier(
             top_n=self.top_n,
             top_p=self.top_p,
             n_gaussians=self.n_gaussians,

@@ -22,7 +22,7 @@ from .regression import (
 )
 
 
-class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
+class TribbleRegressor(BaseEstimator, RegressorMixin):
     """
     Gaussian Mixture Regressor using TSK (Takagi-Sugeno-Kang) fuzzy inference.
     Handles continuous output prediction with multiple TSK orders.
@@ -51,7 +51,7 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         select_interactions=False,
     ):
         """
-        Initialize the MixtureOfGaussiansFuzzyRegressor.
+        Initialize the TribbleRegressor.
 
         Args:
             top_n: Number of top features to select based on differentiation score.
@@ -295,7 +295,7 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
 
 class MimoGaussianPredictor(BaseEstimator, RegressorMixin):
     """
-    Multi-input multi-output wrapper around MixtureOfGaussiansFuzzyRegressor.
+    Multi-input multi-output wrapper around TribbleRegressor.
 
     Fits one independent regressor per output column, enabling simultaneous
     prediction of multiple outputs from the same input features.
@@ -322,7 +322,7 @@ class MimoGaussianPredictor(BaseEstimator, RegressorMixin):
         self.max_samples = max_samples
 
     def _make_regressor(self):
-        return MixtureOfGaussiansFuzzyRegressor(
+        return TribbleRegressor(
             top_n=self.top_n,
             top_p=self.top_p,
             n_gaussians=self.n_gaussians,

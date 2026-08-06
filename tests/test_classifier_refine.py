@@ -33,7 +33,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+from tribblefis.gaussian_classifier import TribbleClassifier
 from tribblefis.gauss_math import create_gaussian_membership_dict
 from tribblefis.refine import (
     refine_classifier_antecedents,
@@ -59,7 +59,7 @@ def _blobs(seed=0, n=120):
 def _quiet_fit(**kwargs):
     X, y = _blobs()
     with contextlib.redirect_stdout(io.StringIO()):
-        clf = MixtureOfGaussiansFuzzyClassifier(top_p=1.0, n_gaussians=1, **kwargs)
+        clf = TribbleClassifier(top_p=1.0, n_gaussians=1, **kwargs)
         clf.fit(X, y)
     return clf, X, y
 

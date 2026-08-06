@@ -65,12 +65,12 @@ Pipeline in `gaussian_mixture/concrete.py` → `main()`:
   `GaussianMixtureModel` (has `all_membership_fcns`, `rule_ids`,
   `n_membership_functions`). Defaults: `DefaultNormCornorm = "min/max"`,
   `DefaultMemberFunction = "gaussian"`.
-- `src/tribblefis/gaussian_regressor.py` — `MixtureOfGaussiansFuzzyRegressor`
+- `src/tribblefis/gaussian_regressor.py` — `TribbleRegressor`
   (sklearn `BaseEstimator`/`RegressorMixin`, `fit`/`predict`). **The natural home
   for both phases.** `MimoGaussianPredictor` wraps it for multi-output.
 - Callers duplicating the predict loop: `gaussian_mixture/{concrete,
   concrete_trapz, turbine, wec, wec-p1, powerconsumption}.py`.
-- Tests: `tests/test_regression.py` exercises `MixtureOfGaussiansFuzzyRegressor`.
+- Tests: `tests/test_regression.py` exercises `TribbleRegressor`.
 
 **Reuse, don't reinvent:** `partition_output`, `tsk_firing_strengths`,
 `report_regression_performance`, `_rsquared`, `_mse`, the `combinations`-based
@@ -157,7 +157,7 @@ when many cross-terms are noise.
 
 **Done.** `regression.select_interaction_terms` implemented the LassoCV screen
 but was never wired into the estimator (no call sites anywhere in the repo,
-zero test coverage) until `MixtureOfGaussiansFuzzyRegressor(select_interactions=True)`.
+zero test coverage) until `TribbleRegressor(select_interactions=True)`.
 It is now also fed a *pre-filtered* candidate shortlist rather than every
 `n_choose_2` pair, from a new, earlier detection pass
 (`gauss_math.calculate_interaction_scores`) that runs *during* feature
@@ -168,7 +168,7 @@ before `full-2nd`'s cross terms, or this Lasso screen, ever see it. See
 
 ### Phase 1 integration
 
-- Wire `MixtureOfGaussiansFuzzyRegressor.fit` (`gaussian_regressor.py`) to use
+- Wire `TribbleRegressor.fit` (`gaussian_regressor.py`) to use
   `solve_tsk_consequents` instead of `compute_*` + `optimize_tsk_coefficients`,
   behind a constructor flag (default to the new solver once validated).
 - Update `gaussian_mixture/concrete.py` `main()` to call the new solver for
@@ -237,7 +237,7 @@ as an option but not required.
 
 ### Phase 2 integration
 
-- Add an opt-in `refine=` flag / method to `MixtureOfGaussiansFuzzyRegressor`
+- Add an opt-in `refine=` flag / method to `TribbleRegressor`
   that, after the initial heuristic fit, runs the chosen optimizer and stores the
   refined `model_` before the final consequent solve.
 - Expose the toggle in `concrete.py` (e.g. a `b_refine_antecedents` flag next to
@@ -256,7 +256,7 @@ are attributable, and compare against the recorded baseline.
      recovers coefficients (λ=0) to tolerance.
    - New solver matches or beats `optimize_tsk_coefficients` training MSE on a
      fixed model+data (it should, being the exact optimum).
-   - `MixtureOfGaussiansFuzzyRegressor` still passes
+   - `TribbleRegressor` still passes
      `test_gaussian_mixture_regression_2d` with the new solver wired in.
 2. **End-to-end Phase 1:** `MPLBACKEND=Agg python gaussian_mixture/concrete.py`
    (the `Agg` backend makes `plt.show()` a no-op so it doesn't hang — see project

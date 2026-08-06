@@ -28,7 +28,7 @@ from sklearn.datasets import (load_breast_cancer, load_iris, load_wine,
 from sklearn.model_selection import train_test_split
 
 from tribblefis import refine as R
-from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+from tribblefis.gaussian_classifier import TribbleClassifier
 from tribblefis.ruspini import ruspinize_model
 
 # A narrower spread than the classifier benchmark, on purpose. Ruspini's
@@ -68,7 +68,7 @@ def datasets():
 
 def _starting_partition(X_pool, y_pool):
     """The Ruspini model a `RuspiniFuzzyClassifier` would start refinement from."""
-    base = MixtureOfGaussiansFuzzyClassifier(n_gaussians=2, random_state=42)
+    base = TribbleClassifier(n_gaussians=2, random_state=42)
     base.fit(X_pool, y_pool)
     feats = [f for f in base.top_features_ if f in X_pool.columns]
     return ruspinize_model(base.model_, X_pool[feats]), feats

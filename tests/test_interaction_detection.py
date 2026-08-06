@@ -9,7 +9,7 @@ tests check, in order: the pairwise interaction score correctly ranks a real
 interaction above noise pairs and above the univariate scores it is compared
 against; the rescue mechanism actually changes which features survive
 selection; `select_interaction_terms` recovers a known cross term; and the
-whole thing wired into `MixtureOfGaussiansFuzzyRegressor` measurably improves
+whole thing wired into `TribbleRegressor` measurably improves
 a strict-feature-budget fit on an interaction-only problem.
 """
 
@@ -27,7 +27,7 @@ from tribblefis.gauss_math import (
     rescue_interacting_features,
 )
 from tribblefis.regression import partition_output, select_interaction_terms, _rsquared
-from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
+from tribblefis.gaussian_regressor import TribbleRegressor
 
 
 class TestInteractionScoreRanksRealInteractionAboveNoise(unittest.TestCase):
@@ -162,13 +162,13 @@ class TestEndToEndEstimator(unittest.TestCase):
     def test_detection_improves_strict_budget_fit(self):
         X, y = self._interaction_only_problem()
 
-        without = MixtureOfGaussiansFuzzyRegressor(
+        without = TribbleRegressor(
             tsk_order="full-2nd", top_n=1, n_output_buckets=6, random_state=42,
         )
         without.fit(X, y)
         r2_without = _rsquared(y, without.predict(X))
 
-        with_detect = MixtureOfGaussiansFuzzyRegressor(
+        with_detect = TribbleRegressor(
             tsk_order="full-2nd", top_n=1, n_output_buckets=6, random_state=42,
             detect_interactions=True, select_interactions=True,
         )
@@ -185,7 +185,7 @@ class TestEndToEndEstimator(unittest.TestCase):
         """Rescue into `top_features_` doesn't require `full-2nd` -- there
         is just nowhere for `cross_pairs_` to go, so it stays `None`."""
         X, y = self._interaction_only_problem(seed=9, n=500)
-        reg = MixtureOfGaussiansFuzzyRegressor(
+        reg = TribbleRegressor(
             tsk_order="1st", top_n=1, n_output_buckets=6, random_state=42,
             detect_interactions=True,
         )
@@ -195,7 +195,7 @@ class TestEndToEndEstimator(unittest.TestCase):
 
     def test_select_interactions_without_full2nd_warns(self):
         X, y = self._interaction_only_problem(seed=11, n=400)
-        reg = MixtureOfGaussiansFuzzyRegressor(
+        reg = TribbleRegressor(
             tsk_order="1st", top_n=1, n_output_buckets=6, random_state=42,
             detect_interactions=True, select_interactions=True,
         )

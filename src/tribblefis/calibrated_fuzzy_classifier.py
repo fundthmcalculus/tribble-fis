@@ -6,7 +6,7 @@ while keeping the model interpretable.
 
 Background / research
 ---------------------
-The stock :class:`MixtureOfGaussiansFuzzyClassifier` scores a class by taking
+The stock :class:`TribbleClassifier` scores a class by taking
 the fuzzy AND (a t-norm) of per-feature Gaussian *membership heights*
 ``exp(-0.5 * ((x-mu)/sigma)**2)`` and picking the argmax.  Two design choices
 cost it accuracy on overlapping classes:
@@ -57,7 +57,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_is_fitted
 
-from .gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+from .gaussian_classifier import TribbleClassifier
 
 _LOG_2PI = float(np.log(2.0 * np.pi))
 
@@ -65,7 +65,7 @@ _LOG_2PI = float(np.log(2.0 * np.pi))
 class CalibratedGaussianFuzzyClassifier(BaseEstimator, ClassifierMixin):
     """Gaussian fuzzy classifier with Bayes-consistent log-evidence aggregation.
 
-    It reuses :class:`MixtureOfGaussiansFuzzyClassifier` to fit the per-feature
+    It reuses :class:`TribbleClassifier` to fit the per-feature
     per-class Gaussian membership functions (so feature selection, multi-Gaussian
     fitting, etc. are unchanged) and then replaces the fuzzy inference with a
     calibrated log-likelihood score.
@@ -73,7 +73,7 @@ class CalibratedGaussianFuzzyClassifier(BaseEstimator, ClassifierMixin):
     Args:
         top_n, top_p, n_gaussians, member_function, random_state:
             Passed straight through to the underlying
-            :class:`MixtureOfGaussiansFuzzyClassifier`.
+            :class:`TribbleClassifier`.
         use_priors: Add ``log P(class)`` from the training class frequencies.
             Leave ``True`` unless you want a strictly likelihood-based rule.
         var_smoothing: Fraction of each feature's overall variance added to
@@ -99,8 +99,8 @@ class CalibratedGaussianFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.use_priors = use_priors
         self.var_smoothing = var_smoothing
 
-    def _make_base(self) -> MixtureOfGaussiansFuzzyClassifier:
-        return MixtureOfGaussiansFuzzyClassifier(
+    def _make_base(self) -> TribbleClassifier:
+        return TribbleClassifier(
             top_n=self.top_n,
             top_p=self.top_p,
             n_gaussians=self.n_gaussians,

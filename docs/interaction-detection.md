@@ -11,7 +11,7 @@ useful feature can be rescued into the model instead of silently discarded.
 
 ## The gap, precisely
 
-`MixtureOfGaussiansFuzzyRegressor.fit` ran these steps in this order, before
+`TribbleRegressor.fit` ran these steps in this order, before
 this change:
 
 1. `calculate_gaussian_correlation` -- one score per feature, computed from
@@ -73,7 +73,7 @@ into the selected set. Both are pure post-processing, same as
 
 ## Wiring, and the combinatorial guard
 
-`MixtureOfGaussiansFuzzyRegressor` gets three opt-in constructor parameters
+`TribbleRegressor` gets three opt-in constructor parameters
 (default `False`/`0.95`, reproducing prior behavior exactly when unset):
 `detect_interactions`, `interaction_top_p`, `select_interactions`. When
 `detect_interactions=True`, `fit` runs the detection pass between
@@ -95,7 +95,7 @@ kind of combinatorial growth.
 
 ## Measured comparison
 
-Two synthetic problems, three seeds each, `MixtureOfGaussiansFuzzyRegressor(tsk_order="full-2nd")` at a deliberately strict `top_n` -- the setting where the
+Two synthetic problems, three seeds each, `TribbleRegressor(tsk_order="full-2nd")` at a deliberately strict `top_n` -- the setting where the
 gap actually bites -- with vs. without `detect_interactions=True,
 select_interactions=True`. Reproduce with
 `python -m benchmarks.interaction_detection_comparison`.
