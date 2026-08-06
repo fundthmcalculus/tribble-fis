@@ -15,6 +15,7 @@ from .hme import (
     HierarchicalFuzzyExpertsClassifier,
     HierarchicalFuzzyExpertsRegressor,
 )
+from .em import refine_em_classifier, refine_em_regressor
 from .render import render_tree_text, plot_fuzzy_tree, render_hme_text, plot_hme
 
 __all__ = [
@@ -27,6 +28,8 @@ __all__ = [
     "FuzzyClassificationTree",
     "HierarchicalFuzzyExpertsRegressor",
     "HierarchicalFuzzyExpertsClassifier",
+    "refine_em_regressor",
+    "refine_em_classifier",
     "render_tree_text",
     "plot_fuzzy_tree",
     "render_hme_text",

@@ -19,10 +19,18 @@ from tribblefis.regression import _normalize_firing_strengths
 from .builder import build_tree
 from .firing import DEFAULT_T_NORM, compute_leaf_firing
 from .plan import VariablePlan
+from .prune import prune_tree
+from .splitter import get_criterion
 
 
 class FuzzyClassificationTree(BaseEstimator, ClassifierMixin):
-    """Hierarchical fuzzy (soft) classification tree with class-vote leaves."""
+    """Hierarchical fuzzy (soft) classification tree with class-vote leaves.
+
+    ``ccp_alpha`` (default 0, disabled) applies the same post-hoc split-gain
+    pruning as ``FuzzyRegressionTree`` -- see ``fuzzytree.prune`` -- collapsing
+    any node whose own split gain (under this tree's ``criterion``) falls
+    below ``ccp_alpha``.
+    """
 
     def __init__(
         self,
@@ -37,6 +45,7 @@ class FuzzyClassificationTree(BaseEstimator, ClassifierMixin):
         max_leaves: int = 64,
         t_norm: str = DEFAULT_T_NORM,
         term_style: str = "trapezoid",
+        ccp_alpha: float = 0.0,
         random_state: int = 42,
     ):
         self.variable_plan = variable_plan
@@ -50,6 +59,7 @@ class FuzzyClassificationTree(BaseEstimator, ClassifierMixin):
         self.max_leaves = max_leaves
         self.t_norm = t_norm
         self.term_style = term_style
+        self.ccp_alpha = ccp_alpha
         self.random_state = random_state
 
     def _resolve_plan(self) -> VariablePlan:
@@ -96,6 +106,17 @@ class FuzzyClassificationTree(BaseEstimator, ClassifierMixin):
             min_gain=self.min_gain,
             max_leaves=self.max_leaves,
         )
+
+        if self.ccp_alpha > 0:
+            self.tree_, self.n_leaves_ = prune_tree(
+                self.tree_,
+                X_top,
+                get_criterion(plan.criterion),
+                y_idx.astype(float),
+                y_idx,
+                self.ccp_alpha,
+                t_norm_name=self.t_norm,
+            )
 
         leaf_firing = compute_leaf_firing(self.tree_, X_top, self.n_leaves_, self.t_norm)
         # Per-leaf fuzzy class mass -> normalised class distribution.

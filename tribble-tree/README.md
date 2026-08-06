@@ -141,9 +141,31 @@ from fuzzytree import HierarchicalFuzzyExpertsClassifier   # classification vari
 The plain `FuzzyRegressionTree` is exactly the special case where each expert is a single
 TSK consequent instead of a full sub-FIS.
 
-The current build is a one-shot greedy fit. A design note for refining it with a true
-EM loop (posterior responsibilities that fold in expert fit quality, weighted expert +
-gate updates) is in [`EM_REFINEMENT.md`](EM_REFINEMENT.md).
+### EM refinement
+
+The build above is a one-shot greedy fit: leaf responsibilities come from the gate
+alone, and experts train on a soft-inclusion subset. `refine_em` replaces that with a
+true EM loop (design in [`EM_REFINEMENT.md`](EM_REFINEMENT.md)): the E-step folds each
+expert's actual fit quality into the responsibility, and the M-step refits gates and
+expert consequents against those posteriors. Structure (the gate tree shape) stays
+fixed; only parameters move.
+
+```python
+hme = HierarchicalFuzzyExpertsRegressor(
+    gate_style="gaussian",   # gaussian gates can sharpen (shrink sigma) under EM
+    max_depth=2, n_gate_terms=2, min_soft_count=50, min_expert_samples=50,
+).fit(X, y)
+hme.refine_em(X, y, max_iter=15)          # mutates hme in place
+print(hme.em_log_likelihood_)             # per-iteration incomplete-data log-lik
+```
+
+Use `gate_style="gaussian"` if you plan to refine: a Gaussian gate's `sigma` is a free
+parameter EM can shrink to sharpen a soft boundary, while the default trapezoid gates'
+ramp width is fixed by their knot spacing and can only shift, not sharpen. Classification
+experts are zeroth-order sub-FIS with no separate consequent, so their M-step uses
+responsibility-weighted importance resampling rather than a closed-form refit; both
+drivers snapshot the best-seen log-likelihood and roll back to it before returning, so
+refinement is never worse than the pre-refinement fit.
 
 ### MIMO regression
 
@@ -161,19 +183,36 @@ MimoFuzzyTreeRegressor(tsk_order="1st").fit(X, Y_df).predict(X)   # -> DataFrame
 | `info_gain` | Janikow fuzzy ID3 fuzzy information gain | fuzzy entropy |
 | `differentiation` | cheap relevance prefilter for wide inputs | reuses TRIBBLE's differentiation score, weight-aware |
 
+## Pruning
+
+`FuzzyRegressionTree`/`FuzzyClassificationTree` accept `ccp_alpha` (default `0`,
+disabled). Unlike CART's additive cost-complexity pruning -- which relies on leaves
+partitioning the data disjointly, a property fuzzy leaves don't have, since firing
+weights overlap -- `ccp_alpha` here re-scores each internal node's own split with the
+same normalized gain criterion used to build it (`variance`/`ambiguity`/`info_gain`)
+and collapses any node scoring below the threshold. It's only useful set *higher* than
+`min_gain`, since `build_tree` never creates a split scoring below `min_gain` in the
+first place: grow generously (lenient `min_gain`, generous `max_depth`/`max_leaves`),
+then prune back independently with `ccp_alpha`.
+
+```python
+FuzzyRegressionTree(max_depth=4, min_gain=1e-4, ccp_alpha=0.05).fit(X, y)
+```
+
 ## Files
 
 `plan.py` (variable plan + precedence) · `terms.py` (linguistic terms) · `splitter.py`
 (criteria) · `node.py` (tree node) · `firing.py` (leaf firing) · `solve.py` (consequent
-solve/predict) · `builder.py` (recursive build) · `regressor.py` / `classifier.py`
-(single-tree estimators) · `hme.py` (hierarchical mixture of fuzzy experts) ·
+solve/predict) · `builder.py` (recursive build) · `prune.py` (post-hoc split-gain
+pruning) · `regressor.py` / `classifier.py` (single-tree estimators) · `hme.py`
+(hierarchical mixture of fuzzy experts) · `em.py` (EM refinement of the HME) ·
 `render.py` (text + matplotlib for both) · `tests/` · `demo_concrete.py` (regression) ·
 `demo_phishing.py` (classification).
 
 ## Running
 
 ```bash
-uv run --extra dev python -m pytest tribble-tree/tests -v
+uv run --extra dev python -m pytest tribble-tree/tests -v   # also runs as part of the root `uv run pytest`
 uv run python tribble-tree/demo_concrete.py     # regression
 uv run python tribble-tree/demo_phishing.py     # classification
 ```
