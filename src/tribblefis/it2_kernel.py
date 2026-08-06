@@ -3,7 +3,13 @@
 import numpy as np
 import pandas as pd
 
-from .gauss_data import IT2GaussianMixtureModel, NormPair
+from .gauss_data import (
+    IT2GaussianMixtureModel,
+    IT2GaussianMembership,
+    IT2TrapezoidMembership,
+    IT2TriangularMembership,
+    NormPair,
+)
 from .gauss_math import tsk_firing_strengths, GaussianMixtureModel, FeatureModel, LabelModel
 
 
@@ -61,7 +67,7 @@ def _extract_upper_model(model: IT2GaussianMixtureModel) -> GaussianMixtureModel
     for feature_name, it2_feature_model in model.feature_models.items():
         label_models = {}
         for label, it2_label_model in it2_feature_model.label_models.items():
-            # Extract upper MFs from all IT2 memberships
+            # Extract upper MFs from all IT2 memberships (works for any IT2 type)
             upper_mfs = [mf.upper_mf for mf in it2_label_model.memberships]
             label_models[label] = LabelModel(upper_mfs)
         feature_models[feature_name] = FeatureModel(label_models)
@@ -75,7 +81,7 @@ def _extract_lower_model(model: IT2GaussianMixtureModel) -> GaussianMixtureModel
     for feature_name, it2_feature_model in model.feature_models.items():
         label_models = {}
         for label, it2_label_model in it2_feature_model.label_models.items():
-            # Extract lower MFs from all IT2 memberships
+            # Extract lower MFs from all IT2 memberships (works for any IT2 type)
             lower_mfs = [mf.lower_mf for mf in it2_label_model.memberships]
             label_models[label] = LabelModel(lower_mfs)
         feature_models[feature_name] = FeatureModel(label_models)

@@ -265,6 +265,63 @@ class IT2GaussianMembership(NamedTuple):
         return y_upper, y_lower
 
 
+class IT2TrapezoidMembership(NamedTuple):
+    """An interval type-2 trapezoidal membership function.
+
+    Consists of upper and lower trapezoidal membership functions.
+    """
+    upper_mf: TrapezoidMembership
+    lower_mf: TrapezoidMembership
+    id: Optional[uuid.UUID] = None
+
+    @staticmethod
+    def create(
+        upper_a: float, upper_b: float, upper_c: float, upper_d: float,
+        lower_a: float, lower_b: float, lower_c: float, lower_d: float,
+    ) -> "IT2TrapezoidMembership":
+        return IT2TrapezoidMembership(
+            upper_mf=TrapezoidMembership(a=upper_a, b=upper_b, c=upper_c, d=upper_d),
+            lower_mf=TrapezoidMembership(a=lower_a, b=lower_b, c=lower_c, d=lower_d),
+            id=uuid.uuid4()
+        )
+
+    def evaluate(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Evaluate both upper and lower MFs at given points."""
+        y_upper = self.upper_mf.evaluate(x)
+        y_lower = self.lower_mf.evaluate(x)
+        return y_upper, y_lower
+
+
+class IT2TriangularMembership(NamedTuple):
+    """An interval type-2 triangular membership function.
+
+    Consists of upper and lower triangular membership functions.
+    """
+    upper_mf: TriangularMembership
+    lower_mf: TriangularMembership
+    id: Optional[uuid.UUID] = None
+
+    @staticmethod
+    def create(
+        upper_a: float, upper_b: float, upper_c: float,
+        lower_a: float, lower_b: float, lower_c: float,
+    ) -> "IT2TriangularMembership":
+        return IT2TriangularMembership(
+            upper_mf=TriangularMembership(a=upper_a, b=upper_b, c=upper_c),
+            lower_mf=TriangularMembership(a=lower_a, b=lower_b, c=lower_c),
+            id=uuid.uuid4()
+        )
+
+    def evaluate(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Evaluate both upper and lower MFs at given points."""
+        y_upper = self.upper_mf.evaluate(x)
+        y_lower = self.lower_mf.evaluate(x)
+        return y_upper, y_lower
+
+
+IT2AnyMembership = IT2GaussianMembership | IT2TrapezoidMembership | IT2TriangularMembership
+
+
 class Rule(NamedTuple):
     """A fuzzy rule mapping input membership functions to an output label."""
 
@@ -478,7 +535,7 @@ def _is_close(g1: AnyMembership, g2: AnyMembership, rtol: float = 1e-2, atol: fl
 class IT2LabelModel(NamedTuple):
     """A collection of IT2 membership functions for a specific output class label."""
 
-    memberships: list[IT2GaussianMembership]
+    memberships: list[IT2AnyMembership]
 
     def augment(self, other_label_model: "IT2LabelModel") -> "IT2LabelModel":
         """Augment this IT2LabelModel with another, combining membership functions."""

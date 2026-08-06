@@ -7,11 +7,16 @@ from sklearn.utils.validation import check_X_y, check_is_fitted
 
 from .gauss_data import (
     IT2GaussianMembership,
+    IT2TrapezoidMembership,
+    IT2TriangularMembership,
     IT2FeatureModel,
     IT2LabelModel,
     IT2GaussianMixtureModel,
     GaussianMembership,
+    TrapezoidMembership,
+    TriangularMembership,
     DefaultNormCornorm,
+    DefaultMemberFunction,
     resolve_norm_pair,
 )
 from .gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
@@ -80,9 +85,13 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
         top_p=0.95,
         n_gaussians=0,
         n_output_buckets=2,
+        member_function=DefaultMemberFunction,
         uncertainty_width=0.5,
         km_iterations=10,
         norm_conorm=DefaultNormCornorm,
+        refine=False,
+        refine_method="coordinate",
+        refine_l2_shrink=0.05,
         random_state=42,
         max_samples=None,
     ):
@@ -90,9 +99,13 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
         self.top_p = top_p
         self.n_gaussians = n_gaussians
         self.n_output_buckets = n_output_buckets
+        self.member_function = member_function
         self.uncertainty_width = uncertainty_width
         self.km_iterations = km_iterations
         self.norm_conorm = norm_conorm
+        self.refine = refine
+        self.refine_method = refine_method
+        self.refine_l2_shrink = refine_l2_shrink
         self.random_state = random_state
         self.max_samples = max_samples
 
@@ -143,6 +156,7 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
             top_p=self.top_p,
             n_gaussians=self.n_gaussians,
             n_output_buckets=self.n_output_buckets,
+            member_function=self.member_function,
             norm_conorm=self.norm_conorm,
             random_state=self.random_state,
             max_samples=self.max_samples,
@@ -225,11 +239,11 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
         return y_lower, y_upper
 
     def _convert_to_it2(self, type1_model) -> IT2GaussianMixtureModel:
-        """Convert a Type-1 GaussianMixtureModel to IT2.
+        """Convert a Type-1 model to IT2, preserving membership function types.
 
-        For each Gaussian (mu, sigma), creates:
-            upper_mf: mu + uncertainty_width * sigma, sigma
-            lower_mf: mu - uncertainty_width * sigma, sigma
+        For each membership function, creates upper and lower bounds based on type:
+        - Gaussian: upper_mu = mu + k*sigma, lower_mu = mu - k*sigma
+        - Trapezoid/Triangle: proportional parameter expansion
         """
         feature_models = {}
 
@@ -239,23 +253,69 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
             for label, type1_label_model in type1_feature_model.label_models.items():
                 it2_mfs = []
 
-                for gauss_mf in type1_label_model.memberships:
-                    # Create upper and lower bounds from the Gaussian
-                    upper_mf = GaussianMembership(
-                        mu=gauss_mf.mu + self.uncertainty_width * gauss_mf.sigma,
-                        sigma=gauss_mf.sigma,
-                        id=gauss_mf.id,
-                    )
-                    lower_mf = GaussianMembership(
-                        mu=gauss_mf.mu - self.uncertainty_width * gauss_mf.sigma,
-                        sigma=gauss_mf.sigma,
-                        id=gauss_mf.id,
-                    )
+                for mf in type1_label_model.memberships:
+                    if isinstance(mf, GaussianMembership):
+                        # Gaussian: shift means by uncertainty_width * sigma
+                        upper_mf = GaussianMembership(
+                            mu=mf.mu + self.uncertainty_width * mf.sigma,
+                            sigma=mf.sigma,
+                            id=mf.id,
+                        )
+                        lower_mf = GaussianMembership(
+                            mu=mf.mu - self.uncertainty_width * mf.sigma,
+                            sigma=mf.sigma,
+                            id=mf.id,
+                        )
+                        it2_mf = IT2GaussianMembership(
+                            upper_mf=upper_mf,
+                            lower_mf=lower_mf,
+                        )
 
-                    it2_mf = IT2GaussianMembership(
-                        upper_mf=upper_mf,
-                        lower_mf=lower_mf,
-                    )
+                    elif isinstance(mf, TrapezoidMembership):
+                        # Trapezoid: expand parameters symmetrically
+                        delta = self.uncertainty_width * (mf.d - mf.a) / 4
+                        upper_mf = TrapezoidMembership(
+                            a=mf.a - delta,
+                            b=mf.b - delta / 2,
+                            c=mf.c + delta / 2,
+                            d=mf.d + delta,
+                            id=mf.id,
+                        )
+                        lower_mf = TrapezoidMembership(
+                            a=mf.a + delta,
+                            b=mf.b + delta / 2,
+                            c=mf.c - delta / 2,
+                            d=mf.d - delta,
+                            id=mf.id,
+                        )
+                        it2_mf = IT2TrapezoidMembership(
+                            upper_mf=upper_mf,
+                            lower_mf=lower_mf,
+                        )
+
+                    elif isinstance(mf, TriangularMembership):
+                        # Triangle: expand parameters symmetrically
+                        delta_b = self.uncertainty_width * (mf.c - mf.a) / 6
+                        upper_mf = TriangularMembership(
+                            a=mf.a - delta_b if not np.isinf(mf.a) else mf.a,
+                            b=mf.b,
+                            c=mf.c + delta_b if not np.isinf(mf.c) else mf.c,
+                            id=mf.id,
+                        )
+                        lower_mf = TriangularMembership(
+                            a=mf.a + delta_b if not np.isinf(mf.a) else mf.a,
+                            b=mf.b,
+                            c=mf.c - delta_b if not np.isinf(mf.c) else mf.c,
+                            id=mf.id,
+                        )
+                        it2_mf = IT2TriangularMembership(
+                            upper_mf=upper_mf,
+                            lower_mf=lower_mf,
+                        )
+
+                    else:
+                        raise ValueError(f"Unsupported membership function type: {type(mf)}")
+
                     it2_mfs.append(it2_mf)
 
                 label_models[label] = IT2LabelModel(it2_mfs)
