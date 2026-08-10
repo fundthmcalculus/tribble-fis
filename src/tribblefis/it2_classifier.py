@@ -15,7 +15,7 @@ from .gauss_data import (
     DefaultNormCornorm,
     resolve_norm_pair,
 )
-from .gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+from .gaussian_classifier import TribbleClassifier
 from .it2_kernel import it2_firing_strengths
 
 
@@ -144,7 +144,7 @@ class IntervalType2FuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.norms_ = resolve_norm_pair(self.norm_conorm)
 
         # Fit base Type-1 classifier
-        base = MixtureOfGaussiansFuzzyClassifier(
+        base = TribbleClassifier(
             top_n=self.top_n,
             top_p=self.top_p,
             n_gaussians=self.n_gaussians,

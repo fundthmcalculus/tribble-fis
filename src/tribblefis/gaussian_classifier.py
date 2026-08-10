@@ -7,7 +7,13 @@ from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.utils.validation import check_X_y, check_is_fitted
 from sklearn.utils.multiclass import check_classification_targets
 
-from .gauss_data import AnomalyParameters, DefaultNormCornorm
+from .gauss_data import (
+    AnomalyParameters,
+    DefaultNormCornorm,
+    DEFAULT_DEDUP_RTOL,
+    DEFAULT_DEDUP_ATOL,
+    SimpleGaussianClassifierModel,
+)
 from .gauss_math import (
     calculate_gaussian_correlation,
     take_top_features,
@@ -275,6 +281,49 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
 
         self.model_ = self.model_.augment(new_model)
         return self
+
+    def deduplicate(self, rtol: float = DEFAULT_DEDUP_RTOL, atol: float = DEFAULT_DEDUP_ATOL) -> int:
+        """Remove near-duplicate membership functions from the fitted model, in place.
+
+        Two membership functions of the same (feature, label) only ever feed the
+        same conorm fold, so collapsing near-duplicates there cannot change any
+        prediction: exactly, at ``rtol=atol=0``; within measurement noise at
+        looser tolerances. See issue #85 for the measurement this tradeoff is
+        based on -- the defaults reproduce the tolerance this estimator always
+        used before this method existed.
+
+        This only touches ``self.model_`` in place; ``predict``/``predict_proba``
+        read from it directly, so no other state needs updating.
+
+        Args:
+            rtol, atol: Passed through to
+                `GaussianMixtureModel.remove_duplicate_membership_fcns`.
+
+        Returns:
+            The number of membership functions actually removed.
+        """
+        check_is_fitted(self)
+        removed = self.model_.remove_duplicate_membership_fcns(rtol=rtol, atol=atol)
+        self.n_membership_functions_ = self.model_.n_membership_functions
+        self.n_deduplicated_membership_functions_ = removed
+        return removed
+
+    def to_simple_model(
+        self, rtol: float = DEFAULT_DEDUP_RTOL, atol: float = DEFAULT_DEDUP_ATOL
+    ) -> SimpleGaussianClassifierModel:
+        """Materialize this classifier as an explicit, deduplicated rule model.
+
+        Unlike `deduplicate`, this leaves `self.model_` untouched and returns a
+        standalone `SimpleGaussianClassifierModel` (see `gauss_math.simple_gaussian_predict`)
+        whose rules reference deduplicated membership-function ids -- useful for
+        inspecting or deploying the model as an explicit rule set.
+
+        Args:
+            rtol, atol: Passed through to `GaussianMixtureModel.to_simple_model`;
+                see `deduplicate` for what these tradeoff.
+        """
+        check_is_fitted(self)
+        return self.model_.to_simple_model(self.anomaly_params, rtol=rtol, atol=atol)
 
 
 class TribbleSequenceClassifier(BaseEstimator, ClassifierMixin):
@@ -658,6 +707,19 @@ class TribbleSequenceClassifier(BaseEstimator, ClassifierMixin):
             self.experts_.append((p, t, expert, threshold))
             self.layers_.append(expert)
 
+        # TODO(#85): each expert re-fits Gaussians on a {P, T} subset that, for
+        # the shared class, covers rows the base model already fit -- with
+        # deterministic k-means/BIC selection this frequently produces
+        # bit-for-bit identical Gaussians between an expert and the base.
+        # Nothing currently deduplicates across `self.layers_`. A cross-layer
+        # `to_simple_model()` on this cascade -- unioning `layers_` via
+        # `GaussianMixtureModel.augment()` and deduplicating the result with
+        # `TribbleClassifier.deduplicate()`/`to_simple_model()` -- would recover
+        # that redundancy, but is a separate, larger change: it also means
+        # flattening `predict()`'s anomaly/confidence-margin gating away, whose
+        # own accuracy cost (measured in #85) is a mechanism question, not a
+        # numeric-approximation one, and is *not* well-described by a single
+        # safe number. Do not wire dedup in here without addressing that.
         self.is_fitted_ = True
         return self
 

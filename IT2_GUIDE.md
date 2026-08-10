@@ -122,7 +122,7 @@ L2 regularization strength during refinement. Controls how far refined parameter
 
 ### Other Parameters
 
-Same as `MixtureOfGaussiansFuzzyClassifier` / `MixtureOfGaussiansFuzzyRegressor`:
+Same as `TribbleClassifier` / `TribbleRegressor`:
 
 - `top_n`: Number of top features to select
 - `top_p`: Per-feature score threshold
