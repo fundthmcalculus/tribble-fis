@@ -15,7 +15,7 @@ from .gauss_data import (
     DefaultMemberFunction,
     resolve_norm_pair,
 )
-from .gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
+from .gaussian_regressor import TribbleRegressor
 from .it2_kernel import it2_firing_strengths
 
 
@@ -138,7 +138,7 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
         self.norms_ = resolve_norm_pair(self.norm_conorm)
 
         # Fit base Type-1 regressor
-        base = MixtureOfGaussiansFuzzyRegressor(
+        base = TribbleRegressor(
             top_n=self.top_n,
             top_p=self.top_p,
             n_gaussians=self.n_gaussians,
