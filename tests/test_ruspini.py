@@ -8,6 +8,7 @@ serialization, the sklearn estimator, and the never-worse knot refinement.
 import io
 import contextlib
 import unittest
+import uuid
 
 import numpy as np
 import pandas as pd
@@ -16,11 +17,14 @@ from tribblefis.gauss_data import TriangularMembership
 from tribblefis.gauss_math import create_gaussian_membership_dict, simple_gaussian_predict
 from tribblefis.ruspini import (
     build_triangular_partition,
+    complete_ruspini_partition,
     ruspinize_model,
+    verify_partition_of_unity,
     RuspiniPartitionModel,
     RuspiniFuzzyClassifier,
 )
 from tribblefis.refine import refine_ruspini_partition
+from tribblefis.triangle_fit import GAUSSIAN_TRIANGLE_MAE_HALF_WIDTH
 
 
 def _two_class_blobs(seed=0, n=160):
@@ -56,6 +60,17 @@ class TestTriangularPartition(unittest.TestCase):
         xs = np.linspace(-10, 10, 51)
         np.testing.assert_allclose(terms[0].evaluate(xs), 1.0, atol=1e-12)
 
+    def test_verify_partition_of_unity_true_for_any_knots(self):
+        for apexes in ([0.0, 1.0, 2.0, 5.0], [-3.0, 0.0, 4.0], [1.0, 2.0]):
+            terms = build_triangular_partition(apexes)
+            xs = np.linspace(min(apexes) - 5, max(apexes) + 5, 401)
+            self.assertTrue(verify_partition_of_unity(terms, xs))
+
+    def test_verify_partition_of_unity_false_when_missing_a_term(self):
+        terms = build_triangular_partition([0.0, 1.0, 2.0])
+        xs = np.linspace(-5, 5, 101)
+        self.assertFalse(verify_partition_of_unity(terms[:-1], xs))
+
 
 class TestRuspinize(unittest.TestCase):
 
@@ -90,6 +105,81 @@ class TestRuspinize(unittest.TestCase):
         direct = rm.predict(X)
         via_explicit = simple_gaussian_predict(X, rm.to_simple_model())
         np.testing.assert_array_equal(np.asarray(direct), np.asarray(via_explicit))
+
+    def test_default_sigma_knots_is_mae_optimal_fit_width(self):
+        import inspect
+
+        self.assertEqual(
+            inspect.signature(ruspinize_model).parameters["sigma_knots"].default,
+            GAUSSIAN_TRIANGLE_MAE_HALF_WIDTH,
+        )
+
+    def test_default_sigma_knots_adds_gaussian_width_knots_and_stays_ruspini(self):
+        X, y, gm = self._model()
+        centres_only = ruspinize_model(gm, X, y, sigma_knots=0.0)
+        with_width = ruspinize_model(gm, X, y)  # default sigma_knots
+        # Encoding each Gaussian's spread as extra knots should not shrink the
+        # partition, and the result must still be a valid Ruspini partition.
+        self.assertGreaterEqual(with_width.n_terms_total, centres_only.n_terms_total)
+        for f in with_width.feature_order:
+            terms = with_width.feature_terms()[f]
+            xs = np.linspace(X[f].min() - 5, X[f].max() + 5, 201)
+            self.assertTrue(verify_partition_of_unity(terms, xs))
+
+    def test_predict_still_works_with_default_sigma_knots(self):
+        X, y, gm = self._model()
+        rm = ruspinize_model(gm, X, y)
+        preds = rm.predict(X)
+        self.assertTrue(set(np.unique(preds)).issubset(set(np.unique(y))))
+
+
+class TestCompleteRuspiniPartition(unittest.TestCase):
+    def test_fills_wide_gap_and_preserves_partition_of_unity(self):
+        X = pd.DataFrame({"a": [0.0, 1.0, 9.0, 10.0]})
+        rm = RuspiniPartitionModel(
+            feature_order=["a"],
+            apexes={"a": np.array([0.0, 10.0])},
+            term_ids={"a": [uuid.uuid4(), uuid.uuid4()]},
+            rules=[(0, {"a": [0]}), (1, {"a": [1]})],
+        )
+        filled = complete_ruspini_partition(rm, X, min_gap_frac=0.2)
+        self.assertGreater(len(filled.apexes["a"]), len(rm.apexes["a"]))
+        terms = filled.feature_terms()["a"]
+        xs = np.linspace(-5, 15, 401)
+        self.assertTrue(verify_partition_of_unity(terms, xs))
+
+    def test_small_gap_is_left_alone(self):
+        X = pd.DataFrame({"a": [0.0, 1.0]})
+        rm = RuspiniPartitionModel(
+            feature_order=["a"],
+            apexes={"a": np.array([0.0, 1.0])},
+            term_ids={"a": [uuid.uuid4(), uuid.uuid4()]},
+            rules=[(0, {"a": [0]}), (1, {"a": [1]})],
+        )
+        filled = complete_ruspini_partition(rm, X, min_gap_frac=2.0)
+        np.testing.assert_allclose(filled.apexes["a"], rm.apexes["a"])
+
+    def test_new_terms_are_reachable_by_a_rule(self):
+        X = pd.DataFrame({"a": [0.0, 1.0, 9.0, 10.0]})
+        rm = RuspiniPartitionModel(
+            feature_order=["a"],
+            apexes={"a": np.array([0.0, 10.0])},
+            term_ids={"a": [uuid.uuid4(), uuid.uuid4()]},
+            rules=[(0, {"a": [0]}), (1, {"a": [1]})],
+        )
+        filled = complete_ruspini_partition(rm, X, min_gap_frac=0.2)
+        referenced = {i for _, ant in filled.rules for i in ant["a"]}
+        self.assertEqual(referenced, set(range(len(filled.apexes["a"]))))
+
+    def test_predictions_are_not_disrupted(self):
+        X, y, gm = TestRuspinize()._model()
+        rm = ruspinize_model(gm, X, y)
+        before = rm.predict(X)
+        filled = complete_ruspini_partition(rm, X, min_gap_frac=0.5)
+        after = filled.predict(X)
+        # Filling resolution gaps should not flip predictions on the training
+        # data the gaps were measured against.
+        np.testing.assert_array_equal(np.asarray(before), np.asarray(after))
 
 
 class TestRuspiniClassifierAndRefine(unittest.TestCase):
