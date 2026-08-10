@@ -248,6 +248,19 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
 
         self.n_rules_ = self.model_.n_rules
 
+        # TODO(#85): self.model_ is a GaussianMixtureModel built the same way as
+        # TribbleClassifier's (same create_gaussian_membership_dict call), so it
+        # carries the same antecedent redundancy TribbleClassifier.deduplicate()/
+        # to_simple_model() now expose -- but there is no regression-side
+        # equivalent yet. Unlike the classifier, dropping the *consequent*
+        # coefficients tied to a removed membership function is not obviously
+        # safe here (solve_tsk_consequents/predict_tsk key rule outputs off the
+        # firing-strength columns this model produces), so wiring dedup in
+        # requires a regression-side deployable path analogous to
+        # SimpleGaussianClassifierModel/simple_gaussian_predict -- e.g. driving
+        # a deduplicated GaussianMixtureModel through regression.predict_tsk --
+        # not just calling remove_duplicate_membership_fcns() here.
+
         # Solve TSK consequents in closed form: for fixed firing strengths the
         # output is linear in the coefficients, so a single ridge least-squares
         # solve yields the exact firing-weighted optimum.
