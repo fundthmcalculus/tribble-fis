@@ -640,7 +640,11 @@ def membership(x, mu, sigma, default_member: MemberFunction | None = None):
     if member_fn == "gaussian":
         return np.exp(-0.5 * ((x - mu) / sigma) ** 2)
     elif member_fn == "triangular":
-        return np.maximum(0, 1 - np.abs((x - mu) / (2.3756 * sigma)))
+        # MAE-optimal fit of a triangle to this Gaussian -- see
+        # tribblefis.triangle_fit for the derivation.
+        from .triangle_fit import GAUSSIAN_TRIANGLE_MAE_HALF_WIDTH
+
+        return np.maximum(0, 1 - np.abs((x - mu) / (GAUSSIAN_TRIANGLE_MAE_HALF_WIDTH * sigma)))
     else:
         raise ValueError(f"Invalid MEMBER_FCN value: {member_fn}")
 

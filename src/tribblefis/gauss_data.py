@@ -1,3 +1,4 @@
+import itertools
 import uuid
 from math import prod
 from typing import NamedTuple, Literal, Optional
@@ -484,9 +485,28 @@ class GaussianMixtureModel(NamedTuple):
                 new_feature_models[feature_name] = other_feature_model
         return GaussianMixtureModel(new_feature_models)
 
-    def to_simple_model(self, details: AnomalyParameters | None = None) -> SimpleGaussianClassifierModel:
+    def to_simple_model(
+        self,
+        details: AnomalyParameters | None = None,
+        convex_clauses_only: bool = False,
+    ) -> SimpleGaussianClassifierModel:
+        """Materialise this (implicit) mixture into an explicit rule base.
+
+        When ``convex_clauses_only`` is set, any feature clause whose OR'd
+        membership functions cover disjoint (non-touching) intervals of that
+        feature's axis is split into one rule per convex sub-clause, via
+        :func:`split_convex_clauses`. This runs strictly after
+        deduplication (``dedup_mfs`` below), so it always operates on
+        already-deduplicated membership ids.
+        """
         dedup_mfs = self.get_deduplicated_membership_fcns()
         rules: list[Rule] = []
+
+        mf_lookup: dict[uuid.UUID, AnyMembership] = {}
+        if convex_clauses_only:
+            for mf in self.all_membership_fcns:
+                resolved = dedup_mfs.get(mf, mf)
+                mf_lookup[resolved.id] = resolved  # type: ignore[misc]
 
         for label in self.all_output_labels:
             antecedent_ids: dict[str, list[uuid.UUID]] = {}
@@ -495,7 +515,11 @@ class GaussianMixtureModel(NamedTuple):
                 if label_model is None:
                     continue
                 antecedent_ids[feature_name] = [dedup_mfs.get(mf, mf).id for mf in label_model.memberships]  # type: ignore[misc]
-            rules.append(Rule(antecedents=antecedent_ids, consequent=label))
+            if convex_clauses_only:
+                for combo in split_convex_clauses(antecedent_ids, mf_lookup):
+                    rules.append(Rule(antecedents=combo, consequent=label))
+            else:
+                rules.append(Rule(antecedents=antecedent_ids, consequent=label))
 
         # Get the input membership functions from the rules
         required_mf_ids = set([u for r in rules for u_lst in r.antecedents.values() for u in u_lst])
@@ -529,6 +553,75 @@ def _is_close(g1: AnyMembership, g2: AnyMembership, rtol: float = 1e-2, atol: fl
             )
         )
     return False
+
+
+def mf_interval(mf: AnyMembership, gaussian_k: float = 3.0) -> tuple[float, float]:
+    """The "effective support" of a membership function, as a ``(low, high)`` interval.
+
+    Exact for :class:`TriangularMembership` (``a, c``) and
+    :class:`TrapezoidMembership` (``a, d``). For :class:`GaussianMembership`
+    -- which has infinite support -- this uses a symmetric
+    ``mu +/- gaussian_k * sigma`` cutoff: a conservative "the tails are
+    negligible" convention for deciding whether two clauses' regions are
+    disjoint, independent of (and answering a different question from) the
+    MAE-optimal triangle-fit width in :mod:`tribblefis.triangle_fit`.
+    """
+    if isinstance(mf, TriangularMembership):
+        return mf.a, mf.c
+    elif isinstance(mf, TrapezoidMembership):
+        return mf.a, mf.d
+    elif isinstance(mf, GaussianMembership):
+        return mf.mu - gaussian_k * mf.sigma, mf.mu + gaussian_k * mf.sigma
+    else:
+        raise TypeError(f"mf_interval does not support membership type {type(mf)!r}")
+
+
+def split_convex_clauses(
+    antecedents: dict[str, list[uuid.UUID]],
+    mf_lookup: dict[uuid.UUID, AnyMembership],
+    gaussian_k: float = 3.0,
+) -> list[dict[str, list[uuid.UUID]]]:
+    """Expand a rule's antecedents into convex (contiguous-interval) sub-clauses.
+
+    Per feature, every OR'd membership id's effective interval
+    (:func:`mf_interval`) is sorted by lower bound and greedily merged
+    wherever consecutive intervals overlap or touch. A feature that already
+    reduces to a single merged interval is left as a one-element list, so a
+    rule with no disjoint clauses at all comes back as its own sole
+    combination, unchanged. When more than one feature has a disjoint
+    clause, the Cartesian product of every feature's convex groups is
+    returned, so "AND across features, OR (convexly) within a feature"
+    semantics are preserved exactly -- just spread across more rules.
+    """
+
+    def merged_groups(ids: list[uuid.UUID]) -> list[list[uuid.UUID]]:
+        if not ids:
+            # Preserve today's behaviour for a feature with no memberships:
+            # one combination, carrying the empty list through unchanged.
+            return [[]]
+        scored = sorted(ids, key=lambda i: mf_interval(mf_lookup[i], gaussian_k)[0])
+        groups: list[list[uuid.UUID]] = []
+        current: list[uuid.UUID] = []
+        current_hi: float | None = None
+        for mf_id in scored:
+            lo, hi = mf_interval(mf_lookup[mf_id], gaussian_k)
+            if current_hi is None or lo <= current_hi:
+                current.append(mf_id)
+                current_hi = hi if current_hi is None else max(current_hi, hi)
+            else:
+                groups.append(current)
+                current = [mf_id]
+                current_hi = hi
+        if current:
+            groups.append(current)
+        return groups
+
+    features = list(antecedents.keys())
+    per_feature_groups = [merged_groups(antecedents[f]) for f in features]
+    return [
+        dict(zip(features, combo))
+        for combo in itertools.product(*per_feature_groups)
+    ]
 
 
 # Interval Type-2 FIS Data Structures
