@@ -38,6 +38,16 @@ MemberFunction = Literal["gaussian", "triangular", "trap"]
 DefaultNormCornorm: NormConorm = "probability"
 DefaultMemberFunction: MemberFunction = "gaussian"
 
+# Default numeric tolerance for membership-function deduplication (see
+# `_is_close` and issue #85). These are deliberately conservative -- an
+# exploratory measurement on Glass classification found the current default
+# merges ~13% of raw MFs with an accuracy delta indistinguishable from noise,
+# and headroom up to ~3x this before any real cost appears -- so callers who
+# want more reduction should pass a larger `rtol`/`atol` explicitly rather
+# than have the module quietly become more aggressive under them.
+DEFAULT_DEDUP_RTOL = 1e-2
+DEFAULT_DEDUP_ATOL = 1e-3
+
 NORM_FAMILIES: tuple[NormConorm, ...] = (
     "min/max", "probability", "luk", "hamacher", "einstein",
 )
@@ -436,24 +446,51 @@ class GaussianMixtureModel(NamedTuple):
     def all_output_labels(self) -> list[int]:
         return list(set([label for label_model in self.feature_models.values() for label in label_model.ordered_keys]))
 
-    def identify_duplicate_membership_fcns(self) -> list[tuple[str, int, AnyMembership, AnyMembership]]:
+    def identify_duplicate_membership_fcns(
+        self, rtol: float = DEFAULT_DEDUP_RTOL, atol: float = DEFAULT_DEDUP_ATOL
+    ) -> list[tuple[str, int, AnyMembership, AnyMembership]]:
+        """Find near-duplicate membership functions within each (feature, label).
+
+        Two memberships in the same (feature, label) list only ever feed the same
+        conorm fold, so a duplicate found here can be dropped without changing any
+        prediction (exactly, at ``rtol=atol=0``; within measurement noise at looser
+        tolerances -- see issue #85).
+
+        Args:
+            rtol, atol: Passed through to `_is_close`. The defaults match the
+                historical hardcoded tolerance; pass looser values to trade more
+                reduction for more (noise-level, per the issue #85 measurement)
+                risk.
+        """
         duplicates = []
         for feature_name, feature_model in self.feature_models.items():
             for label, label_model in feature_model.label_models.items():
                 for i, mf in enumerate(label_model.memberships):
                     for j, other_mf in enumerate(label_model.memberships):
                         if i < j:
-                            if _is_close(mf, other_mf):
+                            if _is_close(mf, other_mf, rtol=rtol, atol=atol):
                                 duplicates.append((feature_name, label, other_mf, mf))
         return duplicates
 
-    def get_deduplicated_membership_fcns(self) -> dict[AnyMembership, AnyMembership]:
-        """ Returns a dictionary of [to_replace, with_this] membership functions."""
+    def get_deduplicated_membership_fcns(
+        self, rtol: float = DEFAULT_DEDUP_RTOL, atol: float = DEFAULT_DEDUP_ATOL
+    ) -> dict[AnyMembership, AnyMembership]:
+        """Returns a dictionary of [to_replace, with_this] membership functions.
+
+        Unlike `identify_duplicate_membership_fcns`, this compares *every*
+        membership function against every other, regardless of feature or label --
+        it is meant for `to_simple_model`'s flat, explicit-rule representation,
+        where a duplicate found across labels is still a real duplicate id to
+        collapse.
+
+        Args:
+            rtol, atol: Passed through to `_is_close`.
+        """
         to_replace = dict()
         all_mfs = self.all_membership_fcns
         for idx, mf in enumerate(all_mfs):
             for other_mf in all_mfs[idx + 1 :]:
-                if _is_close(mf, other_mf):
+                if _is_close(mf, other_mf, rtol=rtol, atol=atol):
                     to_replace[other_mf] = mf
 
         # Recursively apply replacement chains to get final targets
@@ -465,14 +502,27 @@ class GaussianMixtureModel(NamedTuple):
 
         return to_replace
 
-    def remove_duplicate_membership_fcns(self):
-        duplicate_mfcns = self.identify_duplicate_membership_fcns()
+    def remove_duplicate_membership_fcns(
+        self, rtol: float = DEFAULT_DEDUP_RTOL, atol: float = DEFAULT_DEDUP_ATOL
+    ) -> int:
+        """Remove near-duplicate membership functions in place.
+
+        Args:
+            rtol, atol: Passed through to `identify_duplicate_membership_fcns`.
+
+        Returns:
+            The number of membership functions actually removed.
+        """
+        duplicate_mfcns = self.identify_duplicate_membership_fcns(rtol=rtol, atol=atol)
+        removed = 0
         for _, (feature_name, label, dup_mf, src_mf) in enumerate(duplicate_mfcns):
             # Replace the dup_mf with the src_mf
             try:
                 self.feature_models[feature_name].label_models[label].memberships.remove(dup_mf)
+                removed += 1
             except ValueError:
                 pass
+        return removed
 
     def augment(self, other) -> "GaussianMixtureModel":
         """Augment this GaussianMixtureModel with another GaussianMixtureModel, combining feature models."""
@@ -484,8 +534,22 @@ class GaussianMixtureModel(NamedTuple):
                 new_feature_models[feature_name] = other_feature_model
         return GaussianMixtureModel(new_feature_models)
 
-    def to_simple_model(self, details: AnomalyParameters | None = None) -> SimpleGaussianClassifierModel:
-        dedup_mfs = self.get_deduplicated_membership_fcns()
+    def to_simple_model(
+        self,
+        details: AnomalyParameters | None = None,
+        rtol: float = DEFAULT_DEDUP_RTOL,
+        atol: float = DEFAULT_DEDUP_ATOL,
+    ) -> SimpleGaussianClassifierModel:
+        """Materialize this model as an explicit, deduplicated rule model.
+
+        Args:
+            details: Anomaly parameters carried onto the resulting
+                `SimpleGaussianClassifierModel`, if any.
+            rtol, atol: Passed through to `get_deduplicated_membership_fcns` --
+                see that method and issue #85 for the reduction-vs-risk tradeoff
+                these control.
+        """
+        dedup_mfs = self.get_deduplicated_membership_fcns(rtol=rtol, atol=atol)
         rules: list[Rule] = []
 
         for label in self.all_output_labels:
@@ -506,7 +570,9 @@ class GaussianMixtureModel(NamedTuple):
             anomaly_params=details
         )
 
-def _is_close(g1: AnyMembership, g2: AnyMembership, rtol: float = 1e-2, atol: float = 1e-3) -> bool:
+def _is_close(
+    g1: AnyMembership, g2: AnyMembership, rtol: float = DEFAULT_DEDUP_RTOL, atol: float = DEFAULT_DEDUP_ATOL
+) -> bool:
     """Check if two membership functions are numerically close.
 
     Only returns True if both objects are the same type and their parameters match.
