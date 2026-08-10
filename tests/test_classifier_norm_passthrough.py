@@ -4,7 +4,7 @@ The firing strengths -- and therefore the entire cross-entropy surface the searc
 descends -- are a function of the (t-norm, t-conorm) pair. Refining under one
 pair and predicting under another tunes a model nobody runs. That was the
 behaviour before this change: `refine_classifier_antecedents` hard-coded the
-library default while `MixtureOfGaussiansFuzzyClassifier` predicted with
+library default while `TribbleClassifier` predicted with
 whatever `norm_conorm` the caller asked for.
 """
 
@@ -22,7 +22,7 @@ from tribblefis.gauss_data import (
     LabelModel,
     NormPair,
 )
-from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+from tribblefis.gaussian_classifier import TribbleClassifier
 
 FAMILIES = ["min/max", "probability", "luk", "hamacher", "einstein"]
 
@@ -104,7 +104,7 @@ def test_classifier_passes_its_norm_choice_into_refinement(monkeypatch):
     monkeypatch.setattr(R, "refine_classifier_antecedents", spy)
 
     X, y, _model = _problem(n=300, seed=3)
-    clf = MixtureOfGaussiansFuzzyClassifier(
+    clf = TribbleClassifier(
         norm_conorm="probability", refine=True, n_gaussians=2)
     clf.fit(X, y)
 

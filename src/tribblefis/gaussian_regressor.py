@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, RegressorMixin
@@ -6,17 +8,21 @@ from sklearn.utils.validation import check_X_y, check_is_fitted
 from .gauss_data import DefaultNormCornorm, NormPair, resolve_norm_pair
 from .gauss_math import (
     calculate_gaussian_correlation,
+    calculate_interaction_scores,
     take_top_features,
+    take_top_interactions,
+    rescue_interacting_features,
     create_gaussian_membership_dict,
 )
 from .regression import (
     partition_output,
     solve_tsk_consequents,
+    select_interaction_terms,
     predict_tsk,
 )
 
 
-class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
+class TribbleRegressor(BaseEstimator, RegressorMixin):
     """
     Gaussian Mixture Regressor using TSK (Takagi-Sugeno-Kang) fuzzy inference.
     Handles continuous output prediction with multiple TSK orders.
@@ -40,9 +46,12 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         allow_mixed_norms=False,
         random_state=42,
         max_samples=None,
+        detect_interactions=False,
+        interaction_top_p=0.95,
+        select_interactions=False,
     ):
         """
-        Initialize the MixtureOfGaussiansFuzzyRegressor.
+        Initialize the TribbleRegressor.
 
         Args:
             top_n: Number of top features to select based on differentiation score.
@@ -81,6 +90,24 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
             max_samples: Cap on the rows used per (feature, label-bucket) when
                 fitting Gaussian memberships. ``None`` -- the default -- uses
                 every row; pass an int to bound fit time on large datasets.
+            detect_interactions: If True, score every candidate feature pair
+                for interaction "lift" beyond either feature alone
+                (`gauss_math.calculate_interaction_scores`) *before*
+                `top_features_` is finalized, and union in any feature that
+                is individually below the `top_p`/`top_n` threshold but
+                participates in a kept pair. Without this, a feature that
+                only matters jointly with another can be dropped before the
+                model -- or `tsk_order='full-2nd'`'s cross terms -- ever see
+                it. See `docs/interaction-detection.md`.
+            interaction_top_p: Per-pair lift threshold for
+                `gauss_math.take_top_interactions`, same semantics as `top_p`.
+                Only used when `detect_interactions=True`.
+            select_interactions: If True (and `tsk_order='full-2nd'`),
+                additionally screen the detected candidate pairs with
+                `regression.select_interaction_terms`'s LassoCV -- a final
+                sparsity pass over the shortlist rather than the dense
+                all-`n_choose_2`-pairs default `full-2nd` otherwise uses. Has
+                no effect for any other `tsk_order` (a warning is raised).
         """
         self.is_fitted_ = False
         self.model_ = None
@@ -91,6 +118,8 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         self.y_bucket_mean_ = None
         self.corr_terms_ = None
         self.n_rules_ = None
+        self.interaction_pairs_ = None
+        self.cross_pairs_ = None
 
         self.top_n = top_n
         self.top_p = top_p
@@ -112,6 +141,9 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         self.allow_mixed_norms = allow_mixed_norms
         self.random_state = random_state
         self.max_samples = max_samples
+        self.detect_interactions = detect_interactions
+        self.interaction_top_p = interaction_top_p
+        self.select_interactions = select_interactions
 
     def _norms(self) -> NormPair:
         """Resolved (t-norm, t-conorm) for this estimator.
@@ -164,6 +196,50 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
             self.feature_differentiators_, top_p=self.top_p, top_n=self.top_n
         )
 
+        # Detect candidate interacting pairs *before* the feature list is
+        # frozen: a feature that is individually below `top_p`/`top_n` but
+        # jointly informative with another would otherwise never reach the
+        # model, cross terms or not (see docs/interaction-detection.md).
+        self.interaction_pairs_ = []
+        self.cross_pairs_ = None
+        if self.detect_interactions:
+            interaction_scores = calculate_interaction_scores(
+                X_df, y_partitioned["y_bucket"], self.feature_differentiators_,
+            )
+            self.interaction_pairs_ = take_top_interactions(
+                interaction_scores, top_p=self.interaction_top_p
+            )
+            self.top_features_ = rescue_interacting_features(
+                self.top_features_, self.feature_differentiators_, self.interaction_pairs_
+            )
+            self.top_n_actual_ = len(self.top_features_)
+
+            if self.tsk_order == "full-2nd":
+                # cross_pairs is index-space into the *final* (post-rescue)
+                # top_features_ order -- build_consequent_features/
+                # solve_tsk_consequents/predict_tsk all key on that ordering.
+                name_to_idx = {name: i for i, name in enumerate(self.top_features_)}
+                candidate_idx_pairs = sorted(
+                    (name_to_idx[fi], name_to_idx[fj]) if name_to_idx[fi] < name_to_idx[fj]
+                    else (name_to_idx[fj], name_to_idx[fi])
+                    for fi, fj in self.interaction_pairs_
+                )
+                if self.select_interactions:
+                    self.cross_pairs_ = select_interaction_terms(
+                        X_df, self.top_features_, y_partitioned, self.y_bucket_mean_,
+                        random_state=self.random_state, candidate_pairs=candidate_idx_pairs,
+                    )
+                else:
+                    self.cross_pairs_ = candidate_idx_pairs
+            elif self.select_interactions:
+                warnings.warn(
+                    "select_interactions=True has no effect unless tsk_order='full-2nd' "
+                    "(cross_pairs is only consumed by that order); detected interactions "
+                    "still rescued qualifying features into top_features_.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+
         # Create Gaussian membership model
         self.model_ = create_gaussian_membership_dict(
             X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians,
@@ -171,6 +247,19 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
         )
 
         self.n_rules_ = self.model_.n_rules
+
+        # TODO(#85): self.model_ is a GaussianMixtureModel built the same way as
+        # TribbleClassifier's (same create_gaussian_membership_dict call), so it
+        # carries the same antecedent redundancy TribbleClassifier.deduplicate()/
+        # to_simple_model() now expose -- but there is no regression-side
+        # equivalent yet. Unlike the classifier, dropping the *consequent*
+        # coefficients tied to a removed membership function is not obviously
+        # safe here (solve_tsk_consequents/predict_tsk key rule outputs off the
+        # firing-strength columns this model produces), so wiring dedup in
+        # requires a regression-side deployable path analogous to
+        # SimpleGaussianClassifierModel/simple_gaussian_predict -- e.g. driving
+        # a deduplicated GaussianMixtureModel through regression.predict_tsk --
+        # not just calling remove_duplicate_membership_fcns() here.
 
         # Solve TSK consequents in closed form: for fixed firing strengths the
         # output is linear in the coefficients, so a single ridge least-squares
@@ -182,6 +271,7 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
             order=self.tsk_order, l2_reg=self.l2_reg, basis=self.consequent_basis,
             pin_extremes=self.pin_extremes,
             norms=self._norms(),
+            cross_pairs=self.cross_pairs_,
             verbose=False,
         )
 
@@ -212,12 +302,13 @@ class MixtureOfGaussiansFuzzyRegressor(BaseEstimator, RegressorMixin):
             self.y_bucket_mean_, self.corr_terms_,
             order=self.tsk_order, basis=self.consequent_basis,
             norms=self._norms(),
+            cross_pairs=self.cross_pairs_,
         )
 
 
 class MimoGaussianPredictor(BaseEstimator, RegressorMixin):
     """
-    Multi-input multi-output wrapper around MixtureOfGaussiansFuzzyRegressor.
+    Multi-input multi-output wrapper around TribbleRegressor.
 
     Fits one independent regressor per output column, enabling simultaneous
     prediction of multiple outputs from the same input features.
@@ -244,7 +335,7 @@ class MimoGaussianPredictor(BaseEstimator, RegressorMixin):
         self.max_samples = max_samples
 
     def _make_regressor(self):
-        return MixtureOfGaussiansFuzzyRegressor(
+        return TribbleRegressor(
             top_n=self.top_n,
             top_p=self.top_p,
             n_gaussians=self.n_gaussians,

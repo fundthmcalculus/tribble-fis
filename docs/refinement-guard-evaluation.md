@@ -83,7 +83,7 @@ side of that trade for a step users opt into — but it is a trade, and the two
 
 ## What this corrects
 
-`MixtureOfGaussiansFuzzyClassifier.refine` used to be documented as: *"The
+`TribbleClassifier.refine` used to be documented as: *"The
 refinement is accepted only if it does not worsen a held-out validation split,
 so it can never hurt."* The mechanism existed; the guarantee did not. Refinement
 is worse than not refining about one time in nine, typically by ~2 points, and

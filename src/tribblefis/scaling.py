@@ -8,9 +8,9 @@ below into an ``sklearn.pipeline.Pipeline`` in front of the estimator::
 
     from sklearn.pipeline import make_pipeline
     from tribblefis.scaling import UnitFuzzyScalar
-    from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+    from tribblefis.gaussian_classifier import TribbleClassifier
 
-    pipe = make_pipeline(UnitFuzzyScalar(), MixtureOfGaussiansFuzzyClassifier())
+    pipe = make_pipeline(UnitFuzzyScalar(), TribbleClassifier())
     pipe.fit(X_train, y_train)
 
 Two scalers are offered, differing only in the final normalization:
@@ -91,7 +91,7 @@ dictionaries keyed by feature). ``set_output`` comes free with
     X_scaled = scaler.fit_transform(X_train)   # a DataFrame, columns preserved
 
     # ...or, in a pipeline:
-    pipe = make_pipeline(UnitFuzzyScalar(), MixtureOfGaussiansFuzzyRegressor())
+    pipe = make_pipeline(UnitFuzzyScalar(), TribbleRegressor())
     pipe.fit(X_train, y_train)
 
 Scaling a regression target
@@ -112,7 +112,7 @@ If you want that wired up automatically, use the standard sklearn tool
 the fit/inverse plumbing::
 
     TransformedTargetRegressor(
-        regressor=MixtureOfGaussiansFuzzyRegressor(),
+        regressor=TribbleRegressor(),
         transformer=UnitFuzzyScalar(log_dynamic_range=None),
     )
 

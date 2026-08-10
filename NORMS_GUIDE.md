@@ -26,8 +26,8 @@ reversed for the conorm.
 Pass a family and both halves come from it:
 
 ```python
-MixtureOfGaussiansFuzzyRegressor(norm_conorm="einstein")
-MixtureOfGaussiansFuzzyClassifier(norm_conorm="hamacher")
+TribbleRegressor(norm_conorm="einstein")
+TribbleClassifier(norm_conorm="hamacher")
 AnomalyParameters(include_anomaly=True, norm_conorm="probability")
 ```
 
@@ -38,10 +38,10 @@ families is **not** a De Morgan dual pair, so it is rejected unless you also pas
 `allow_mixed_norms=True`:
 
 ```python
-MixtureOfGaussiansFuzzyRegressor(t_norm="probability", t_conorm="luk")
+TribbleRegressor(t_norm="probability", t_conorm="luk")
 # ValueError: ... are from different families and so are not De Morgan duals.
 
-MixtureOfGaussiansFuzzyRegressor(t_norm="probability", t_conorm="luk",
+TribbleRegressor(t_norm="probability", t_conorm="luk",
                                  allow_mixed_norms=True)      # fine
 ```
 
@@ -64,9 +64,9 @@ resolve_norm_pair().is_de_morgan                  # True
 
 | Model | Parameter | Default |
 |---|---|---|
-| `MixtureOfGaussiansFuzzyRegressor` | `norm_conorm`, `t_norm`, `t_conorm` | `min/max` |
-| `MixtureOfGaussiansFuzzyClassifier` | `norm_conorm`, `t_norm`, `t_conorm` | `min/max` |
-| `MixtureOfGaussiansFuzzySequenceClassifier` | `norm_conorm`, `t_norm`, `t_conorm` | `min/max` |
+| `TribbleRegressor` | `norm_conorm`, `t_norm`, `t_conorm` | `min/max` |
+| `TribbleClassifier` | `norm_conorm`, `t_norm`, `t_conorm` | `min/max` |
+| `TribbleSequenceClassifier` | `norm_conorm`, `t_norm`, `t_conorm` | `min/max` |
 | `AnomalyParameters` | `norm_conorm`, `t_norm`, `t_conorm` | `min/max` |
 | Ruspini models | `norm_conorm` | `probability` |
 | `FuzzyRegressionTree`, `FuzzyClassificationTree` | `t_norm` (AND only — paths have no OR) | `probability` |

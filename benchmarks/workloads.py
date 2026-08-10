@@ -506,6 +506,49 @@ def _anfis_fit_workload(
         tags=("train", "anfis"),
     )
 
+# --------------------------------------------------------------------------      
+# Interaction-score workload.
+#
+# `calculate_interaction_scores` is the new O(n_features^2) cost center this
+# candidate-cross-term-detection feature introduces (every other cost in this
+# file is O(n_features) or O(n_rules)) -- this workload is what keeps that
+# growth honest as feature counts rise.
+# ---------------------------------------------------------------------------
+
+def _interaction_score_workload(
+    name: str, n_samples: int, n_features: int, n_labels: int, repeats: int,
+) -> Workload:
+    def setup():
+        X, y = make_dataset(n_samples, n_features, n_labels, seed=3)
+        return X, pd.Series(y)
+
+    def run(state):
+        from tribblefis.gauss_math import calculate_gaussian_correlation, calculate_interaction_scores
+
+        X, y = state
+        diffs = calculate_gaussian_correlation(X, y)
+        return calculate_interaction_scores(X, y, diffs)
+
+    def checksum(result):
+        # Order-sensitive: a re-ranking that changed which pair comes out on
+        # top, not just how fast, must move this number.
+        flat = np.array([lift for _fi, _fj, lift in result], dtype=float)
+        return _array_checksum(flat)
+
+    return Workload(
+        name=name,
+        description=(
+            f"calculate_interaction_scores: {n_samples} samples x {n_features} "
+            f"features x {n_labels} labels ({n_features * (n_features - 1) // 2} pairs)"
+        ),
+        setup=setup,
+        run=run,
+        checksum=checksum,
+        repeats=repeats,
+        warmups=0,
+        tags=("interaction",),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Deployed-estimator workload.
@@ -517,9 +560,9 @@ def _predict_workload(
     def setup():
         X, y = make_dataset(n_samples, n_features, n_labels, seed=2)
         model = make_model(n_features, n_labels, 3, seed=2)
-        from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+        from tribblefis.gaussian_classifier import TribbleClassifier
 
-        clf = MixtureOfGaussiansFuzzyClassifier()
+        clf = TribbleClassifier()
         # Inject the synthetic model rather than fitting: `fit` runs KMeans/BIC
         # selection, which is a separate cost with its own optimizations and
         # would swamp the inference time this workload exists to measure.
@@ -536,7 +579,7 @@ def _predict_workload(
     return Workload(
         name=name,
         description=(
-            f"MixtureOfGaussiansFuzzyClassifier.predict_proba: {n_samples} samples "
+            f"TribbleClassifier.predict_proba: {n_samples} samples "
             f"x {n_features} features x {n_labels} labels x 3 MF"
         ),
         setup=setup,
@@ -585,6 +628,10 @@ def all_workloads() -> list[Workload]:
         # combinatorial rule base is actually sensitive to.
         _anfis_fit_workload("anfis-fit", 2_000, 3, n_terms=3, n_epochs=30, repeats=3),
         _anfis_fit_workload("anfis-fit-wide", 2_000, 3, n_terms=5, n_epochs=15, repeats=2),
+        # Pairs grow as n_choose_2, not linearly like everything above --
+        # "wide" here means more features, the axis this cost actually scales on.
+        _interaction_score_workload("interaction-score", 800, 10, 4, repeats=5),
+        _interaction_score_workload("interaction-score-wide", 800, 30, 4, repeats=3),
         # CPU/GPU pairs. Each `-cpu` row is the same shape, the same seed and the
         # same timing boundary as the `-gpu*` row beneath it, so the two can be
         # read against each other directly.

@@ -190,11 +190,11 @@ class TestSelectionReachesTheModels:
         )
 
     def test_regressor_operator_changes_predictions(self):
-        from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
+        from tribblefis.gaussian_regressor import TribbleRegressor
         X, y = self._regression_data()
         preds = {}
         for family in NORM_FAMILIES:
-            m = MixtureOfGaussiansFuzzyRegressor(
+            m = TribbleRegressor(
                 n_output_buckets=3, tsk_order="1st", top_n=-1,
                 norm_conorm=family, random_state=0)
             preds[family] = m.fit(X, y).predict(X)
@@ -204,16 +204,16 @@ class TestSelectionReachesTheModels:
         assert not np.allclose(preds["min/max"], preds["einstein"])
 
     def test_regressor_refuses_a_mixed_pair_without_opt_in(self):
-        from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
+        from tribblefis.gaussian_regressor import TribbleRegressor
         X, y = self._regression_data()
-        m = MixtureOfGaussiansFuzzyRegressor(t_norm="probability", t_conorm="luk")
+        m = TribbleRegressor(t_norm="probability", t_conorm="luk")
         with pytest.raises(ValueError, match="De Morgan"):
             m.fit(X, y)
 
     def test_regressor_accepts_a_mixed_pair_on_opt_in(self):
-        from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
+        from tribblefis.gaussian_regressor import TribbleRegressor
         X, y = self._regression_data()
-        m = MixtureOfGaussiansFuzzyRegressor(
+        m = TribbleRegressor(
             n_output_buckets=3, tsk_order="1st", t_norm="probability",
             t_conorm="luk", allow_mixed_norms=True, random_state=0)
         assert np.all(np.isfinite(m.fit(X, y).predict(X)))
@@ -221,6 +221,6 @@ class TestSelectionReachesTheModels:
     def test_regressor_params_round_trip_for_sklearn_clone(self):
         """__init__ must only store its arguments, or clone() breaks."""
         from sklearn.base import clone
-        from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
-        m = MixtureOfGaussiansFuzzyRegressor(norm_conorm="einstein")
+        from tribblefis.gaussian_regressor import TribbleRegressor
+        m = TribbleRegressor(norm_conorm="einstein")
         assert clone(m).get_params()["norm_conorm"] == "einstein"

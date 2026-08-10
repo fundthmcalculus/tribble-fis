@@ -3,7 +3,7 @@
 Uses the PhiUSIIL Phishing URL dataset shipped with the repo
 (``gaussian_mixture/phishing_data/PhiUSIIL_Phishing_URL_Dataset.csv``): numeric
 URL/page features label each site as "legit" or "phish". Fits a
-``FuzzyClassificationTree`` and the flat ``MixtureOfGaussiansFuzzyClassifier``
+``FuzzyClassificationTree`` and the flat ``TribbleClassifier``
 baseline, prints accuracy for both, renders the tree as human-readable IF-THEN
 rules (with thresholds in raw feature units), and saves a matplotlib tree diagram.
 
@@ -40,7 +40,7 @@ from fuzzytree import (
     render_hme_text,
     render_tree_text,
 )
-from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+from tribblefis.gaussian_classifier import TribbleClassifier
 from tribblefis.scaling import StandardFuzzyScalar, UnitFuzzyScalar
 
 DATA_PATH = os.path.join(
@@ -85,8 +85,8 @@ def main():
     print("ACCURACY COMPARISON (classifying URLs as legit vs. phishing)")
     print("=" * 76)
 
-    baseline = MixtureOfGaussiansFuzzyClassifier(top_n=5, random_state=42).fit(X_tr, y_tr)
-    report("Flat TRIBBLE (MixtureOfGaussiansFuzzyClassifier)", y_te, baseline.predict(X_te))
+    baseline = TribbleClassifier(top_n=5, random_state=42).fit(X_tr, y_tr)
+    report("Flat TRIBBLE (TribbleClassifier)", y_te, baseline.predict(X_te))
 
     # Several of the URL/page count features here (e.g. NoOfSubDomain,
     # NoOfImage) span multiple orders of magnitude. StandardFuzzyScalar/UnitFuzzyScalar
@@ -100,12 +100,12 @@ def main():
     # unbounded centred output of StandardFuzzyScalar measurably hurts FIS
     # accuracy (see the StandardFuzzyScalar docstring for the measurement).
     standard_pipe = make_pipeline(
-        StandardFuzzyScalar(), MixtureOfGaussiansFuzzyClassifier(top_n=5, random_state=42)
+        StandardFuzzyScalar(), TribbleClassifier(top_n=5, random_state=42)
     ).fit(X_tr, y_tr)
     report("Flat TRIBBLE + StandardFuzzyScalar (Pipeline)", y_te, standard_pipe.predict(X_te))
 
     unit_pipe = make_pipeline(
-        UnitFuzzyScalar(), MixtureOfGaussiansFuzzyClassifier(top_n=5, random_state=42)
+        UnitFuzzyScalar(), TribbleClassifier(top_n=5, random_state=42)
     ).fit(X_tr, y_tr)
     report("Flat TRIBBLE + UnitFuzzyScalar (Pipeline)", y_te, unit_pipe.predict(X_te))
 

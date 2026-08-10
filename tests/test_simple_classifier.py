@@ -51,7 +51,7 @@ class TestSimpleClassifier(unittest.TestCase):
 
 
 class TestClassifierAnomalyParams(unittest.TestCase):
-    """`MixtureOfGaussiansFuzzyClassifier._anomaly_params` builds an
+    """`TribbleClassifier._anomaly_params` builds an
     AnomalyParameters, and got out of step with that NamedTuple's fields.
 
     Both failure modes were invisible to the suite because nothing imported the
@@ -65,19 +65,19 @@ class TestClassifierAnomalyParams(unittest.TestCase):
         is the whole test -- the SyntaxError took down the entire module, both
         classifiers with it, not just the method that contained it."""
         from tribblefis.gaussian_classifier import (
-            MixtureOfGaussiansFuzzyClassifier,
-            MixtureOfGaussiansFuzzySequenceClassifier,
+            TribbleClassifier,
+            TribbleSequenceClassifier,
         )
 
-        self.assertTrue(callable(MixtureOfGaussiansFuzzyClassifier))
-        self.assertTrue(callable(MixtureOfGaussiansFuzzySequenceClassifier))
+        self.assertTrue(callable(TribbleClassifier))
+        self.assertTrue(callable(TribbleSequenceClassifier))
 
     def test_anomaly_params_match_the_namedtuple_fields(self):
         """Every keyword `_anomaly_params` passes must be a real field, and the
         values it forwards must arrive intact."""
-        from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzySequenceClassifier
+        from tribblefis.gaussian_classifier import TribbleSequenceClassifier
 
-        clf = MixtureOfGaussiansFuzzySequenceClassifier(
+        clf = TribbleSequenceClassifier(
             anomaly_threshold=0.75, anomaly_label="unknown",
             norm_conorm="hamacher", member_function="gaussian",
         )

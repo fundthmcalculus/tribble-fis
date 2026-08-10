@@ -41,8 +41,8 @@ from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.utils.validation import check_is_fitted
 
 from tribblefis.gauss_math import calculate_gaussian_correlation, take_top_features
-from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
-from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
+from tribblefis.gaussian_classifier import TribbleClassifier
+from tribblefis.gaussian_regressor import TribbleRegressor
 from tribblefis.regression import partition_output
 
 from .builder import build_tree
@@ -152,6 +152,7 @@ class _BaseHierarchicalExperts(BaseEstimator):
         n_score_buckets=3,
         min_expert_samples=30,
         responsibility_threshold=0.2,
+        gate_style="trapezoid",
         expert_kwargs=None,
         random_state=42,
     ):
@@ -167,6 +168,7 @@ class _BaseHierarchicalExperts(BaseEstimator):
         self.n_score_buckets = n_score_buckets
         self.min_expert_samples = min_expert_samples
         self.responsibility_threshold = responsibility_threshold
+        self.gate_style = gate_style
         self.expert_kwargs = expert_kwargs
         self.random_state = random_state
 
@@ -189,6 +191,7 @@ class _BaseHierarchicalExperts(BaseEstimator):
             max_depth=self.max_depth,
             default_n_terms=self.n_gate_terms,
             max_terms_per_var=max(self.n_gate_terms, 2),
+            term_style=self.gate_style,
         )
 
     def _prepare(self, X):
@@ -235,8 +238,14 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
     """Hierarchical mixture of fuzzy experts for regression.
 
     Internal nodes softly route on a fuzzy gate variable; each leaf is a
-    ``MixtureOfGaussiansFuzzyRegressor`` sub-FIS. The output is the gate-weighted
+    ``TribbleRegressor`` sub-FIS. The output is the gate-weighted
     blend of the leaf experts.
+
+    ``gate_style="gaussian"`` is recommended if you plan to call
+    ``refine_em`` afterward: Gaussian gate terms have a free ``sigma`` that EM
+    can shrink to sharpen a soft boundary, whereas the default
+    ``"trapezoid"`` gates' ramp width is a fixed function of the split knots
+    and cannot sharpen the same way (EM still refines their knot *locations*).
     """
 
     def fit(self, X, y):
@@ -258,7 +267,7 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
         for leaf in _leaves(self.tree_):
             idx = self._expert_training_index(R, leaf.leaf_id)
             if len(idx) >= self.min_expert_samples and np.ptp(y_value[idx]) > _EPS:
-                expert = MixtureOfGaussiansFuzzyRegressor(**base_kwargs)
+                expert = TribbleRegressor(**base_kwargs)
                 expert.fit(X_df.iloc[idx], y_value[idx])
                 feats = list(getattr(expert, "top_features_", []))
                 kind = "sub-FIS"
@@ -285,6 +294,18 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
             y_pred += R[:, leaf_id] * expert.predict(X)
         return y_pred
 
+    def refine_em(self, X, y, max_iter=15, tol=1e-4, var_floor=1e-6, min_mass=1.0, verbose=False):
+        """Refine this fitted HME with a true EM loop (see ``fuzzytree.em`` and
+        ``EM_REFINEMENT.md``), replacing the one-shot greedy gate-only fit with
+        posterior responsibilities that also weigh each expert's fit quality.
+        Structure (the gate tree shape) stays fixed; only gate/expert
+        parameters move. Mutates and returns ``self``."""
+        from .em import refine_em_regressor
+
+        return refine_em_regressor(
+            self, X, y, max_iter=max_iter, tol=tol, var_floor=var_floor, min_mass=min_mass, verbose=verbose
+        )
+
 
 # --------------------------------------------------------------------------
 # Classification HME
@@ -293,7 +314,7 @@ class HierarchicalFuzzyExpertsClassifier(_BaseHierarchicalExperts, ClassifierMix
     """Hierarchical mixture of fuzzy experts for classification.
 
     Internal nodes softly route on a fuzzy gate variable; each leaf is a
-    ``MixtureOfGaussiansFuzzyClassifier`` sub-FIS. Class probabilities are the
+    ``TribbleClassifier`` sub-FIS. Class probabilities are the
     gate-weighted blend of the leaf experts' probabilities.
     """
 
@@ -324,7 +345,7 @@ class HierarchicalFuzzyExpertsClassifier(_BaseHierarchicalExperts, ClassifierMix
             idx = self._expert_training_index(R, leaf.leaf_id)
             present = np.unique(y_idx[idx]) if len(idx) else np.array([], dtype=int)
             if len(idx) >= self.min_expert_samples and len(present) >= 2:
-                clf = MixtureOfGaussiansFuzzyClassifier(**base_kwargs)
+                clf = TribbleClassifier(**base_kwargs)
                 clf.fit(X_df.iloc[idx], self.classes_[y_idx[idx]])
                 expert = _AlignedClassifier(clf, self.classes_)
                 feats = list(getattr(clf, "top_features_", []))
@@ -359,3 +380,16 @@ class HierarchicalFuzzyExpertsClassifier(_BaseHierarchicalExperts, ClassifierMix
 
     def predict(self, X):
         return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
+
+    def refine_em(self, X, y, max_iter=15, tol=1e-4, min_mass=1.0, random_state=None, verbose=False):
+        """Refine this fitted HME with a true EM loop (see ``fuzzytree.em`` and
+        ``EM_REFINEMENT.md``). Structure stays fixed; gate terms and expert
+        parameters move. Expert refits use responsibility-weighted importance
+        resampling (the classifier sub-FIS has no separable consequent to
+        weight-refit while freezing antecedents). Mutates and returns ``self``."""
+        from .em import refine_em_classifier
+
+        return refine_em_classifier(
+            self, X, y, max_iter=max_iter, tol=tol, min_mass=min_mass,
+            random_state=random_state, verbose=verbose,
+        )

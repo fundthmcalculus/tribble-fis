@@ -2,8 +2,8 @@
 internal helpers.
 
 Before this, create_gaussian_membership_dict/create_trapz_membership_dict
-accepted a row cap, but MixtureOfGaussiansFuzzyClassifier and
-MixtureOfGaussiansFuzzyRegressor had no way to pass one in -- the cap used to
+accepted a row cap, but TribbleClassifier and
+TribbleRegressor had no way to pass one in -- the cap used to
 be silently hardcoded at 20,000 rows and there was no way to restore or
 change it through the public API.
 """
@@ -14,9 +14,9 @@ import numpy as np
 import pandas as pd
 from sklearn.base import clone
 
-from tribblefis.gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+from tribblefis.gaussian_classifier import TribbleClassifier
 from tribblefis.gaussian_regressor import (
-    MixtureOfGaussiansFuzzyRegressor,
+    TribbleRegressor,
     MimoGaussianPredictor,
 )
 
@@ -35,29 +35,29 @@ def _classification_frame(n=300, seed=0):
 
 class TestClassifierMaxSamples(unittest.TestCase):
     def test_is_a_constructor_parameter(self):
-        clf = MixtureOfGaussiansFuzzyClassifier(max_samples=123)
+        clf = TribbleClassifier(max_samples=123)
         self.assertEqual(clf.get_params()["max_samples"], 123)
 
     def test_default_is_none(self):
-        clf = MixtureOfGaussiansFuzzyClassifier()
+        clf = TribbleClassifier()
         self.assertIsNone(clf.max_samples)
 
     def test_clone_round_trips(self):
-        clf = MixtureOfGaussiansFuzzyClassifier(max_samples=50)
+        clf = TribbleClassifier(max_samples=50)
         cloned = clone(clf)
         self.assertEqual(cloned.max_samples, 50)
 
     def test_fit_and_predict_with_a_cap(self):
         X, y = _classification_frame(300)
-        clf = MixtureOfGaussiansFuzzyClassifier(n_gaussians=2, max_samples=50, random_state=0)
+        clf = TribbleClassifier(n_gaussians=2, max_samples=50, random_state=0)
         clf.fit(X, y)
         preds = clf.predict(X)
         self.assertEqual(len(preds), len(y))
 
     def test_capped_and_uncapped_fits_both_succeed_and_can_differ(self):
         X, y = _classification_frame(300)
-        capped = MixtureOfGaussiansFuzzyClassifier(n_gaussians=2, max_samples=20, random_state=0)
-        uncapped = MixtureOfGaussiansFuzzyClassifier(n_gaussians=2, max_samples=None, random_state=0)
+        capped = TribbleClassifier(n_gaussians=2, max_samples=20, random_state=0)
+        uncapped = TribbleClassifier(n_gaussians=2, max_samples=None, random_state=0)
         capped.fit(X, y)
         uncapped.fit(X, y)
         # Both must produce a usable model; whether the memberships differ is
@@ -75,16 +75,16 @@ class TestRegressorMaxSamples(unittest.TestCase):
         return X, y
 
     def test_is_a_constructor_parameter(self):
-        reg = MixtureOfGaussiansFuzzyRegressor(max_samples=77)
+        reg = TribbleRegressor(max_samples=77)
         self.assertEqual(reg.get_params()["max_samples"], 77)
 
     def test_clone_round_trips(self):
-        reg = MixtureOfGaussiansFuzzyRegressor(max_samples=30)
+        reg = TribbleRegressor(max_samples=30)
         self.assertEqual(clone(reg).max_samples, 30)
 
     def test_fit_and_predict_with_a_cap(self):
         X, y = self._regression_frame(300)
-        reg = MixtureOfGaussiansFuzzyRegressor(n_gaussians=2, max_samples=40, random_state=0)
+        reg = TribbleRegressor(n_gaussians=2, max_samples=40, random_state=0)
         reg.fit(X, y)
         preds = reg.predict(X)
         self.assertEqual(len(preds), len(y))

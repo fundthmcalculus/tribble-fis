@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 
 from tribblefis.gaussian_classifier import (
-    MixtureOfGaussiansFuzzyClassifier,
-    MixtureOfGaussiansFuzzySequenceClassifier,
+    TribbleClassifier,
+    TribbleSequenceClassifier,
 )
 
 
@@ -31,7 +31,7 @@ def _make_blobs(n_per_class: int = 60, seed: int = 0):
 
 def test_sequence_fits_specialists():
     X, y = _make_blobs()
-    clf = MixtureOfGaussiansFuzzySequenceClassifier(max_layers=4, min_confused=5, min_class_samples=2)
+    clf = TribbleSequenceClassifier(max_layers=4, min_confused=5, min_class_samples=2)
     clf.fit(X, y)
     # Primary + at least one specialist keyed to a confused class.
     assert clf.n_layers >= 2
@@ -44,7 +44,7 @@ def test_sequence_fits_specialists():
 
 def test_predict_returns_only_real_labels():
     X, y = _make_blobs()
-    clf = MixtureOfGaussiansFuzzySequenceClassifier(max_layers=4, min_confused=5, min_class_samples=2)
+    clf = TribbleSequenceClassifier(max_layers=4, min_confused=5, min_class_samples=2)
     clf.fit(X, y)
     preds = clf.predict(X)
     assert len(preds) == len(X)
@@ -56,7 +56,7 @@ def test_predict_returns_only_real_labels():
 def test_only_confused_class_predictions_can_change():
     """A sample is only refined if its current prediction is a specialist's class."""
     X, y = _make_blobs()
-    clf = MixtureOfGaussiansFuzzySequenceClassifier(max_layers=4, min_confused=5, min_class_samples=2)
+    clf = TribbleSequenceClassifier(max_layers=4, min_confused=5, min_class_samples=2)
     clf.fit(X, y)
 
     primary_pred = np.asarray(clf.layers_[0].predict(X), dtype=object)
@@ -70,7 +70,7 @@ def test_only_confused_class_predictions_can_change():
 
 def test_cascade_accuracy_is_comparable():
     X, y = _make_blobs()
-    clf = MixtureOfGaussiansFuzzySequenceClassifier(max_layers=4, min_confused=5, min_class_samples=2)
+    clf = TribbleSequenceClassifier(max_layers=4, min_confused=5, min_class_samples=2)
     clf.fit(X, y)
 
     y_obj = y.values.astype(object)
@@ -85,7 +85,7 @@ def test_cascade_accuracy_is_comparable():
 def test_anomaly_stops_refinement():
     """A point far outside every trained region keeps the primary prediction."""
     X, y = _make_blobs()
-    clf = MixtureOfGaussiansFuzzySequenceClassifier(max_layers=4, min_confused=5, min_class_samples=2)
+    clf = TribbleSequenceClassifier(max_layers=4, min_confused=5, min_class_samples=2)
     clf.fit(X, y)
 
     # A far-away outlier: a specialist should flag it as an anomaly and leave the
@@ -98,7 +98,7 @@ def test_anomaly_stops_refinement():
 
 def test_anomaly_label_collision_raises():
     X, y = _make_blobs()
-    clf = MixtureOfGaussiansFuzzySequenceClassifier(anomaly_label="a")
+    clf = TribbleSequenceClassifier(anomaly_label="a")
     try:
         clf.fit(X, y)
     except ValueError:

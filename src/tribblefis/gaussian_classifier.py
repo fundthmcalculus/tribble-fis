@@ -7,7 +7,13 @@ from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.utils.validation import check_X_y, check_is_fitted
 from sklearn.utils.multiclass import check_classification_targets
 
-from .gauss_data import AnomalyParameters, DefaultNormCornorm
+from .gauss_data import (
+    AnomalyParameters,
+    DefaultNormCornorm,
+    DEFAULT_DEDUP_RTOL,
+    DEFAULT_DEDUP_ATOL,
+    SimpleGaussianClassifierModel,
+)
 from .gauss_math import (
     calculate_gaussian_correlation,
     take_top_features,
@@ -16,7 +22,7 @@ from .gauss_math import (
     tsk_firing_strengths,
 )
 
-class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
+class TribbleClassifier(BaseEstimator, ClassifierMixin):
     """
     Gaussian Mixture Classifier that wraps the TSK-based Gaussian Mixture model.
     It follows scikit-learn's ClassifierMixin interface.
@@ -26,7 +32,7 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
                  refine=False, refine_method="coordinate", refine_l2_shrink=0.05,
                  t_norm=None, t_conorm=None, allow_mixed_norms=False, max_samples=None):
         """
-        Initialize the MixtureOfGaussiansFuzzyClassifier.
+        Initialize the TribbleClassifier.
 
         Args:
             top_n: Number of top features to select based on differentiation score.
@@ -276,10 +282,53 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.model_ = self.model_.augment(new_model)
         return self
 
+    def deduplicate(self, rtol: float = DEFAULT_DEDUP_RTOL, atol: float = DEFAULT_DEDUP_ATOL) -> int:
+        """Remove near-duplicate membership functions from the fitted model, in place.
 
-class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
+        Two membership functions of the same (feature, label) only ever feed the
+        same conorm fold, so collapsing near-duplicates there cannot change any
+        prediction: exactly, at ``rtol=atol=0``; within measurement noise at
+        looser tolerances. See issue #85 for the measurement this tradeoff is
+        based on -- the defaults reproduce the tolerance this estimator always
+        used before this method existed.
+
+        This only touches ``self.model_`` in place; ``predict``/``predict_proba``
+        read from it directly, so no other state needs updating.
+
+        Args:
+            rtol, atol: Passed through to
+                `GaussianMixtureModel.remove_duplicate_membership_fcns`.
+
+        Returns:
+            The number of membership functions actually removed.
+        """
+        check_is_fitted(self)
+        removed = self.model_.remove_duplicate_membership_fcns(rtol=rtol, atol=atol)
+        self.n_membership_functions_ = self.model_.n_membership_functions
+        self.n_deduplicated_membership_functions_ = removed
+        return removed
+
+    def to_simple_model(
+        self, rtol: float = DEFAULT_DEDUP_RTOL, atol: float = DEFAULT_DEDUP_ATOL
+    ) -> SimpleGaussianClassifierModel:
+        """Materialize this classifier as an explicit, deduplicated rule model.
+
+        Unlike `deduplicate`, this leaves `self.model_` untouched and returns a
+        standalone `SimpleGaussianClassifierModel` (see `gauss_math.simple_gaussian_predict`)
+        whose rules reference deduplicated membership-function ids -- useful for
+        inspecting or deploying the model as an explicit rule set.
+
+        Args:
+            rtol, atol: Passed through to `GaussianMixtureModel.to_simple_model`;
+                see `deduplicate` for what these tradeoff.
+        """
+        check_is_fitted(self)
+        return self.model_.to_simple_model(self.anomaly_params, rtol=rtol, atol=atol)
+
+
+class TribbleSequenceClassifier(BaseEstimator, ClassifierMixin):
     """
-    A base :class:`MixtureOfGaussiansFuzzyClassifier` refined by *local experts*.
+    A base :class:`TribbleClassifier` refined by *local experts*.
 
     The idea, inspired by ``gaussian_mixture/iris_v2.py``, is to keep a single
     global model that spans every class and then bolt on small, focused *binary*
@@ -294,7 +343,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
        enough (at least ``min_confused`` predicted rows), the true class ``T``
        it is *most* mistaken for (at least ``min_class_samples`` rows) is found
        and a **local expert** — a fresh binary
-       :class:`MixtureOfGaussiansFuzzyClassifier` trained only on the ``P`` and
+       :class:`TribbleClassifier` trained only on the ``P`` and
        ``T`` rows — is added. Because the expert re-selects features and re-fits
        Gaussians on just that pair, it can key on evidence that separates ``P``
        from ``T`` even when that evidence is too weak to survive the global
@@ -360,7 +409,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
             top_n, top_p, n_gaussians, member_function, norm_conorm, random_state,
             max_samples:
                 Passed through to every underlying
-                :class:`MixtureOfGaussiansFuzzyClassifier` (base and experts).
+                :class:`TribbleClassifier` (base and experts).
             max_layers: Maximum number of models in the cascade *including* the
                 base model. The cascade may be shorter if fewer confused regions
                 are worth an expert.
@@ -395,7 +444,7 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         """
         self.is_fitted_: bool = False
         # layers_[0] is the base model; layers_[1:] mirror experts_.
-        self.layers_: list[MixtureOfGaussiansFuzzyClassifier] = []
+        self.layers_: list[TribbleClassifier] = []
         # Each entry is (region_class P, confused true class T, expert_model,
         # tuned anomaly threshold).
         self.experts_: list[tuple] = []
@@ -423,8 +472,8 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
         self.refine_l2_shrink = refine_l2_shrink
         self.max_samples = max_samples
 
-    def _make_layer(self) -> MixtureOfGaussiansFuzzyClassifier:
-        return MixtureOfGaussiansFuzzyClassifier(
+    def _make_layer(self) -> TribbleClassifier:
+        return TribbleClassifier(
             top_n=self.top_n,
             top_p=self.top_p,
             n_gaussians=self.n_gaussians,
@@ -658,6 +707,19 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
             self.experts_.append((p, t, expert, threshold))
             self.layers_.append(expert)
 
+        # TODO(#85): each expert re-fits Gaussians on a {P, T} subset that, for
+        # the shared class, covers rows the base model already fit -- with
+        # deterministic k-means/BIC selection this frequently produces
+        # bit-for-bit identical Gaussians between an expert and the base.
+        # Nothing currently deduplicates across `self.layers_`. A cross-layer
+        # `to_simple_model()` on this cascade -- unioning `layers_` via
+        # `GaussianMixtureModel.augment()` and deduplicating the result with
+        # `TribbleClassifier.deduplicate()`/`to_simple_model()` -- would recover
+        # that redundancy, but is a separate, larger change: it also means
+        # flattening `predict()`'s anomaly/confidence-margin gating away, whose
+        # own accuracy cost (measured in #85) is a mechanism question, not a
+        # numeric-approximation one, and is *not* well-described by a single
+        # safe number. Do not wire dedup in here without addressing that.
         self.is_fitted_ = True
         return self
 

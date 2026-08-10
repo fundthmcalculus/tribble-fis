@@ -33,6 +33,7 @@ Pipeline ("TRIBBLE a strong initial candidate, then refine"):
 :class:`RuspiniFuzzyClassifier` wraps the whole flow behind the scikit-learn API.
 """
 
+import itertools
 import uuid
 import typing
 
@@ -49,6 +50,7 @@ from .gauss_data import (
     Rule,
     AnomalyParameters,
 )
+from .triangle_fit import GAUSSIAN_TRIANGLE_MAE_HALF_WIDTH
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +91,57 @@ def build_triangular_partition(
         c = np.inf if i == k - 1 else float(apexes[i + 1])
         terms.append(TriangularMembership(a=a, b=b, c=c, id=term_ids[i]))
     return terms
+
+
+def _split_contiguous_runs(idxs: typing.Sequence[int]) -> list[list[int]]:
+    """Split sorted-unique integer indices into maximal runs of consecutive values.
+
+    On a shared, ordered knot vector, a run of consecutive term indices is
+    exactly a convex (contiguous) clause; a gap between two indices means the
+    clause covers disjoint triangles -- see :func:`_split_convex_index_clauses`.
+    """
+    idxs = sorted(set(idxs))
+    if not idxs:
+        return []
+    runs = [[idxs[0]]]
+    for v in idxs[1:]:
+        if v == runs[-1][-1] + 1:
+            runs[-1].append(v)
+        else:
+            runs.append([v])
+    return runs
+
+
+def _split_convex_index_clauses(
+    antecedent_idx: dict[str, list[int]],
+) -> list[dict[str, list[int]]]:
+    """Expand a rule's antecedent (feature -> OR'd term indices) into the
+    Cartesian product of each feature's convex (contiguous-run) sub-clauses.
+
+    A feature whose indices are already one contiguous run is left as a
+    single-element list, so a rule with no disjoint clauses at all is
+    returned unchanged (as its sole combination).
+    """
+    features = list(antecedent_idx.keys())
+    per_feature_runs = [_split_contiguous_runs(antecedent_idx[f]) for f in features]
+    combos = []
+    for runs in itertools.product(*per_feature_runs):
+        combos.append({f: run for f, run in zip(features, runs)})
+    return combos
+
+
+def verify_partition_of_unity(
+    terms: typing.Sequence[TriangularMembership], xs: np.ndarray, atol: float = 1e-9
+) -> bool:
+    """Check that ``terms`` sum to exactly 1 at every point of ``xs``.
+
+    Any partition built by :func:`build_triangular_partition` satisfies this
+    analytically -- this is a direct, testable statement of that property
+    (the "Ruspini partition" invariant), rather than something callers have
+    to trust implicitly.
+    """
+    total = np.sum([t.evaluate(np.asarray(xs, dtype=float)) for t in terms], axis=0)
+    return bool(np.allclose(total, 1.0, atol=atol))
 
 
 def _merge_close(values: typing.Sequence[float], tol: float) -> list[float]:
@@ -171,18 +224,31 @@ class RuspiniPartitionModel:
         proba[nz] = fs[nz] / row[nz]
         return proba, labels
 
-    def to_simple_model(self) -> SimpleGaussianClassifierModel:
+    def to_simple_model(self, convex_clauses_only: bool = False) -> SimpleGaussianClassifierModel:
         """Materialise the current knots as an explicit :class:`SimpleGaussianClassifierModel`
-        (flat triangular MFs + explicit rules) for inspection / interoperability."""
+        (flat triangular MFs + explicit rules) for inspection / interoperability.
+
+        When ``convex_clauses_only`` is set, any feature clause whose OR'd term
+        indices are not contiguous on the shared knot vector (i.e. it covers
+        disjoint, non-adjacent triangles) is split into one rule per maximal
+        run of consecutive indices, ANDed with the rest of the original
+        antecedents and pointing at the same consequent. See
+        :func:`_split_contiguous_runs`.
+        """
         terms = self.feature_terms()
         input_mfs = [mf for f in self.feature_order for mf in terms[f]]
         rules: list[Rule] = []
         for consequent, antecedent_idx in self.rules:
-            antecedents = {
-                f: [terms[f][i].id for i in idxs]
-                for f, idxs in antecedent_idx.items()
-            }
-            rules.append(Rule(antecedents=antecedents, consequent=consequent))
+            if convex_clauses_only:
+                combos = _split_convex_index_clauses(antecedent_idx)
+            else:
+                combos = [antecedent_idx]
+            for combo in combos:
+                antecedents = {
+                    f: [terms[f][i].id for i in idxs]
+                    for f, idxs in combo.items()
+                }
+                rules.append(Rule(antecedents=antecedents, consequent=consequent))
         # Carry the model's inference t-norm into the explicit form (without adding
         # an anomaly class) so ``simple_gaussian_predict`` on the serialized model
         # matches this model's own ``predict``.
@@ -259,7 +325,7 @@ def ruspinize_model(
     merge_tol_frac: float = 0.05,
     max_terms: int | None = None,
     assign_frac: float = 0.5,
-    sigma_knots: float = 0.0,
+    sigma_knots: float = GAUSSIAN_TRIANGLE_MAE_HALF_WIDTH,
     anomaly_params: AnomalyParameters | None = None,
 ) -> RuspiniPartitionModel:
     """Convert a derived (implicit) Gaussian classifier into an explicit,
@@ -268,7 +334,12 @@ def ruspinize_model(
     Per feature, the union of every class's Gaussian centres becomes the pool of
     apex-knot *landmarks*; landmarks closer than ``merge_tol_frac`` of the feature
     range are merged. The survivors are the triangular apex knots (a Ruspini
-    partition of that axis).
+    partition of that axis). By default (``sigma_knots`` at its MAE-optimal
+    value, see :mod:`tribblefis.triangle_fit`) each Gaussian also contributes
+    its fitted triangle's two shoulder knots, ``mu +/- sigma_knots * sigma``,
+    so the partition resolves each Gaussian's *spread* -- not just its centre
+    -- as its own triangle would. Pass ``sigma_knots=0.0`` for the old
+    centres-only behaviour.
 
     **Membership-function matching (data-driven).** One explicit rule per class is
     written by matching the class, feature by feature, to the partition term(s) it
@@ -288,6 +359,10 @@ def ruspinize_model(
         max_terms: optional cap on the number of terms per feature (quantile thinning).
         assign_frac: activation threshold (fraction of a class's best term) for OR-ing
             a term into that class's rule.
+        sigma_knots: half-width (in units of sigma) of extra apex knots added at
+            ``mu +/- sigma_knots * sigma`` for every Gaussian. Defaults to the
+            MAE-optimal Gaussian-to-triangle fit half-width; ``0.0`` disables
+            this and uses centres only.
         anomaly_params: anomaly parameters for the explicit model (defaults to the
             source model's).
     """
@@ -377,13 +452,101 @@ def ruspinize_model(
 
 
 # ---------------------------------------------------------------------------
+# Post-training gap fill: raise the resolution of under-examined stretches.
+# ---------------------------------------------------------------------------
+
+def complete_ruspini_partition(
+    model: RuspiniPartitionModel, X: pd.DataFrame, min_gap_frac: float = 0.1
+) -> RuspiniPartitionModel:
+    """Insert extra knots into any inter-knot span that is "too wide".
+
+    A knot-based Ruspini partition already sums to 1 everywhere by
+    construction (see :func:`build_triangular_partition`) -- there is no
+    literal 0-coverage hole to patch. What *can* happen is a single triangle
+    silently spanning a large, under-examined stretch of a feature's observed
+    range (e.g. the gap between two well-separated classes). This is a
+    resolution problem, not a coverage one: this function fills such gaps by
+    inserting a new knot at the midpoint of any span wider than
+    ``min_gap_frac`` of the feature's observed range in ``X``, one knot at a
+    time (a very wide gap gets split repeatedly until every remaining span is
+    narrow enough).
+
+    Every newly inserted term is OR'd into any rule that already references
+    at least one of its two neighbouring terms, so no rule loses coverage and
+    no new term is left orphaned (unreachable by any rule).
+
+    This does *not* attempt to absorb an arbitrary foreign (non-knot-based)
+    term set -- e.g. independently-fit Gaussians or triangles that never went
+    through :func:`ruspinize_model` -- into a partition. Such a set can have
+    genuine 0-coverage holes, and patching those without disturbing the
+    existing terms is a materially different, shape-preserving-fit problem
+    this function does not solve.
+    """
+    new_apexes = {f: list(model.apexes[f]) for f in model.feature_order}
+    new_term_ids = {f: list(model.term_ids[f]) for f in model.feature_order}
+    # rule index -> {feature: [term_index, ...]}, mutated in place below.
+    new_rules = [(consequent, {f: list(idxs) for f, idxs in antecedent.items()})
+                 for consequent, antecedent in model.rules]
+
+    for f in model.feature_order:
+        if f not in X.columns:
+            continue
+        col = X[f].to_numpy(dtype=float)
+        if len(col) == 0:
+            continue
+        lo, hi = float(np.min(col)), float(np.max(col))
+        rng = hi - lo if hi > lo else 1.0
+        min_gap = min_gap_frac * rng
+
+        apex = new_apexes[f]
+        i = 0
+        while i < len(apex) - 1:
+            gap = apex[i + 1] - apex[i]
+            if gap <= min_gap:
+                i += 1
+                continue
+            # Split this span with a new knot at its midpoint.
+            mid = 0.5 * (apex[i] + apex[i + 1])
+            new_idx = i + 1
+            new_id = uuid.uuid4()
+            apex.insert(new_idx, mid)
+            new_term_ids[f].insert(new_idx, new_id)
+
+            # Term indices at or beyond new_idx shift up by one; rewrite every
+            # rule's reference to this feature accordingly, then OR the new
+            # term into any rule that referenced either of its neighbours
+            # (index i, now the left neighbour, or the old i+1, now shifted
+            # to new_idx + 1, the right neighbour).
+            for _, antecedent in new_rules:
+                idxs = antecedent.get(f)
+                if idxs is None:
+                    continue
+                shifted = [(j + 1 if j >= new_idx else j) for j in idxs]
+                if i in shifted or (new_idx + 1) in shifted:
+                    shifted.append(new_idx)
+                antecedent[f] = sorted(set(shifted))
+            # Re-examine the (now narrower) left half of the span before
+            # moving on, in case it also still exceeds min_gap.
+        # else: loop's own `i += 1` already advances past spans within budget.
+
+    return RuspiniPartitionModel(
+        feature_order=list(model.feature_order),
+        apexes={f: _dedupe_increasing(np.array(sorted(new_apexes[f]), dtype=float)) for f in model.feature_order},
+        term_ids=new_term_ids,
+        rules=new_rules,
+        anomaly_params=model.anomaly_params,
+        norm_conorm=model.norm_conorm,
+    )
+
+
+# ---------------------------------------------------------------------------
 # scikit-learn estimator.
 # ---------------------------------------------------------------------------
 
 class RuspiniFuzzyClassifier(BaseEstimator, ClassifierMixin):
     """A triangular, Ruspini-partitioned fuzzy classifier.
 
-    Fits a Gaussian :class:`MixtureOfGaussiansFuzzyClassifier` to derive the
+    Fits a Gaussian :class:`TribbleClassifier` to derive the
     per-class landmarks, converts it to an explicit Ruspini triangular model
     (:func:`ruspinize_model`), and -- optionally -- refines the partition's apex
     knots against a cross-entropy objective with the `optimizers` package
@@ -413,7 +576,7 @@ class RuspiniFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.random_state = random_state
 
     def fit(self, X, y):
-        from .gaussian_classifier import MixtureOfGaussiansFuzzyClassifier
+        from .gaussian_classifier import TribbleClassifier
 
         if isinstance(X, pd.DataFrame):
             self.feature_names_in_ = X.columns.tolist()
@@ -424,7 +587,7 @@ class RuspiniFuzzyClassifier(BaseEstimator, ClassifierMixin):
         y_arr = np.asarray(y)
         self.classes_ = np.unique(y_arr)
 
-        base = MixtureOfGaussiansFuzzyClassifier(
+        base = TribbleClassifier(
             top_n=self.top_n, top_p=self.top_p, n_gaussians=self.n_gaussians,
             member_function="gaussian",
             random_state=self.random_state,

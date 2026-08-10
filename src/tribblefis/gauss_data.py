@@ -1,3 +1,4 @@
+import itertools
 import uuid
 from math import prod
 from typing import NamedTuple, Literal, Optional
@@ -37,6 +38,16 @@ MemberFunction = Literal["gaussian", "triangular", "trap"]
 # the most familiar (product / probabilistic sum).
 DefaultNormCornorm: NormConorm = "probability"
 DefaultMemberFunction: MemberFunction = "gaussian"
+
+# Default numeric tolerance for membership-function deduplication (see
+# `_is_close` and issue #85). These are deliberately conservative -- an
+# exploratory measurement on Glass classification found the current default
+# merges ~13% of raw MFs with an accuracy delta indistinguishable from noise,
+# and headroom up to ~3x this before any real cost appears -- so callers who
+# want more reduction should pass a larger `rtol`/`atol` explicitly rather
+# than have the module quietly become more aggressive under them.
+DEFAULT_DEDUP_RTOL = 1e-2
+DEFAULT_DEDUP_ATOL = 1e-3
 
 NORM_FAMILIES: tuple[NormConorm, ...] = (
     "min/max", "probability", "luk", "hamacher", "einstein",
@@ -233,6 +244,95 @@ class TriangularMembership(NamedTuple):
 AnyMembership = GaussianMembership | TrapezoidMembership | TriangularMembership
 
 
+class IT2GaussianMembership(NamedTuple):
+    """An interval type-2 Gaussian membership function.
+
+    Consists of an upper membership function (UMF) and lower membership function (LMF),
+    both Gaussians. The region between them is the footprint of uncertainty (FoU).
+    """
+    upper_mf: GaussianMembership
+    lower_mf: GaussianMembership
+    id: Optional[uuid.UUID] = None
+
+    @staticmethod
+    def create(
+        upper_mu: float, upper_sigma: float,
+        lower_mu: float, lower_sigma: float
+    ) -> "IT2GaussianMembership":
+        return IT2GaussianMembership(
+            upper_mf=GaussianMembership(mu=upper_mu, sigma=upper_sigma),
+            lower_mf=GaussianMembership(mu=lower_mu, sigma=lower_sigma),
+            id=uuid.uuid4()
+        )
+
+    def evaluate(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Evaluate both upper and lower MFs at given points.
+
+        Returns:
+            (y_upper, y_lower) - both are numpy arrays of same shape as x
+        """
+        y_upper = self.upper_mf.evaluate(x)
+        y_lower = self.lower_mf.evaluate(x)
+        return y_upper, y_lower
+
+
+class IT2TrapezoidMembership(NamedTuple):
+    """An interval type-2 trapezoidal membership function.
+
+    Consists of upper and lower trapezoidal membership functions.
+    """
+    upper_mf: TrapezoidMembership
+    lower_mf: TrapezoidMembership
+    id: Optional[uuid.UUID] = None
+
+    @staticmethod
+    def create(
+        upper_a: float, upper_b: float, upper_c: float, upper_d: float,
+        lower_a: float, lower_b: float, lower_c: float, lower_d: float,
+    ) -> "IT2TrapezoidMembership":
+        return IT2TrapezoidMembership(
+            upper_mf=TrapezoidMembership(a=upper_a, b=upper_b, c=upper_c, d=upper_d),
+            lower_mf=TrapezoidMembership(a=lower_a, b=lower_b, c=lower_c, d=lower_d),
+            id=uuid.uuid4()
+        )
+
+    def evaluate(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Evaluate both upper and lower MFs at given points."""
+        y_upper = self.upper_mf.evaluate(x)
+        y_lower = self.lower_mf.evaluate(x)
+        return y_upper, y_lower
+
+
+class IT2TriangularMembership(NamedTuple):
+    """An interval type-2 triangular membership function.
+
+    Consists of upper and lower triangular membership functions.
+    """
+    upper_mf: TriangularMembership
+    lower_mf: TriangularMembership
+    id: Optional[uuid.UUID] = None
+
+    @staticmethod
+    def create(
+        upper_a: float, upper_b: float, upper_c: float,
+        lower_a: float, lower_b: float, lower_c: float,
+    ) -> "IT2TriangularMembership":
+        return IT2TriangularMembership(
+            upper_mf=TriangularMembership(a=upper_a, b=upper_b, c=upper_c),
+            lower_mf=TriangularMembership(a=lower_a, b=lower_b, c=lower_c),
+            id=uuid.uuid4()
+        )
+
+    def evaluate(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Evaluate both upper and lower MFs at given points."""
+        y_upper = self.upper_mf.evaluate(x)
+        y_lower = self.lower_mf.evaluate(x)
+        return y_upper, y_lower
+
+
+IT2AnyMembership = IT2GaussianMembership | IT2TrapezoidMembership | IT2TriangularMembership
+
+
 class Rule(NamedTuple):
     """A fuzzy rule mapping input membership functions to an output label."""
 
@@ -347,24 +447,51 @@ class GaussianMixtureModel(NamedTuple):
     def all_output_labels(self) -> list[int]:
         return list(set([label for label_model in self.feature_models.values() for label in label_model.ordered_keys]))
 
-    def identify_duplicate_membership_fcns(self) -> list[tuple[str, int, AnyMembership, AnyMembership]]:
+    def identify_duplicate_membership_fcns(
+        self, rtol: float = DEFAULT_DEDUP_RTOL, atol: float = DEFAULT_DEDUP_ATOL
+    ) -> list[tuple[str, int, AnyMembership, AnyMembership]]:
+        """Find near-duplicate membership functions within each (feature, label).
+
+        Two memberships in the same (feature, label) list only ever feed the same
+        conorm fold, so a duplicate found here can be dropped without changing any
+        prediction (exactly, at ``rtol=atol=0``; within measurement noise at looser
+        tolerances -- see issue #85).
+
+        Args:
+            rtol, atol: Passed through to `_is_close`. The defaults match the
+                historical hardcoded tolerance; pass looser values to trade more
+                reduction for more (noise-level, per the issue #85 measurement)
+                risk.
+        """
         duplicates = []
         for feature_name, feature_model in self.feature_models.items():
             for label, label_model in feature_model.label_models.items():
                 for i, mf in enumerate(label_model.memberships):
                     for j, other_mf in enumerate(label_model.memberships):
                         if i < j:
-                            if _is_close(mf, other_mf):
+                            if _is_close(mf, other_mf, rtol=rtol, atol=atol):
                                 duplicates.append((feature_name, label, other_mf, mf))
         return duplicates
 
-    def get_deduplicated_membership_fcns(self) -> dict[AnyMembership, AnyMembership]:
-        """ Returns a dictionary of [to_replace, with_this] membership functions."""
+    def get_deduplicated_membership_fcns(
+        self, rtol: float = DEFAULT_DEDUP_RTOL, atol: float = DEFAULT_DEDUP_ATOL
+    ) -> dict[AnyMembership, AnyMembership]:
+        """Returns a dictionary of [to_replace, with_this] membership functions.
+
+        Unlike `identify_duplicate_membership_fcns`, this compares *every*
+        membership function against every other, regardless of feature or label --
+        it is meant for `to_simple_model`'s flat, explicit-rule representation,
+        where a duplicate found across labels is still a real duplicate id to
+        collapse.
+
+        Args:
+            rtol, atol: Passed through to `_is_close`.
+        """
         to_replace = dict()
         all_mfs = self.all_membership_fcns
         for idx, mf in enumerate(all_mfs):
             for other_mf in all_mfs[idx + 1 :]:
-                if _is_close(mf, other_mf):
+                if _is_close(mf, other_mf, rtol=rtol, atol=atol):
                     to_replace[other_mf] = mf
 
         # Recursively apply replacement chains to get final targets
@@ -376,14 +503,27 @@ class GaussianMixtureModel(NamedTuple):
 
         return to_replace
 
-    def remove_duplicate_membership_fcns(self):
-        duplicate_mfcns = self.identify_duplicate_membership_fcns()
+    def remove_duplicate_membership_fcns(
+        self, rtol: float = DEFAULT_DEDUP_RTOL, atol: float = DEFAULT_DEDUP_ATOL
+    ) -> int:
+        """Remove near-duplicate membership functions in place.
+
+        Args:
+            rtol, atol: Passed through to `identify_duplicate_membership_fcns`.
+
+        Returns:
+            The number of membership functions actually removed.
+        """
+        duplicate_mfcns = self.identify_duplicate_membership_fcns(rtol=rtol, atol=atol)
+        removed = 0
         for _, (feature_name, label, dup_mf, src_mf) in enumerate(duplicate_mfcns):
             # Replace the dup_mf with the src_mf
             try:
                 self.feature_models[feature_name].label_models[label].memberships.remove(dup_mf)
+                removed += 1
             except ValueError:
                 pass
+        return removed
 
     def augment(self, other) -> "GaussianMixtureModel":
         """Augment this GaussianMixtureModel with another GaussianMixtureModel, combining feature models."""
@@ -395,9 +535,37 @@ class GaussianMixtureModel(NamedTuple):
                 new_feature_models[feature_name] = other_feature_model
         return GaussianMixtureModel(new_feature_models)
 
-    def to_simple_model(self, details: AnomalyParameters | None = None) -> SimpleGaussianClassifierModel:
-        dedup_mfs = self.get_deduplicated_membership_fcns()
+    def to_simple_model(
+        self,
+        details: AnomalyParameters | None = None,
+        convex_clauses_only: bool = False,
+        rtol: float = DEFAULT_DEDUP_RTOL,
+        atol: float = DEFAULT_DEDUP_ATOL,
+    ) -> SimpleGaussianClassifierModel:
+        """Materialise this (implicit) mixture into an explicit rule base.
+
+        When ``convex_clauses_only`` is set, any feature clause whose OR'd
+        membership functions cover disjoint (non-touching) intervals of that
+        feature's axis is split into one rule per convex sub-clause, via
+        :func:`split_convex_clauses`. This runs strictly after
+        deduplication (``dedup_mfs`` below), so it always operates on
+        already-deduplicated membership ids.
+
+        Args:
+            details: Anomaly parameters carried onto the resulting
+                `SimpleGaussianClassifierModel`, if any.
+            rtol, atol: Passed through to `get_deduplicated_membership_fcns` --
+                see that method and issue #85 for the reduction-vs-risk tradeoff
+                these control.
+        """
+        dedup_mfs = self.get_deduplicated_membership_fcns(rtol=rtol, atol=atol)
         rules: list[Rule] = []
+
+        mf_lookup: dict[uuid.UUID, AnyMembership] = {}
+        if convex_clauses_only:
+            for mf in self.all_membership_fcns:
+                resolved = dedup_mfs.get(mf, mf)
+                mf_lookup[resolved.id] = resolved  # type: ignore[misc]
 
         for label in self.all_output_labels:
             antecedent_ids: dict[str, list[uuid.UUID]] = {}
@@ -406,7 +574,11 @@ class GaussianMixtureModel(NamedTuple):
                 if label_model is None:
                     continue
                 antecedent_ids[feature_name] = [dedup_mfs.get(mf, mf).id for mf in label_model.memberships]  # type: ignore[misc]
-            rules.append(Rule(antecedents=antecedent_ids, consequent=label))
+            if convex_clauses_only:
+                for combo in split_convex_clauses(antecedent_ids, mf_lookup):
+                    rules.append(Rule(antecedents=combo, consequent=label))
+            else:
+                rules.append(Rule(antecedents=antecedent_ids, consequent=label))
 
         # Get the input membership functions from the rules
         required_mf_ids = set([u for r in rules for u_lst in r.antecedents.values() for u in u_lst])
@@ -417,7 +589,9 @@ class GaussianMixtureModel(NamedTuple):
             anomaly_params=details
         )
 
-def _is_close(g1: AnyMembership, g2: AnyMembership, rtol: float = 1e-2, atol: float = 1e-3) -> bool:
+def _is_close(
+    g1: AnyMembership, g2: AnyMembership, rtol: float = DEFAULT_DEDUP_RTOL, atol: float = DEFAULT_DEDUP_ATOL
+) -> bool:
     """Check if two membership functions are numerically close.
 
     Only returns True if both objects are the same type and their parameters match.
@@ -440,3 +614,139 @@ def _is_close(g1: AnyMembership, g2: AnyMembership, rtol: float = 1e-2, atol: fl
             )
         )
     return False
+
+
+def mf_interval(mf: AnyMembership, gaussian_k: float = 3.0) -> tuple[float, float]:
+    """The "effective support" of a membership function, as a ``(low, high)`` interval.
+
+    Exact for :class:`TriangularMembership` (``a, c``) and
+    :class:`TrapezoidMembership` (``a, d``). For :class:`GaussianMembership`
+    -- which has infinite support -- this uses a symmetric
+    ``mu +/- gaussian_k * sigma`` cutoff: a conservative "the tails are
+    negligible" convention for deciding whether two clauses' regions are
+    disjoint, independent of (and answering a different question from) the
+    MAE-optimal triangle-fit width in :mod:`tribblefis.triangle_fit`.
+    """
+    if isinstance(mf, TriangularMembership):
+        return mf.a, mf.c
+    elif isinstance(mf, TrapezoidMembership):
+        return mf.a, mf.d
+    elif isinstance(mf, GaussianMembership):
+        return mf.mu - gaussian_k * mf.sigma, mf.mu + gaussian_k * mf.sigma
+    else:
+        raise TypeError(f"mf_interval does not support membership type {type(mf)!r}")
+
+
+def split_convex_clauses(
+    antecedents: dict[str, list[uuid.UUID]],
+    mf_lookup: dict[uuid.UUID, AnyMembership],
+    gaussian_k: float = 3.0,
+) -> list[dict[str, list[uuid.UUID]]]:
+    """Expand a rule's antecedents into convex (contiguous-interval) sub-clauses.
+
+    Per feature, every OR'd membership id's effective interval
+    (:func:`mf_interval`) is sorted by lower bound and greedily merged
+    wherever consecutive intervals overlap or touch. A feature that already
+    reduces to a single merged interval is left as a one-element list, so a
+    rule with no disjoint clauses at all comes back as its own sole
+    combination, unchanged. When more than one feature has a disjoint
+    clause, the Cartesian product of every feature's convex groups is
+    returned, so "AND across features, OR (convexly) within a feature"
+    semantics are preserved exactly -- just spread across more rules.
+    """
+
+    def merged_groups(ids: list[uuid.UUID]) -> list[list[uuid.UUID]]:
+        if not ids:
+            # Preserve today's behaviour for a feature with no memberships:
+            # one combination, carrying the empty list through unchanged.
+            return [[]]
+        scored = sorted(ids, key=lambda i: mf_interval(mf_lookup[i], gaussian_k)[0])
+        groups: list[list[uuid.UUID]] = []
+        current: list[uuid.UUID] = []
+        current_hi: float | None = None
+        for mf_id in scored:
+            lo, hi = mf_interval(mf_lookup[mf_id], gaussian_k)
+            if current_hi is None or lo <= current_hi:
+                current.append(mf_id)
+                current_hi = hi if current_hi is None else max(current_hi, hi)
+            else:
+                groups.append(current)
+                current = [mf_id]
+                current_hi = hi
+        if current:
+            groups.append(current)
+        return groups
+
+    features = list(antecedents.keys())
+    per_feature_groups = [merged_groups(antecedents[f]) for f in features]
+    return [
+        dict(zip(features, combo))
+        for combo in itertools.product(*per_feature_groups)
+    ]
+
+
+# Interval Type-2 FIS Data Structures
+class IT2LabelModel(NamedTuple):
+    """A collection of IT2 membership functions for a specific output class label."""
+
+    memberships: list[IT2AnyMembership]
+
+    def augment(self, other_label_model: "IT2LabelModel") -> "IT2LabelModel":
+        """Augment this IT2LabelModel with another, combining membership functions."""
+        new_memberships = self.memberships.copy()
+        new_memberships.extend(other_label_model.memberships)
+        return IT2LabelModel(new_memberships)
+
+
+class IT2FeatureModel(NamedTuple):
+    """A collection of IT2LabelModels for a specific feature."""
+
+    label_models: dict[int, IT2LabelModel]
+
+    @property
+    def ordered_keys(self) -> list[int]:
+        return list(sorted(self.label_models.keys()))
+
+    def augment(self, other_feature_model: "IT2FeatureModel") -> "IT2FeatureModel":
+        """Augment this IT2FeatureModel with another."""
+        new_label_models = self.label_models.copy()
+        for label, other_label_model in other_feature_model.label_models.items():
+            if label in new_label_models:
+                new_label_models[label] = new_label_models[label].augment(other_label_model)
+            else:
+                new_label_models[label] = other_label_model
+        return IT2FeatureModel(new_label_models)
+
+
+class IT2GaussianMixtureModel(NamedTuple):
+    """An interval type-2 Gaussian mixture model with IT2 memberships."""
+
+    feature_models: dict[str, IT2FeatureModel]
+
+    @property
+    def n_rules(self) -> int:
+        return len(list(self.feature_models.values())[0].label_models.keys())
+
+    @property
+    def n_features(self) -> int:
+        return len(self.feature_models)
+
+    @property
+    def all_membership_fcns(self) -> list[IT2GaussianMembership]:
+        """Get all IT2 membership functions across all features and labels."""
+        return [
+            mf
+            for feature_model in self.feature_models.values()
+            for label_model in feature_model.label_models.values()
+            for mf in label_model.memberships
+        ]
+
+    @property
+    def all_output_labels(self) -> list[int]:
+        return list(set([label for fm in self.feature_models.values() for label in fm.ordered_keys]))
+
+    @property
+    def n_classes(self) -> int:
+        if not self.feature_models:
+            return 0
+        return list(self.feature_models.values())[0].ordered_keys[-1] + 1

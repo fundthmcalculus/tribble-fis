@@ -38,7 +38,7 @@ TRIBBLEFIS_NUM_THREADS=1 python -m benchmarks.bench -k forward   # compiled, one
 | `forward-wide` | 2k x 40 features x 6 labels x 4 MF — many small array ops |
 | `forward-large` | 50k x 20 x 8 x 4 — per-element arithmetic dominates |
 | `forward-prob` | 20k x 20 x 8 x 4 under `probability` norms (the smooth family used by the analytic-gradient refinement) |
-| `predict-large` | `MixtureOfGaussiansFuzzyClassifier.predict_proba`, i.e. the kernel plus the deployed estimator's overhead |
+| `predict-large` | `TribbleClassifier.predict_proba`, i.e. the kernel plus the deployed estimator's overhead |
 | `refine-classifier` | end-to-end `refine_classifier_antecedents` — the training cost, ~1.3k fitness evaluations |
 | `refine-classifier-wide` | the same, at a size anyone would deploy: 4k x 20 features x 6 labels x 3 MF, 720 free parameters |
 | `forward-huge-cpu` / `-gpu64` / `-gpu32` | 1M-sample forward pass, data resident, CPU vs Torch |
