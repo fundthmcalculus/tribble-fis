@@ -2,13 +2,25 @@ import time
 from typing import Any, Optional
 
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
-from scipy import stats
-from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
-import seaborn as sns
 from .gauss_data import GaussianMixtureModel, AnomalyParameters, SimpleGaussianClassifierModel
 from .gauss_math import tsk_firing_strengths, calculate_top_k_accuracy
+from .stats_numba import norm_pdf
+
+# Optional imports - gracefully handle if not available
+try:
+    from scipy import stats
+except ImportError:
+    stats = None
+
+try:
+    from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
+except ImportError:
+    classification_report = None
+    confusion_matrix = None
+    ConfusionMatrixDisplay = None
 
 
 def plot_fit_gaussians(column: str, data, gaussians: list[dict], label_value: int, n_gaussians: int):
@@ -23,7 +35,7 @@ def plot_fit_gaussians(column: str, data, gaussians: list[dict], label_value: in
     mixture_pdf = np.zeros_like(x_range)
 
     for i, g in enumerate(gaussians):
-        component_pdf = g["weight"] * stats.norm.pdf(x_range, g["mu"], g["sigma"])
+        component_pdf = g["weight"] * norm_pdf(x_range, g["mu"], g["sigma"])
         mixture_pdf += component_pdf
         ax.plot(
             x_range,
@@ -73,9 +85,10 @@ def plot_var_gauss_dist(X: pd.DataFrame, y, features_to_plot: list[str] | None =
 
             # Fit and plot gaussian density
             if model is None or column not in model.feature_models:
-                mu, std = stats.norm.fit(data_label)
+                from .stats_numba import norm_fit
+                mu, std = norm_fit(data_label)
                 x_range = np.linspace(data.min(), data.max(), 100)
-                gaussian_density = stats.norm.pdf(x_range, mu, std)
+                gaussian_density = norm_pdf(x_range, mu, std)
                 ax.plot(x_range, gaussian_density, "-", linewidth=2, label=f"Gaussian (μ={mu:.2f}, σ={std:.2f})")
             else:
                 feature_model = model.feature_models[column]
@@ -94,7 +107,7 @@ def plot_var_gauss_dist(X: pd.DataFrame, y, features_to_plot: list[str] | None =
                                 label=f"Gaussian {mf_idx + 1} (μ={mf.mu:.2f}, σ={mf.sigma:.2f})",
                             )
                         else:
-                            gaussian_density = stats.norm.pdf(x_range, mf.mu, mf.sigma)
+                            gaussian_density = norm_pdf(x_range, mf.mu, mf.sigma)
                             ax.plot(
                                 x_range,
                                 gaussian_density,
@@ -240,6 +253,10 @@ def plot_elbow_method(k_range, kmeans_silhouettes, kmeans_inertia):
 
 def plot_classification_report(y_true, y_pred, title="Classification Report"):
     """Plot the classification report as a heatmap."""
+    if classification_report is None:
+        print("sklearn.metrics not available. Skipping classification report plot.")
+        return
+
     report = classification_report(y_true, y_pred, output_dict=True)
     report_df = pd.DataFrame(report).transpose()
     metrics_df = report_df  # .drop(index="accuracy")
@@ -249,15 +266,37 @@ def plot_classification_report(y_true, y_pred, title="Classification Report"):
     if max_support > 0:
         metrics_df["support"] = metrics_df["support"] / max_support
 
-    plt.figure(figsize=(10, 6))
-    sns.heatmap(metrics_df, annot=True, cmap="RdYlGn", fmt=".4f", vmin=0, vmax=1)
-    plt.title(title)
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Create heatmap manually with matplotlib
+    im = ax.imshow(metrics_df.values, cmap="RdYlGn", vmin=0, vmax=1, aspect='auto')
+
+    # Set ticks and labels
+    ax.set_xticks(np.arange(len(metrics_df.columns)))
+    ax.set_yticks(np.arange(len(metrics_df)))
+    ax.set_xticklabels(metrics_df.columns)
+    ax.set_yticklabels(metrics_df.index)
+
+    # Rotate the tick labels
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+
+    # Add text annotations
+    for i in range(len(metrics_df)):
+        for j in range(len(metrics_df.columns)):
+            text = ax.text(j, i, f'{metrics_df.values[i, j]:.4f}', ha="center", va="center", color="black", fontsize=9)
+
+    ax.set_title(title)
+    fig.colorbar(im, ax=ax)
     plt.tight_layout()
     plt.show()
 
 
 def plot_confusion_matrix(y_true, y_pred, title="Confusion Matrix"):
     """Plot the confusion matrix."""
+    if confusion_matrix is None or ConfusionMatrixDisplay is None:
+        print("sklearn.metrics not available. Skipping confusion matrix plot.")
+        return
+
     labels = np.union1d(np.unique(y_true), np.unique(y_pred))
 
     cm = confusion_matrix(y_true, y_pred, labels=labels, normalize="true")
@@ -403,18 +442,26 @@ def report_figures_of_merit(
     print(f"Model Accuracy ({label}): {accuracy:.4f}")
 
     # Confusion matrix and Classification report
-    print(f"\nConfusion Matrix ({label}):")
-    cm = confusion_matrix(y, y_pred, labels=labels)
-    print(cm)
+    if confusion_matrix is not None:
+        print(f"\nConfusion Matrix ({label}):")
+        cm = confusion_matrix(y, y_pred, labels=labels)
+        print(cm)
 
-    # Analyze confusion matrix to identify top confusions
-    top_confusions = analyze_confusion_matrix(cm, labels)
+        # Analyze confusion matrix to identify top confusions
+        top_confusions = analyze_confusion_matrix(cm, labels)
 
-    # Extract confused class data
-    confused_data = extract_confused_class_data(X, y, y_pred, top_confusions)
+        # Extract confused class data
+        confused_data = extract_confused_class_data(X, y, y_pred, top_confusions)
+    else:
+        cm = None
+        top_confusions = []
+        confused_data = {}
 
-    print(f"\nClassification Report ({label}):")
-    print(classification_report(y, y_pred))
+    if classification_report is not None:
+        print(f"\nClassification Report ({label}):")
+        print(classification_report(y, y_pred))
+    else:
+        print(f"\nClassification Report ({label}): sklearn not available")
     print("=" * 80)
 
     end_time = time.time()
