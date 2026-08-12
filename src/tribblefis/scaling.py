@@ -298,7 +298,7 @@ class UnitFuzzyScalar(_FuzzyScalarBase):
         clip: Whether ``transform`` clips values falling outside the range
             seen during ``fit`` (e.g. test data below the training min/max).
 
-            This default is a **modelling decision, not just numerical
+            This default is a **modeling decision, not just numerical
             hygiene**, and it is worth choosing deliberately. In a one-class
             or anomaly-detection setup where the scaler is fitted on normal
             data only (say, benign network traffic), every attack row that
@@ -315,12 +315,10 @@ class UnitFuzzyScalar(_FuzzyScalarBase):
         feature_range=(0.0, 1.0),
         log_dynamic_range=3.0,
         log_features=None,
-        clip=True,
     ):
         self.feature_range = feature_range
         self.log_dynamic_range = log_dynamic_range
         self.log_features = log_features
-        self.clip = clip
 
     def fit(self, X, y=None):
         X_df = self._as_dataframe(X)
@@ -379,7 +377,7 @@ class StandardFuzzyScalar(_FuzzyScalarBase):
     """Standardizes features to ``mu=0``, ``sigma=1``, log-transforming
     wide-dynamic-range ones first.
 
-    .. warning::
+    . warning::
 
         **This is not the recommended default for the FIS estimators in this
         package. Use :class:`UnitFuzzyScalar` unless you specifically need
@@ -458,13 +456,3 @@ class StandardFuzzyScalar(_FuzzyScalarBase):
         unscaled = X * self.scale_.to_numpy() + self.mean_.to_numpy()
         X_df = pd.DataFrame(unscaled, columns=self.feature_names_in_)
         return self._undo_log(X_df).to_numpy()
-
-
-# Backwards-compatible aliases. The ``*FuzzyScalar`` names above are canonical
-# -- they carry the ``Fuzzy`` infix of :class:`_FuzzyScalarBase`, and each says
-# what it actually computes. These shorter names shipped first and are still
-# imported across the ``grad-school`` workspace, so they remain supported and
-# are deliberately *not* deprecation-warned: they are the same objects, not
-# wrappers, and ``isinstance`` checks against either name behave identically.
-UnitScalar = UnitFuzzyScalar
-StandardScalar = StandardFuzzyScalar

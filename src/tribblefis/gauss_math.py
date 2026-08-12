@@ -7,20 +7,18 @@ import pandas as pd
 from scipy import stats
 from scipy.spatial.distance import jensenshannon
 from scipy.stats import wasserstein_distance
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
-from tribbleclustering import IVATMeans, FuzzyCMeans
+from tribbleclustering import IVATMeans, FuzzyCMeans, KMeans
 
 from . import kernel
-from .gauss_data import *  # noqa: F401, F403
+from .gauss_data import GaussianMembership, GaussianMixtureModel, FeatureModel, NormConorm, DefaultNormCornorm, \
+    MemberFunction, AnomalyParameters, NormPair, resolve_norm_pair, DefaultMemberFunction, LabelModel
 
-
-#: Variance floor used when scoring a candidate mixture, as a fraction of the
-#: column's own variance. Plays the role of scikit-learn's ``reg_covar``, but
-#: scale-relative rather than absolute: these columns are raw features, so a
-#: fixed 1e-6 is a hard floor on a millivolt column and a rounding error on a
-#: currency one. Without a floor, a component that lands on a single point has
-#: zero variance, infinite likelihood, and always wins the selection.
+# Variance floor used when scoring a candidate mixture, as a fraction of the
+# column's own variance. Plays the role of scikit-learn's ``reg_covar``, but
+# scale-relative rather than absolute: these columns are raw features, so a
+# fixed 1e-6 is a hard floor on a millivolt column and a rounding error on a
+# currency one. Without a floor, a component that lands on a single point has
+# zero variance, infinite likelihood, and always wins the selection.
 BIC_VARIANCE_FLOOR_FRAC = 1e-6
 
 

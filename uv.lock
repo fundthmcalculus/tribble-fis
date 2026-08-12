@@ -554,20 +554,6 @@ wheels = [
 ]
 
 [[package]]
-name = "numba-progress"
-version = "1.2.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numba" },
-    { name = "numpy" },
-    { name = "tqdm" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a2/ae/3f8e5e757badaf8e2fe6c596f183c6709c4e7af51cd4bdcbaec61c2c27ca/numba_progress-1.2.0.tar.gz", hash = "sha256:c6189119ae901ad106b0cae3796319024d20bbbb3b7ae027b9bfcb08802585a8", size = 14392, upload-time = "2026-04-28T18:36:18.079Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ec/4f/71b6d8605d46fdf629f0e3f595a6bfd50ad6b731550cbd70ef79d0e3b692/numba_progress-1.2.0-py3-none-any.whl", hash = "sha256:9404c437d55f6454d907ebad28717baf64593405c68446675c1d0d10c833b21f", size = 7445, upload-time = "2026-04-28T18:36:19.399Z" },
-]
-
-[[package]]
 name = "numpy"
 version = "2.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1102,15 +1088,12 @@ wheels = [
 
 [[package]]
 name = "tribble-clustering"
-version = "0.1.8"
-source = { registry = "https://pypi.org/simple" }
+version = "0.2.1"
+source = { git = "https://github.com/fundthmcalculus/clustering.git#c3739baef1995c26f5cfb7b06aa338378bfc51a1" }
 dependencies = [
-    { name = "matplotlib" },
     { name = "numba" },
-    { name = "numba-progress" },
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f9/0a/9b8a16f1b1b8550ec3502dfb10cf65251d4119dd578ad9d3e380ef009a76/tribble_clustering-0.1.8.tar.gz", hash = "sha256:2e5d6b303ac832255ce0bea10c592d08bdbca57fb6c203d491479d5212968d6e", size = 377405, upload-time = "2026-06-08T19:24:42.573Z" }
 
 [[package]]
 name = "tribble-fis"
@@ -1145,7 +1128,7 @@ requires-dist = [
     { name = "scipy" },
     { name = "scipy", marker = "extra == 'dev'" },
     { name = "seaborn" },
-    { name = "tribble-clustering", specifier = ">=0.1.8" },
+    { name = "tribble-clustering", git = "https://github.com/fundthmcalculus/clustering.git" },
     { name = "ucimlrepo", specifier = ">=0.0.7" },
 ]
 provides-extras = ["dev"]
