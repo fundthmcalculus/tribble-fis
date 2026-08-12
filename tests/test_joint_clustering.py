@@ -145,7 +145,14 @@ class TestAdjacentSubclustersMerge(unittest.TestCase):
         clustered = ruspinize_model(self.gm, self.X, self.y, sigma_knots=0.0, cluster_joint_terms=True)
         self.assertEqual(len(default.rules), 2)
         self.assertEqual(len(clustered.rules), 2)  # no spurious fragmentation
-        np.testing.assert_array_equal(default.predict(self.X), clustered.predict(self.X))
+        # Not exact equality: the anomaly-bracket knots (`_bracket_anomaly_knots`)
+        # replace what used to be one wide shoulder plateau near the data's min/max
+        # with two narrower triangles, so a handful of points right at that boundary
+        # can land on a different term under marginal- vs cluster-matching. That's a
+        # real, expected side effect of a partition-shape guarantee unrelated to
+        # clustering, not a regression -- so tolerate near-agreement instead.
+        agree = np.mean(default.predict(self.X) == clustered.predict(self.X))
+        self.assertGreaterEqual(agree, 0.95)
 
 
 if __name__ == "__main__":

@@ -194,28 +194,29 @@ def _joint_term_clusters(
     marginal, whole-class antecedent in that case).
     """
     rows = np.where(mask)[0]
-    if len(rows) == 0:
+    n = len(rows)
+    if n == 0:
         return []
 
-    cols = {f: (X[f].to_numpy(dtype=float) if f in X.columns else None) for f in feature_order}
-    tuples: list[tuple[int, ...]] = []
-    for r in rows:
-        point = []
-        for f in feature_order:
-            col = cols[f]
-            if col is None:
-                point.append(0)
-                continue
-            acts = np.array([t.evaluate(np.array([col[r]]))[0] for t in terms[f]])
-            point.append(int(np.argmax(acts)))
-        tuples.append(tuple(point))
+    # Vectorized hard-assignment: per feature, evaluate every term across all
+    # of this class's rows in one call and argmax over terms, rather than one
+    # Python-level `.evaluate()` call per (row, feature, term) triple -- that
+    # scales as O(n_rows * n_features * n_terms) individual scalar calls and
+    # is unusable past a handful of features (it's what made the WEC quick
+    # demo, ~149 columns, hang).
+    per_feature_idx = []
+    for f in feature_order:
+        if f not in X.columns:
+            per_feature_idx.append(np.zeros(n, dtype=int))
+            continue
+        col = X[f].to_numpy(dtype=float)[rows]
+        acts = np.stack([t.evaluate(col) for t in terms[f]], axis=1)  # (n, n_terms)
+        per_feature_idx.append(np.argmax(acts, axis=1))
+    tuples_arr = np.stack(per_feature_idx, axis=1)  # (n, n_features)
 
-    counts: dict[tuple[int, ...], int] = {}
-    for t in tuples:
-        counts[t] = counts.get(t, 0) + 1
-
-    min_support = max(1, int(np.ceil(min_cluster_frac * len(rows))))
-    survivors = [t for t, c in counts.items() if c >= min_support]
+    uniq, counts = np.unique(tuples_arr, axis=0, return_counts=True)
+    min_support = max(1, int(np.ceil(min_cluster_frac * n)))
+    survivors = [tuple(int(v) for v in row) for row, c in zip(uniq, counts) if c >= min_support]
     if not survivors:
         return []
 
@@ -407,6 +408,34 @@ def _dedupe_increasing(a: np.ndarray, eps: float = 1e-9) -> np.ndarray:
     return a
 
 
+def _bracket_anomaly_knots(apex: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """Guarantee the partition's outer shoulder terms never fire on ``[lo, hi]``
+    (the observed data range).
+
+    In :func:`build_triangular_partition`, the left shoulder is exactly 0 once
+    ``x`` reaches the *second* knot from that end (and symmetrically for the
+    right shoulder) -- so a shoulder never touches real data only if that
+    second knot sits at (or beyond) the true extreme, with a further knot
+    strictly beyond the extreme supplying the shoulder's own apex. Landmark-
+    derived knots don't guarantee this: the smallest landmark is typically
+    *inside* the observed range (a class mean, not the true min), so without
+    this the left shoulder's nonzero region can overlap real data and fire at
+    full membership on it -- rows the model was fit on would then read as
+    anomalies, exactly backwards from what the shoulders are for.
+
+    Drops any knot at or past ``lo``/``hi`` (redundant once the exact bound is
+    inserted) and replaces it with ``lo``/``hi`` themselves plus one knot a
+    hair beyond each, so a shoulder's zero-crossing lands exactly on the true
+    extreme and its nonzero region lies strictly outside it.
+    """
+    apex = np.asarray(apex, dtype=float)
+    rng = hi - lo if hi > lo else 1.0
+    eps = max(rng * 1e-6, 1e-9)
+    interior = apex[(apex > lo) & (apex < hi)]
+    bracketed = np.concatenate(([lo - eps, lo], interior, [hi, hi + eps]))
+    return _dedupe_increasing(np.sort(bracketed))
+
+
 # ---------------------------------------------------------------------------
 # TRIBBLE the initial candidate: implicit Gaussian model -> explicit Ruspini.
 # ---------------------------------------------------------------------------
@@ -436,6 +465,12 @@ def ruspinize_model(
     so the partition resolves each Gaussian's *spread* -- not just its centre
     -- as its own triangle would. Pass ``sigma_knots=0.0`` for the old
     centres-only behaviour.
+
+    Every feature's knots are always bracketed by :func:`_bracket_anomaly_knots`
+    around the observed ``[min, max]``, regardless of where the landmarks land --
+    otherwise the outer shoulder terms (the ones anomaly detection reads as "out
+    of the data's range") can end up firing on real, in-range rows. See that
+    function's docstring for why.
 
     **Membership-function matching (data-driven).** One explicit rule per class is
     written by matching the class, feature by feature, to the partition term(s) it
@@ -525,6 +560,7 @@ def ruspinize_model(
             merged = [merged[i] for i in sorted(set(qs))]
 
         apex = _dedupe_increasing(np.array(sorted(merged), dtype=float))
+        apex = _bracket_anomaly_knots(apex, lo, hi)
         apexes[f] = apex
         term_ids[f] = [uuid.uuid4() for _ in apex]
         terms = build_triangular_partition(apex, term_ids[f])
