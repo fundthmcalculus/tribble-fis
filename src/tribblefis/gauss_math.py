@@ -459,7 +459,7 @@ def calculate_interaction_scores(
         std_i, std_j = zi.std(), zj.std()
         if std_i <= 1e-12 or std_j <= 1e-12:
             continue  # a constant feature has no interaction to offer
-        product = ((zi - zi.mean()) / std_i) * ((zj - zj.mean()) / std_j)
+        product = zi * zj
 
         joint_score = _differentiation_score(product, y_common, unique_labels, method)
         lift = joint_score - max(individual_score[fi], individual_score[fj])

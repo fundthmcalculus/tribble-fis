@@ -1003,20 +1003,6 @@ wheels = [
 ]
 
 [[package]]
-name = "seaborn"
-version = "0.13.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "matplotlib" },
-    { name = "numpy" },
-    { name = "pandas" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/86/59/a451d7420a77ab0b98f7affa3a1d78a313d2f7281a57afb1a34bae8ab412/seaborn-0.13.2.tar.gz", hash = "sha256:93e60a40988f4d65e9f4885df477e2fdaff6b73a9ded434c1ab356dd57eefff7", size = 1457696, upload-time = "2024-01-25T13:21:52.551Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/83/11/00d3c3dfc25ad54e731d91449895a79e4bf2384dc3ac01809010ba88f6d5/seaborn-0.13.2-py3-none-any.whl", hash = "sha256:636f8336facf092165e27924f223d3c62ca560b1f2bb5dff7ab7fad265361987", size = 294914, upload-time = "2024-01-25T13:21:49.598Z" },
-]
-
-[[package]]
 name = "six"
 version = "1.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1117,44 +1103,36 @@ name = "tribble-fis"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "matplotlib" },
     { name = "numba" },
     { name = "numpy" },
     { name = "optimizers" },
-    { name = "seaborn" },
     { name = "tribble-clustering" },
     { name = "ucimlrepo" },
 ]
 
 [package.optional-dependencies]
 dev = [
-    { name = "matplotlib" },
     { name = "pytest" },
     { name = "pytest-cov" },
-    { name = "scikit-learn" },
-    { name = "scipy" },
-]
-full = [
     { name = "scikit-learn" },
     { name = "scipy" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "matplotlib", marker = "extra == 'dev'" },
+    { name = "matplotlib" },
     { name = "numba" },
     { name = "numpy" },
     { name = "optimizers", git = "https://github.com/fundthmcalculus/optimizers.git" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "scikit-learn", marker = "extra == 'dev'" },
-    { name = "scikit-learn", marker = "extra == 'full'" },
     { name = "scipy", marker = "extra == 'dev'" },
-    { name = "scipy", marker = "extra == 'full'" },
-    { name = "seaborn" },
     { name = "tribble-clustering", specifier = ">=0.1.8" },
     { name = "ucimlrepo", specifier = ">=0.0.7" },
 ]
-provides-extras = ["dev", "full"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "tzdata"
