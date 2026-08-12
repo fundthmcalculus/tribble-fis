@@ -189,7 +189,8 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             self.n_output_buckets, y_series, method=self.output_partition)
 
         # Calculate feature differentiators
-        self.feature_differentiators_ = calculate_gaussian_correlation(X_df, y_partitioned["y_bucket"])
+        # Pass top_n to avoid computing scores for features we won't use
+        self.feature_differentiators_ = calculate_gaussian_correlation(X_df, y_partitioned["y_bucket"], top_n=self.top_n)
 
         # Select top features
         self.top_n_actual_, self.top_features_ = take_top_features(
