@@ -28,10 +28,9 @@ References:
 from __future__ import annotations
 
 import numpy as np
-from scipy import stats
-from scipy.spatial.distance import jensenshannon
 
 from tribblefis.gauss_data import AnyMembership
+from tribblefis.stats_numba import norm_pdf, jensenshannon_distance
 
 _EPS = 1e-9
 
@@ -238,15 +237,15 @@ def differentiation(
                 continue
             mua, sa = _weighted_moments(x_col, wa)
             mub, sb = _weighted_moments(x_col, wb)
-            pa = stats.norm.pdf(xr, mua, sa)
-            pb = stats.norm.pdf(xr, mub, sb)
+            pa = norm_pdf(xr, mua, sa)
+            pb = norm_pdf(xr, mub, sb)
             sa_sum, sb_sum = pa.sum(), pb.sum()
             if sa_sum <= _EPS or sb_sum <= _EPS:
                 continue
             pa /= sa_sum
             pb /= sb_sum
             bhatta = 1.0 - float(np.sum(np.sqrt(pa * pb)))
-            js = float(jensenshannon(pa, pb))
+            js = float(jensenshannon_distance(pa, pb))
             overlap = 1.0 - float(np.sum(np.minimum(pa, pb)))
             vals = np.array([bhatta, js, overlap])
             vals = vals[np.isfinite(vals)]

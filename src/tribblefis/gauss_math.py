@@ -4,15 +4,11 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy import stats
-from scipy.spatial.distance import jensenshannon
-from scipy.stats import wasserstein_distance
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
 from tribbleclustering import IVATMeans, FuzzyCMeans
 
 from . import kernel
 from .gauss_data import *  # noqa: F401, F403
+from .stats_numba import norm_fit, norm_pdf, jensenshannon_distance, wasserstein_distance, silhouette_score, kmeans_1d
 
 
 #: Variance floor used when scoring a candidate mixture, as a fraction of the
@@ -66,9 +62,7 @@ def _mixture_bic(data: np.ndarray, components, var_floor: float) -> float:
 
 
 def _kmeans_labels_1d(data: np.ndarray, k: int, random_state: int) -> np.ndarray:
-    if k <= 1:
-        return np.zeros(len(data), dtype=int)
-    return KMeans(n_clusters=k, random_state=random_state).fit_predict(data.reshape(-1, 1))
+    return kmeans_1d(data, k, random_state=random_state)
 
 
 def fit_gaussian_mixture_1d(
@@ -228,13 +222,13 @@ def _pairwise_label_distance(
     """
     if method in ("bhattacharyya", "composite"):
         # Fit Gaussian distributions
-        mu_ij, std_ij = stats.norm.fit(data_label_ij)
-        mu_jk, std_jk = stats.norm.fit(data_label_jk)
+        mu_ij, std_ij = norm_fit(data_label_ij)
+        mu_jk, std_jk = norm_fit(data_label_jk)
 
         # Create probability distributions over same range
         x_range = np.linspace(data_min, data_max, 100)
-        pdf_ij = stats.norm.pdf(x_range, mu_ij, std_ij)
-        pdf_jk = stats.norm.pdf(x_range, mu_jk, std_jk)
+        pdf_ij = norm_pdf(x_range, mu_ij, std_ij)
+        pdf_jk = norm_pdf(x_range, mu_jk, std_jk)
 
         # Normalize PDFs to sum to 1 for proper probability distributions
         pdf_ij = pdf_ij / np.sum(pdf_ij)
@@ -260,7 +254,7 @@ def _pairwise_label_distance(
 
     # method == "composite"
     # Jensen-Shannon distance (0 = identical, 1 = completely different)
-    js_diff = jensenshannon(pdf_ij, pdf_jk)
+    js_diff = jensenshannon_distance(pdf_ij, pdf_jk)
     # Overlap coefficient, converted to a "higher = more different" scale
     overlap_diff = 1 - np.sum(np.minimum(pdf_ij, pdf_jk))
     # Squash the unbounded pooled-std-normalized wasserstein distance
