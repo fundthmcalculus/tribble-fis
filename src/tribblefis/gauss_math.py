@@ -552,6 +552,7 @@ def create_gaussian_membership_dict(
     feature_models = {}
 
     # Use ThreadPoolExecutor to parallelize per-(feature, label) Gaussian fitting
+    ordered_models = {}
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             results = list(executor.map(process_feature_label_pair, tasks))
@@ -563,10 +564,16 @@ def create_gaussian_membership_dict(
             feature_models[feature_name][label_value] = label_model
 
         # Convert dict of dicts to FeatureModel objects, maintaining feature order
-        ordered_models = {}
         for feature_name in top_n_var_names:
             if feature_name in feature_models:
                 ordered_models[feature_name] = FeatureModel(label_models=feature_models[feature_name])
+            else:
+                # Fallback: if feature missing from parallel results, compute serially
+                label_models = {}
+                for label_value in unique_labels:
+                    _, _, label_model = process_feature_label_pair((feature_name, label_value))
+                    label_models[label_value] = label_model
+                ordered_models[feature_name] = FeatureModel(label_models=label_models)
 
     except Exception as e:
         # Log the error but fall back to serial processing
@@ -574,7 +581,7 @@ def create_gaussian_membership_dict(
         import traceback
         traceback.print_exc()
 
-        # Fall back to serial processing
+        # Fall back to serial processing - process each feature completely
         ordered_models = {}
         for feature_name in top_n_var_names:
             label_models = {}
