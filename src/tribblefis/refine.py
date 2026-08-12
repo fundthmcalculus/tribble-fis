@@ -1736,7 +1736,10 @@ def refine_ruspini_partition(
     X_tr, y_tr = X_train.iloc[tr_idx].reset_index(drop=True), y_arr[tr_idx]
     X_val, y_val = X_train.iloc[val_idx].reset_index(drop=True), y_arr[val_idx]
 
-    labels0 = [consequent for consequent, _ in rmodel.rules]
+    # A class can own more than one rule (see `cluster_joint_terms` in
+    # `ruspinize_model`); dedupe the same way `class_proba` does, so this lookup
+    # doesn't silently collapse to "last rule for this label wins".
+    labels0 = list(dict.fromkeys(consequent for consequent, _ in rmodel.rules))
     label_to_col = {lab: i for i, lab in enumerate(labels0)}
     y_idx_tr = np.array([label_to_col.get(v, -1) for v in y_tr])
     keep = y_idx_tr >= 0

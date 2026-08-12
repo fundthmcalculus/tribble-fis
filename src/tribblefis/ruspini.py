@@ -159,6 +159,95 @@ def _merge_close(values: typing.Sequence[float], tol: float) -> list[float]:
 
 
 # ---------------------------------------------------------------------------
+# Joint (cross-feature) support: which term *combinations* a class actually has.
+# ---------------------------------------------------------------------------
+
+def _joint_term_clusters(
+    feature_order: typing.Sequence[str],
+    terms: dict[str, list[TriangularMembership]],
+    X: pd.DataFrame,
+    mask: np.ndarray,
+    *,
+    min_cluster_frac: float = 0.05,
+) -> list[dict[str, list[int]]]:
+    """Group a class's rows into joint per-feature term-index clusters.
+
+    Independently OR-ing each feature's activated terms into one rule admits
+    their full Cartesian product -- e.g. X in {1,2} and Y in {1,2} admits
+    (X=1,Y=1) even if that combination was never observed. This groups rows by
+    the term combination they *actually* land on, so the resulting rule set
+    only covers real joint support.
+
+    Each row in ``mask`` is hard-assigned, per feature, to its single
+    best-activated term (``argmax`` membership -- every triangular term has
+    strictly local support, so this is a well-defined "nearest term").
+    Resulting per-feature index tuples are counted; tuples supported by fewer
+    than ``min_cluster_frac`` of the class's rows are dropped as noise, and the
+    survivors are merged into clusters wherever two tuples are adjacent (differ
+    by at most one index on every feature) via connected components -- this
+    absorbs boundary rows that hard-assign to a neighbouring term without
+    fragmenting one real region into many single-tuple rules.
+
+    Returns one ``{feature: [term_index, ...]}`` antecedent per surviving
+    cluster (the union of indices used by any tuple in it), or ``[]`` if no
+    cluster meets the support threshold (callers should fall back to the old
+    marginal, whole-class antecedent in that case).
+    """
+    rows = np.where(mask)[0]
+    if len(rows) == 0:
+        return []
+
+    cols = {f: (X[f].to_numpy(dtype=float) if f in X.columns else None) for f in feature_order}
+    tuples: list[tuple[int, ...]] = []
+    for r in rows:
+        point = []
+        for f in feature_order:
+            col = cols[f]
+            if col is None:
+                point.append(0)
+                continue
+            acts = np.array([t.evaluate(np.array([col[r]]))[0] for t in terms[f]])
+            point.append(int(np.argmax(acts)))
+        tuples.append(tuple(point))
+
+    counts: dict[tuple[int, ...], int] = {}
+    for t in tuples:
+        counts[t] = counts.get(t, 0) + 1
+
+    min_support = max(1, int(np.ceil(min_cluster_frac * len(rows))))
+    survivors = [t for t, c in counts.items() if c >= min_support]
+    if not survivors:
+        return []
+
+    # Union-find over survivors: adjacent iff every feature's index differs by <= 1.
+    parent = {t: t for t in survivors}
+
+    def find(t):
+        while parent[t] != t:
+            t = parent[t]
+        return t
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for i, a in enumerate(survivors):
+        for b in survivors[i + 1:]:
+            if all(abs(x - y) <= 1 for x, y in zip(a, b)):
+                union(a, b)
+
+    groups: dict[tuple[int, ...], list[tuple[int, ...]]] = {}
+    for t in survivors:
+        groups.setdefault(find(t), []).append(t)
+
+    return [
+        {f: sorted({t[fi] for t in group}) for fi, f in enumerate(feature_order)}
+        for group in groups.values()
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Explicit Ruspini model: shared knots + frozen class->term rule assignment.
 # ---------------------------------------------------------------------------
 
@@ -194,11 +283,14 @@ class RuspiniPartitionModel:
         }
 
     def class_proba(self, X: pd.DataFrame) -> tuple[np.ndarray, list]:
-        """Row-normalised per-class firing strengths and the class labels.
+        """Row-normalised per-class firing strengths and the (deduplicated) class labels.
 
         Each rule fires the AND (``norm_conorm`` t-norm) across features of the OR
-        (t-conorm) over that class's assigned terms on the feature; rows are then
-        normalised to a probability over the rules' consequents."""
+        (t-conorm) over that class's assigned terms on the feature. A class can own
+        more than one rule (see ``cluster_joint_terms`` in :func:`ruspinize_model`),
+        so firing is summed across every rule sharing a consequent before rows are
+        normalised to a probability over the *unique* consequents -- otherwise a
+        class's probability mass would be split arbitrarily across its rule columns."""
         from .gauss_math import t_norm, t_conorm
 
         n = len(X)
@@ -208,21 +300,23 @@ class RuspiniPartitionModel:
                 for t in terms[f]]
             for f in self.feature_order
         }
-        labels = [consequent for consequent, _ in self.rules]
-        fs = np.zeros((n, len(labels)))
-        for r, (_consequent, antecedent_idx) in enumerate(self.rules):
+        labels_all = [consequent for consequent, _ in self.rules]
+        unique_labels = list(dict.fromkeys(labels_all))
+        label_col = {lab: j for j, lab in enumerate(unique_labels)}
+        fs = np.zeros((n, len(unique_labels)))
+        for r, (consequent, antecedent_idx) in enumerate(self.rules):
             firing = np.ones(n)
             for f, idxs in antecedent_idx.items():
                 feature_membership = np.zeros(n)
                 for i in idxs:
                     feature_membership = t_conorm(feature_membership, feat_eval[f][i], self.norm_conorm)
                 firing = t_norm(firing, feature_membership, self.norm_conorm)
-            fs[:, r] = firing
+            fs[:, label_col[consequent]] += firing
         row = fs.sum(axis=1, keepdims=True)
-        proba = np.full_like(fs, 1.0 / max(len(labels), 1))
+        proba = np.full_like(fs, 1.0 / max(len(unique_labels), 1))
         nz = row.flatten() > 0
         proba[nz] = fs[nz] / row[nz]
-        return proba, labels
+        return proba, unique_labels
 
     def to_simple_model(self, convex_clauses_only: bool = False) -> SimpleGaussianClassifierModel:
         """Materialise the current knots as an explicit :class:`SimpleGaussianClassifierModel`
@@ -326,6 +420,8 @@ def ruspinize_model(
     max_terms: int | None = None,
     assign_frac: float = 0.5,
     sigma_knots: float = GAUSSIAN_TRIANGLE_MAE_HALF_WIDTH,
+    cluster_joint_terms: bool = False,
+    min_cluster_frac: float = 0.05,
     anomaly_params: AnomalyParameters | None = None,
 ) -> RuspiniPartitionModel:
     """Convert a derived (implicit) Gaussian classifier into an explicit,
@@ -351,6 +447,16 @@ def ruspinize_model(
     robust than matching only the term nearest the Gaussian mean (the fallback used
     when ``y`` is ``None``).
 
+    That per-feature OR-ing is independent across features, so the rule's true
+    shape is the *Cartesian product* of each feature's activated terms -- a
+    hyper-box that can admit joint combinations the class never actually
+    contains (e.g. X in {1,2} and Y in {1,2} admits (X=1,Y=1) even if only
+    (X=1,Y=2) and (X=2,Y=2) were observed). Pass ``cluster_joint_terms=True`` to
+    replace that one box-shaped rule, per class, with one rule per joint term
+    combination the class's own rows actually land on (see
+    :func:`_joint_term_clusters`); classes with no surviving cluster (e.g. too
+    few rows) keep the old marginal, whole-class rule as a fallback.
+
     Args:
         model: a trained :class:`GaussianMixtureModel` (Gaussian memberships).
         X: training features (observed range + data-driven term assignment).
@@ -363,6 +469,13 @@ def ruspinize_model(
             ``mu +/- sigma_knots * sigma`` for every Gaussian. Defaults to the
             MAE-optimal Gaussian-to-triangle fit half-width; ``0.0`` disables
             this and uses centres only.
+        cluster_joint_terms: if set, split each class's rule into one rule per
+            actually-observed joint term combination instead of the marginal
+            Cartesian product. Requires ``y``; ignored when ``y`` is ``None``.
+        min_cluster_frac: minimum fraction of a class's rows a joint term
+            combination (or adjacent group of them) must cover to count as a
+            real cluster rather than noise. Only used when
+            ``cluster_joint_terms`` is set.
         anomaly_params: anomaly parameters for the explicit model (defaults to the
             source model's).
     """
@@ -372,6 +485,7 @@ def ruspinize_model(
 
     apexes: dict[str, np.ndarray] = {}
     term_ids: dict[str, list[uuid.UUID]] = {}
+    terms_by_feature: dict[str, list[TriangularMembership]] = {}
     # class_feature_term[feature][label] = [term_index, ...]
     class_feature_term: dict[str, dict[typing.Any, list[int]]] = {}
 
@@ -414,6 +528,7 @@ def ruspinize_model(
         apexes[f] = apex
         term_ids[f] = [uuid.uuid4() for _ in apex]
         terms = build_triangular_partition(apex, term_ids[f])
+        terms_by_feature[f] = terms
         mid = 0.5 * (lo + hi)
 
         class_feature_term[f] = {}
@@ -438,10 +553,20 @@ def ruspinize_model(
                 idxs = sorted({int(np.argmin(np.abs(apex - mu))) for mu in mus})
             class_feature_term[f][label] = idxs
 
-    rules = [
-        (label, {f: class_feature_term[f][label] for f in feature_order})
-        for label in labels
-    ]
+    rules: list[tuple[typing.Any, dict[str, list[int]]]] = []
+    for label in labels:
+        marginal = {f: class_feature_term[f][label] for f in feature_order}
+        clustered = None
+        if cluster_joint_terms and y_arr is not None:
+            clustered = _joint_term_clusters(
+                feature_order, terms_by_feature, X, y_arr == label,
+                min_cluster_frac=min_cluster_frac,
+            )
+        if clustered:
+            rules.extend((label, antecedent) for antecedent in clustered)
+        else:
+            rules.append((label, marginal))
+
     return RuspiniPartitionModel(
         feature_order=feature_order,
         apexes=apexes,
@@ -560,6 +685,8 @@ class RuspiniFuzzyClassifier(BaseEstimator, ClassifierMixin):
         n_gaussians=0,
         merge_tol_frac=0.05,
         max_terms=None,
+        cluster_joint_terms=False,
+        min_cluster_frac=0.05,
         refine=False,
         refine_method="coordinate",
         refine_l2_shrink=0.02,
@@ -570,6 +697,8 @@ class RuspiniFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.n_gaussians = n_gaussians
         self.merge_tol_frac = merge_tol_frac
         self.max_terms = max_terms
+        self.cluster_joint_terms = cluster_joint_terms
+        self.min_cluster_frac = min_cluster_frac
         self.refine = refine
         self.refine_method = refine_method
         self.refine_l2_shrink = refine_l2_shrink
@@ -601,6 +730,7 @@ class RuspiniFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.ruspini_model_ = ruspinize_model(
             base.model_, X_feat, y_arr,
             merge_tol_frac=self.merge_tol_frac, max_terms=self.max_terms,
+            cluster_joint_terms=self.cluster_joint_terms, min_cluster_frac=self.min_cluster_frac,
         )
         self.refine_info_ = None
         if self.refine:
