@@ -408,6 +408,34 @@ def _dedupe_increasing(a: np.ndarray, eps: float = 1e-9) -> np.ndarray:
     return a
 
 
+def _bracket_anomaly_knots(apex: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """Guarantee the partition's outer shoulder terms never fire on ``[lo, hi]``
+    (the observed data range).
+
+    In :func:`build_triangular_partition`, the left shoulder is exactly 0 once
+    ``x`` reaches the *second* knot from that end (and symmetrically for the
+    right shoulder) -- so a shoulder never touches real data only if that
+    second knot sits at (or beyond) the true extreme, with a further knot
+    strictly beyond the extreme supplying the shoulder's own apex. Landmark-
+    derived knots don't guarantee this: the smallest landmark is typically
+    *inside* the observed range (a class mean, not the true min), so without
+    this the left shoulder's nonzero region can overlap real data and fire at
+    full membership on it -- rows the model was fit on would then read as
+    anomalies, exactly backwards from what the shoulders are for.
+
+    Drops any knot at or past ``lo``/``hi`` (redundant once the exact bound is
+    inserted) and replaces it with ``lo``/``hi`` themselves plus one knot a
+    hair beyond each, so a shoulder's zero-crossing lands exactly on the true
+    extreme and its nonzero region lies strictly outside it.
+    """
+    apex = np.asarray(apex, dtype=float)
+    rng = hi - lo if hi > lo else 1.0
+    eps = max(rng * 1e-6, 1e-9)
+    interior = apex[(apex > lo) & (apex < hi)]
+    bracketed = np.concatenate(([lo - eps, lo], interior, [hi, hi + eps]))
+    return _dedupe_increasing(np.sort(bracketed))
+
+
 # ---------------------------------------------------------------------------
 # TRIBBLE the initial candidate: implicit Gaussian model -> explicit Ruspini.
 # ---------------------------------------------------------------------------
@@ -437,6 +465,12 @@ def ruspinize_model(
     so the partition resolves each Gaussian's *spread* -- not just its centre
     -- as its own triangle would. Pass ``sigma_knots=0.0`` for the old
     centres-only behaviour.
+
+    Every feature's knots are always bracketed by :func:`_bracket_anomaly_knots`
+    around the observed ``[min, max]``, regardless of where the landmarks land --
+    otherwise the outer shoulder terms (the ones anomaly detection reads as "out
+    of the data's range") can end up firing on real, in-range rows. See that
+    function's docstring for why.
 
     **Membership-function matching (data-driven).** One explicit rule per class is
     written by matching the class, feature by feature, to the partition term(s) it
@@ -526,6 +560,7 @@ def ruspinize_model(
             merged = [merged[i] for i in sorted(set(qs))]
 
         apex = _dedupe_increasing(np.array(sorted(merged), dtype=float))
+        apex = _bracket_anomaly_knots(apex, lo, hi)
         apexes[f] = apex
         term_ids[f] = [uuid.uuid4() for _ in apex]
         terms = build_triangular_partition(apex, term_ids[f])

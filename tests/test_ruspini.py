@@ -72,6 +72,53 @@ class TestTriangularPartition(unittest.TestCase):
         self.assertFalse(verify_partition_of_unity(terms[:-1], xs))
 
 
+class TestAnomalyBracketKnots(unittest.TestCase):
+    """The outer shoulder terms must never fire on the observed data range --
+    otherwise real, in-distribution rows would read as anomalies (see
+    `ruspini._bracket_anomaly_knots`)."""
+
+    def _model(self, seed=0):
+        X, y = _two_class_blobs(seed)
+        gm = create_gaussian_membership_dict(X, pd.Series(y), top_n_var_names=["a", "b"], n_gaussians=1)
+        return X, y, gm
+
+    def test_shoulders_never_fire_on_the_observed_range(self):
+        X, y, gm = self._model()
+        rm = ruspinize_model(gm, X, y)
+        for f, terms in rm.feature_terms().items():
+            lo, hi = float(X[f].min()), float(X[f].max())
+            xs = np.linspace(lo, hi, 1000)
+            np.testing.assert_allclose(
+                terms[0].evaluate(xs), 0.0, atol=1e-9,
+                err_msg=f"left shoulder fires on observed '{f}' data",
+            )
+            np.testing.assert_allclose(
+                terms[-1].evaluate(xs), 0.0, atol=1e-9,
+                err_msg=f"right shoulder fires on observed '{f}' data",
+            )
+
+    def test_shoulders_do_fire_just_beyond_the_range(self):
+        # The bracket knots add a genuine sliver beyond the range, not a
+        # degenerate one collapsed into it -- otherwise there'd be nothing
+        # left for the shoulders to flag as anomalous.
+        X, y, gm = self._model()
+        rm = ruspinize_model(gm, X, y)
+        for f, terms in rm.feature_terms().items():
+            lo, hi = float(X[f].min()), float(X[f].max())
+            span = hi - lo
+            self.assertGreater(float(terms[0].evaluate(np.array([lo - 0.1 * span]))[0]), 0.0)
+            self.assertGreater(float(terms[-1].evaluate(np.array([hi + 0.1 * span]))[0]), 0.0)
+
+    def test_partition_of_unity_still_holds(self):
+        X, y, gm = self._model()
+        rm = ruspinize_model(gm, X, y)
+        for f, terms in rm.feature_terms().items():
+            lo, hi = float(X[f].min()), float(X[f].max())
+            xs = np.linspace(lo - (hi - lo), hi + (hi - lo), 500)
+            total = np.sum([t.evaluate(xs) for t in terms], axis=0)
+            np.testing.assert_allclose(total, 1.0, atol=1e-9)
+
+
 class TestRuspinize(unittest.TestCase):
 
     def _model(self, seed=0):
