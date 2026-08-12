@@ -307,7 +307,7 @@ def _encode_if_categorical(series: pd.Series, full_column: pd.Series) -> pd.Seri
     return series
 
 
-def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tuple[Any, Any]]:
+def calculate_gaussian_correlation(X, y, method: str = "wasserstein", top_n: int = -1) -> list[tuple[Any, Any]]:
     """Calculate distance metric between distributions for each feature across different labels.
 
     Args:
@@ -332,6 +332,8 @@ def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tu
               the pre-#34 blend had; that measure was on a different scale,
               crashed on zero-variance features, and was the worst performing
               of the four.
+        top_n: If > 0, only return the top N features by differentiation score.
+               If <= 0 (default), return all features sorted by score descending.
 
     Returns:
         List of tuples (feature_name, differentiation_score) sorted by score descending
@@ -358,6 +360,11 @@ def calculate_gaussian_correlation(X, y, method: str = "wasserstein") -> list[tu
     feature_differentiators = [(col, diff_s) for (col, diff_s) in feature_differentiators if np.isfinite(diff_s)]
     # Sort features by differentiation score (descending)
     feature_differentiators.sort(key=lambda x: x[1], reverse=True)
+
+    # When top_n is specified, only keep the top N before normalization
+    # This reduces downstream processing when only a subset is needed
+    if top_n > 0:
+        feature_differentiators = feature_differentiators[:top_n]
 
     # Normalize feature differentiators
     if feature_differentiators:
@@ -502,58 +509,88 @@ def create_gaussian_membership_dict(
     Returns:
         GaussianMixtureModel containing the fit Gaussian membership functions
     """
+    import os
 
     unique_labels = y.unique()
 
-    def process_feature(feature_name: str) -> tuple[str, FeatureModel]:
-        """Process a single feature across all labels"""
-        label_models = {}
+    def process_feature_label_pair(args):
+        """Process a single (feature, label) pair and fit Gaussians"""
+        feature_name, label_value = args
 
-        # Determine number of gaussians for this feature
+        # Determine number of gaussians for this feature/label
         if isinstance(n_gaussians, dict):
             feature_n_gaussians = n_gaussians.get(feature_name, 0)
+            label_n_gaussians = n_gaussians.get(label_value, 0)
+            if label_n_gaussians > 0:
+                feature_n_gaussians = label_n_gaussians
         else:
             feature_n_gaussians = n_gaussians
 
-        for label_value in unique_labels:
-            label_n_gaussians = 0
-            if isinstance(n_gaussians, dict):
-                label_n_gaussians = n_gaussians.get(label_value, 0)
-            if label_n_gaussians > 0:
-                feature_n_gaussians = label_n_gaussians
-            gaussians_params = fit_gaussians(
-                X,
-                y,
-                feature_name,
-                label_value,
-                feature_n_gaussians,
-                max_samples=max_samples,
-                random_state=random_state,
-                verbose=verbose,
-            )
-            label_models[label_value] = LabelModel(memberships=gaussians_params)
+        gaussians_params = fit_gaussians(
+            X,
+            y,
+            feature_name,
+            label_value,
+            feature_n_gaussians,
+            max_samples=max_samples,
+            random_state=random_state,
+            verbose=verbose,
+        )
+        return feature_name, label_value, LabelModel(memberships=gaussians_params)
 
-        return feature_name, FeatureModel(label_models=label_models)
+    # Create list of (feature, label) pairs to process
+    tasks = [(fname, lval) for fname in top_n_var_names for lval in unique_labels]
+
+    # Determine number of workers based on CPU count, but respect environment overrides
+    # Use at most cpu_count - 2 to avoid overwhelming the system
+    max_workers = min(
+        int(os.environ.get('TRIBBLE_GAUSSIAN_WORKERS', 0)) or (os.cpu_count() or 1) - 2,
+        len(tasks)
+    )
+    max_workers = max(1, max_workers)  # Ensure at least 1 worker
 
     feature_models = {}
 
-    # Serial, and honest about it. This was a ThreadPoolExecutor pinned to
-    # max_workers=1 -- the pin is load-bearing (it hangs above one worker on some
-    # Linux hosts), so the pool bought nothing but futures machinery per feature.
-    # With one worker `as_completed` also yields in submission order, so the
-    # resulting dict order is unchanged, which matters: `extract_gaussian_params`
-    # flattens this dict into a parameter vector.
-    for name in top_n_var_names:
-        try:
-            feature_name, feature_model = process_feature(name)
-            feature_models[feature_name] = feature_model
-        except Exception as e:
-            # Log the error but continue processing other features
-            print(f"Error processing feature: {e}")
-            import traceback
-            traceback.print_exc()
+    # Use ThreadPoolExecutor to parallelize per-(feature, label) Gaussian fitting
+    ordered_models = {}
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(executor.map(process_feature_label_pair, tasks))
 
-    return GaussianMixtureModel(feature_models=feature_models)
+        # Reconstruct nested dict structure from results
+        for feature_name, label_value, label_model in results:
+            if feature_name not in feature_models:
+                feature_models[feature_name] = {}
+            feature_models[feature_name][label_value] = label_model
+
+        # Convert dict of dicts to FeatureModel objects, maintaining feature order
+        for feature_name in top_n_var_names:
+            if feature_name in feature_models:
+                ordered_models[feature_name] = FeatureModel(label_models=feature_models[feature_name])
+            else:
+                # Fallback: if feature missing from parallel results, compute serially
+                label_models = {}
+                for label_value in unique_labels:
+                    _, _, label_model = process_feature_label_pair((feature_name, label_value))
+                    label_models[label_value] = label_model
+                ordered_models[feature_name] = FeatureModel(label_models=label_models)
+
+    except Exception as e:
+        # Log the error but fall back to serial processing
+        print(f"Error during parallel processing: {e}")
+        import traceback
+        traceback.print_exc()
+
+        # Fall back to serial processing - process each feature completely
+        ordered_models = {}
+        for feature_name in top_n_var_names:
+            label_models = {}
+            for label_value in unique_labels:
+                _, _, label_model = process_feature_label_pair((feature_name, label_value))
+                label_models[label_value] = label_model
+            ordered_models[feature_name] = FeatureModel(label_models=label_models)
+
+    return GaussianMixtureModel(feature_models=ordered_models)
 
 
 def t_norm(x, y, selected_norm: NormConorm | None = None):

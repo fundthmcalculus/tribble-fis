@@ -131,7 +131,8 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         y_series = pd.Series(y_array)
 
         # 1. Calculate feature differentiators
-        self.feature_differentiators_ = calculate_gaussian_correlation(X_df, y_series)
+        # Pass top_n to avoid computing scores for features we won't use
+        self.feature_differentiators_ = calculate_gaussian_correlation(X_df, y_series, top_n=self.top_n)
 
         # 2. Select top features
         self.top_n_actual_, self.top_features_ = take_top_features(
