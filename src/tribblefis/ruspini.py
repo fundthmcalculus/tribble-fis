@@ -194,28 +194,29 @@ def _joint_term_clusters(
     marginal, whole-class antecedent in that case).
     """
     rows = np.where(mask)[0]
-    if len(rows) == 0:
+    n = len(rows)
+    if n == 0:
         return []
 
-    cols = {f: (X[f].to_numpy(dtype=float) if f in X.columns else None) for f in feature_order}
-    tuples: list[tuple[int, ...]] = []
-    for r in rows:
-        point = []
-        for f in feature_order:
-            col = cols[f]
-            if col is None:
-                point.append(0)
-                continue
-            acts = np.array([t.evaluate(np.array([col[r]]))[0] for t in terms[f]])
-            point.append(int(np.argmax(acts)))
-        tuples.append(tuple(point))
+    # Vectorized hard-assignment: per feature, evaluate every term across all
+    # of this class's rows in one call and argmax over terms, rather than one
+    # Python-level `.evaluate()` call per (row, feature, term) triple -- that
+    # scales as O(n_rows * n_features * n_terms) individual scalar calls and
+    # is unusable past a handful of features (it's what made the WEC quick
+    # demo, ~149 columns, hang).
+    per_feature_idx = []
+    for f in feature_order:
+        if f not in X.columns:
+            per_feature_idx.append(np.zeros(n, dtype=int))
+            continue
+        col = X[f].to_numpy(dtype=float)[rows]
+        acts = np.stack([t.evaluate(col) for t in terms[f]], axis=1)  # (n, n_terms)
+        per_feature_idx.append(np.argmax(acts, axis=1))
+    tuples_arr = np.stack(per_feature_idx, axis=1)  # (n, n_features)
 
-    counts: dict[tuple[int, ...], int] = {}
-    for t in tuples:
-        counts[t] = counts.get(t, 0) + 1
-
-    min_support = max(1, int(np.ceil(min_cluster_frac * len(rows))))
-    survivors = [t for t, c in counts.items() if c >= min_support]
+    uniq, counts = np.unique(tuples_arr, axis=0, return_counts=True)
+    min_support = max(1, int(np.ceil(min_cluster_frac * n)))
+    survivors = [tuple(int(v) for v in row) for row, c in zip(uniq, counts) if c >= min_support]
     if not survivors:
         return []
 
