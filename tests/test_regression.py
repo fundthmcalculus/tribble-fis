@@ -246,7 +246,7 @@ class TestConsequentSolver(unittest.TestCase):
         self.assertLessEqual(mse_cf, mse_lbfgs + 1e-9)
 
     def test_extreme_bucket_means_are_pinned(self):
-        """With pin_extremes=True (the default) the first and last bucket means come
+        """With pin_extremes=True the first and last bucket means come
         back exactly as supplied, and the solve re-derives only the free ones.
 
         The sentinels sit outside the target's range, so passing this requires the
@@ -261,6 +261,7 @@ class TestConsequentSolver(unittest.TestCase):
         corr, means_solved = solve_tsk_consequents(
             X, model, self.TOP, pinned, y_part,
             n_output_buckets=self.N_BUCKETS, order="1st", l2_reg=0.0, verbose=False,
+            pin_extremes=True,
         )
 
         self.assertAlmostEqual(means_solved[0], lo, places=10,
@@ -290,6 +291,7 @@ class TestConsequentSolver(unittest.TestCase):
         corr, means = solve_tsk_consequents(
             X, model, self.TOP, y_bucket_mean, y_part,
             n_output_buckets=self.N_BUCKETS, order="1st", l2_reg=0.0, verbose=False,
+            pin_extremes=True,
         )
         mse_at_optimum = _mse(y_true, predict_tsk(X, model, self.TOP, means, corr, order="1st"))
 
@@ -391,6 +393,7 @@ class TestConsequentSolver(unittest.TestCase):
         corr, means = solve_tsk_consequents(
             X, model, self.TOP, self._pinned(y_bucket_mean, lo, hi), y_part,
             n_output_buckets=self.N_BUCKETS, order="1st", l2_reg=0.0, verbose=False,
+            pin_extremes=True,
         )
 
         self.assertTrue(np.all(np.isfinite(means)))

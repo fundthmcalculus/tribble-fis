@@ -39,7 +39,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         optimize_coefficients=True,
         consequent_basis="raw",
         l2_reg=1e-6,
-        pin_extremes=True,
+        pin_extremes=False,
         norm_conorm=DefaultNormCornorm,
         t_norm=None,
         t_conorm=None,
@@ -74,9 +74,9 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                 higher orders.
             l2_reg: Ridge penalty on the correction coefficients (constants are not
                 penalized). 0 disables regularization.
-            pin_extremes: If True (default), the first and last bucket means are pinned
-                to the observed min and max of the target, ensuring the model's output
-                range exactly matches the training range.
+            pin_extremes: If False (default), the first and last bucket means are not pinned
+                to the observed extremes. If True, they are pinned to the observed min and max
+                of the target, ensuring the model's output range exactly matches the training range.
             norm_conorm: Fuzzy operator family used to combine memberships -- the
                 t-norm for the rule AND and its De Morgan dual conorm for the
                 per-feature OR. Previously the regressor had no way to express
