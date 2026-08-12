@@ -203,16 +203,16 @@ def wasserstein_distance(u: np.ndarray, v: np.ndarray) -> float:
 
 @jit(nopython=True, parallel=True)
 def _silhouette_sample_jit(
-    X: np.ndarray,
     labels: np.ndarray,
     distances: np.ndarray,
+    unique_labels: np.ndarray,
 ) -> np.ndarray:
     """Compute silhouette coefficient for each sample (numba-jitted).
 
     Args:
-        X: Distance matrix (n_samples, n_samples)
         labels: Cluster label for each sample
-        distances: Pre-computed pairwise distances
+        distances: Pre-computed pairwise distances (n_samples, n_samples)
+        unique_labels: Unique cluster labels
 
     Returns:
         Silhouette coefficient for each sample
@@ -223,8 +223,6 @@ def _silhouette_sample_jit(
     for i in prange(n_samples):
         label_i = labels[i]
         same_cluster = labels == label_i
-        diff_cluster = labels != label_i
-
         same_cluster[i] = False
         n_same = np.sum(same_cluster)
 
@@ -240,7 +238,6 @@ def _silhouette_sample_jit(
             a_i /= n_same
 
         b_i = np.inf
-        unique_labels = np.unique(labels)
         for label in unique_labels:
             if label != label_i:
                 other_cluster = labels == label
@@ -296,7 +293,7 @@ def silhouette_score(X: np.ndarray, labels: np.ndarray, metric: str = 'euclidean
     else:
         raise ValueError(f"Unknown metric: {metric}")
 
-    silhouette_vals = _silhouette_sample_jit(X, labels, distances)
+    silhouette_vals = _silhouette_sample_jit(labels, distances, unique_labels)
     return float(np.mean(silhouette_vals))
 
 
