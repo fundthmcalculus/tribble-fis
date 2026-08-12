@@ -19,6 +19,7 @@ from .regression import (
     solve_tsk_consequents,
     select_interaction_terms,
     predict_tsk,
+    compute_rbf_centers,
 )
 
 
@@ -49,6 +50,8 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         detect_interactions=False,
         interaction_top_p=0.95,
         select_interactions=False,
+        rbf_n_centers=3,
+        rbf_gamma=1.0,
     ):
         """
         Initialize the TribbleRegressor.
@@ -69,9 +72,9 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                 always solved in closed form (the exact firing-weighted ridge
                 least-squares optimum), which supersedes the former per-bucket LS
                 initialization plus L-BFGS refinement.
-            consequent_basis: 'raw' monomials or 'orthogonal' (Legendre) basis for
-                the consequent polynomial. Orthogonal is better conditioned at
-                higher orders.
+            consequent_basis: 'raw' monomials, 'orthogonal' (Legendre) basis, or
+                'gaussian-rbf' (Gaussian RBF basis). Orthogonal is better conditioned
+                at higher orders. RBF provides nonlinear basis functions.
             l2_reg: Ridge penalty on the correction coefficients (constants are not
                 penalized). 0 disables regularization.
             pin_extremes: If False (default), the first and last bucket means are not pinned
@@ -108,6 +111,10 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                 sparsity pass over the shortlist rather than the dense
                 all-`n_choose_2`-pairs default `full-2nd` otherwise uses. Has
                 no effect for any other `tsk_order` (a warning is raised).
+            rbf_n_centers: For 'gaussian-rbf' basis, number of centers per feature
+                (produces n_features * rbf_n_centers total centers).
+            rbf_gamma: Shape parameter for Gaussian RBF evaluations. Larger values
+                create narrower, more localized RBFs (default 1.0).
         """
         self.is_fitted_ = False
         self.model_ = None
@@ -120,6 +127,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self.n_rules_ = None
         self.interaction_pairs_ = None
         self.cross_pairs_ = None
+        self.rbf_centers_ = None
 
         self.top_n = top_n
         self.top_p = top_p
@@ -144,6 +152,8 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self.detect_interactions = detect_interactions
         self.interaction_top_p = interaction_top_p
         self.select_interactions = select_interactions
+        self.rbf_n_centers = rbf_n_centers
+        self.rbf_gamma = rbf_gamma
 
     def _norms(self) -> NormPair:
         """Resolved (t-norm, t-conorm) for this estimator.
@@ -266,6 +276,13 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         # a deduplicated GaussianMixtureModel through regression.predict_tsk --
         # not just calling remove_duplicate_membership_fcns() here.
 
+        # Compute RBF centers if using Gaussian RBF basis
+        if self.consequent_basis == "gaussian-rbf":
+            X_features = X_df[self.top_features_].to_numpy()
+            self.rbf_centers_ = compute_rbf_centers(X_features, n_centers=self.rbf_n_centers)
+        else:
+            self.rbf_centers_ = None
+
         # Solve TSK consequents in closed form: for fixed firing strengths the
         # output is linear in the coefficients, so a single ridge least-squares
         # solve yields the exact firing-weighted optimum.
@@ -278,6 +295,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             norms=self._norms(),
             cross_pairs=self.cross_pairs_,
             verbose=False,
+            rbf_centers=self.rbf_centers_, rbf_gamma=self.rbf_gamma,
         )
 
         self.is_fitted_ = True
@@ -308,6 +326,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             order=self.tsk_order, basis=self.consequent_basis,
             norms=self._norms(),
             cross_pairs=self.cross_pairs_,
+            rbf_centers=self.rbf_centers_, rbf_gamma=self.rbf_gamma,
         )
 
 

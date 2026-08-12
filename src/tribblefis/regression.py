@@ -511,11 +511,32 @@ def _poly_features(X_rule: ndarray, degree: int, basis: str) -> ndarray:
     raise ValueError(f"Unknown basis: {basis!r} (expected 'raw' or 'orthogonal')")
 
 
+def _gaussian_rbf_features(X_rule: ndarray, centers: ndarray, gamma: float) -> ndarray:
+    """Compute Gaussian RBF features.
+
+    For each center point, compute: exp(-gamma * ||x - center||^2)
+
+    Args:
+        X_rule: (n_samples, n_features) feature matrix.
+        centers: (n_centers, n_features) RBF center points.
+        gamma: Shape parameter controlling RBF width. Typical range: 0.1 to 10.
+               Larger gamma = narrower, more localized RBFs.
+
+    Returns:
+        (n_samples, n_centers) matrix of RBF evaluations.
+    """
+    # Compute squared Euclidean distances: (n_samples, n_centers)
+    sq_distances = np.sum((X_rule[:, np.newaxis, :] - centers[np.newaxis, :, :]) ** 2, axis=2)
+    return np.exp(-gamma * sq_distances)
+
+
 def build_consequent_features(
     X_rule: ndarray,
     order: str,
     basis: str = "raw",
     cross_pairs: list[tuple[int, int]] | None = None,
+    rbf_centers: ndarray | None = None,
+    rbf_gamma: float = 1.0,
 ) -> ndarray:
     """Build the consequent design columns (without the intercept) for one order.
 
@@ -524,18 +545,25 @@ def build_consequent_features(
     legacy ``np.hstack`` ordering exactly, so raw-basis coefficients are a
     drop-in replacement for the old code.
 
+    For 'gaussian-rbf' basis, returns RBF evaluations: exp(-gamma * ||x - center||^2).
+
     Args:
         X_rule: (n_samples, n_features) feature matrix.
-        order: One of '0th', '1st', '2nd', '3rd', 'full-2nd'.
-        basis: 'raw' or 'orthogonal' (see `_poly_features`).
-        cross_pairs: For 'full-2nd', the explicit list of (i, j) feature-index
-            pairs to include as interaction terms. None means all pairs. Used by
-            the sparse interaction selector to prune uninformative cross terms;
-            the same list must be passed to `predict_tsk`.
+        order: One of '0th', '1st', '2nd', '3rd', 'full-2nd'. Ignored for 'gaussian-rbf'.
+        basis: 'raw', 'orthogonal', or 'gaussian-rbf' (see `_poly_features`, `_gaussian_rbf_features`).
+        cross_pairs: For 'full-2nd', the explicit list of (i, j) feature-index pairs.
+        rbf_centers: (n_centers, n_features) RBF center points. Required for 'gaussian-rbf' basis.
+        rbf_gamma: Shape parameter for Gaussian RBFs (default 1.0).
     """
     n_samples, n_features = X_rule.shape
     if order == "0th":
         return np.empty((n_samples, 0))
+
+    if basis == "gaussian-rbf":
+        if rbf_centers is None:
+            raise ValueError("rbf_centers must be provided for 'gaussian-rbf' basis")
+        return _gaussian_rbf_features(X_rule, rbf_centers, rbf_gamma)
+
     if order not in _ORDER_DEGREES:
         raise ValueError(f"Unknown order: {order!r}")
 
@@ -587,6 +615,8 @@ def solve_tsk_consequents(
     norms: NormPair | None = None,
     verbose: bool = True,
     feature_arrays: dict[str, np.ndarray] | None = None,
+    rbf_centers: ndarray | None = None,
+    rbf_gamma: float = 1.0,
 ) -> tuple[ndarray, ndarray]:
     """Solve for the globally optimal TSK consequent coefficients in closed form.
 
@@ -636,7 +666,8 @@ def solve_tsk_consequents(
             else np.empty((len(X_train), 0))
     else:
         X_rule = X_train[top_n_todo].to_numpy()
-    feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs)
+    feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs,
+                                      rbf_centers=rbf_centers, rbf_gamma=rbf_gamma)
     n_terms = feats.shape[1]
     n_coeffs_per_rule = 1 + n_terms
 
@@ -734,6 +765,8 @@ def predict_tsk(
     cross_pairs: list[tuple[int, int]] | None = None,
     norms: NormPair | None = None,
     feature_arrays: dict[str, np.ndarray] | None = None,
+    rbf_centers: ndarray | None = None,
+    rbf_gamma: float = 1.0,
 ) -> ndarray:
     """Shared TSK prediction path used by the solver's callers and CV.
 
@@ -757,11 +790,32 @@ def predict_tsk(
             else np.empty((len(X), 0))
     else:
         X_rule = X[top_n_todo].to_numpy()
-    feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs)
+    feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs,
+                                      rbf_centers=rbf_centers, rbf_gamma=rbf_gamma)
     y_pred = np.zeros(len(X))
     for ij, _rule_id in enumerate(labels):
         y_pred += (y_bucket_mean[ij] + feats @ corr_terms[ij, :]) * norm_fs[:, ij]
     return y_pred
+
+
+def compute_rbf_centers(X: ndarray, n_centers: int = 5) -> ndarray:
+    """Compute RBF center points using quantiles of the feature space.
+
+    Args:
+        X: (n_samples, n_features) feature matrix.
+        n_centers: Number of centers per feature (default 5, produces n_features * n_centers total).
+
+    Returns:
+        (n_centers_total, n_features) array of RBF centers.
+    """
+    n_samples, n_features = X.shape
+    quantiles = np.linspace(0.1, 0.9, n_centers)
+    centers = []
+    for feat_idx in range(n_features):
+        feat_quantiles = np.quantile(X[:, feat_idx], quantiles)
+        centers.append(feat_quantiles)
+    # Create a grid of all combinations (Cartesian product across features)
+    return np.column_stack(np.meshgrid(*centers, indexing='ij')).reshape(-1, n_features)
 
 
 def select_interaction_terms(
@@ -832,6 +886,8 @@ def select_consequent_hyperparams(
     n_folds: int = 5,
     pin_extremes: bool = True,
     random_state: int = 42,
+    rbf_n_centers: int = 3,
+    rbf_gamma: float = 1.0,
 ) -> dict[str, typing.Any]:
     """Pick (order, basis, l2_reg) by k-fold cross-validated R² on X_train.
 
@@ -842,10 +898,20 @@ def select_consequent_hyperparams(
     an unregularized fit that overfits the test set. Selecting on held-out folds
     prevents the higher-order models from chasing the test set.
 
+    Args:
+        rbf_n_centers: Number of centers per feature for Gaussian RBF basis.
+        rbf_gamma: Shape parameter for Gaussian RBF evaluations.
+
     Returns a dict with keys: order, basis, l2_reg, val_r2 (mean across folds),
     val_mse (mean across folds).
     """
     from sklearn.model_selection import KFold
+
+    # Pre-compute RBF centers if needed
+    rbf_centers = None
+    if "gaussian-rbf" in candidate_bases:
+        X_array = X_train[top_n_todo].to_numpy() if isinstance(X_train, pd.DataFrame) else X_train
+        rbf_centers = compute_rbf_centers(X_array, n_centers=rbf_n_centers)
 
     idx = np.arange(len(X_train))
     kf = KFold(n_splits=n_folds, shuffle=True, random_state=random_state)
@@ -860,14 +926,17 @@ def select_consequent_hyperparams(
                     X_tr, X_val = X_train.iloc[tr_idx], X_train.iloc[val_idx]
                     y_tr, y_val = y_train.iloc[tr_idx], y_train.iloc[val_idx]
                     y_val_true = y_val["y_value"].values
+
                     corr, means = solve_tsk_consequents(
                         X_tr, gaussian_memberships, top_n_todo, y_bucket_mean, y_tr,
                         n_output_buckets=n_output_buckets, order=order, l2_reg=l2, basis=basis,
                         pin_extremes=pin_extremes,
                         verbose=False,
+                        rbf_centers=rbf_centers, rbf_gamma=rbf_gamma,
                     )
                     y_hat = predict_tsk(X_val, gaussian_memberships, top_n_todo, means, corr,
-                                        order=order, basis=basis)
+                                        order=order, basis=basis,
+                                        rbf_centers=rbf_centers, rbf_gamma=rbf_gamma)
                     keep = ~np.isnan(y_hat)
                     fold_r2.append(_rsquared(y_val_true[keep], y_hat[keep]))
                     fold_mse.append(_mse(y_val_true[keep], y_hat[keep]))
