@@ -1117,10 +1117,9 @@ name = "tribble-fis"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "numba" },
     { name = "numpy" },
     { name = "optimizers" },
-    { name = "scikit-learn" },
-    { name = "scipy" },
     { name = "seaborn" },
     { name = "tribble-clustering" },
     { name = "ucimlrepo" },
@@ -1131,24 +1130,31 @@ dev = [
     { name = "matplotlib" },
     { name = "pytest" },
     { name = "pytest-cov" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+]
+full = [
+    { name = "scikit-learn" },
     { name = "scipy" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "matplotlib", marker = "extra == 'dev'" },
+    { name = "numba" },
     { name = "numpy" },
     { name = "optimizers", git = "https://github.com/fundthmcalculus/optimizers.git" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
-    { name = "scikit-learn" },
-    { name = "scipy" },
+    { name = "scikit-learn", marker = "extra == 'dev'" },
+    { name = "scikit-learn", marker = "extra == 'full'" },
     { name = "scipy", marker = "extra == 'dev'" },
+    { name = "scipy", marker = "extra == 'full'" },
     { name = "seaborn" },
     { name = "tribble-clustering", specifier = ">=0.1.8" },
     { name = "ucimlrepo", specifier = ">=0.0.7" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "full"]
 
 [[package]]
 name = "tzdata"

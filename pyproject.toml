@@ -12,7 +12,7 @@ dependencies = [
     "numpy",
     "numba",
     "tribble-clustering>=0.1.8",
-    "seaborn",
+    "matplotlib",
     "ucimlrepo>=0.0.7",
     "optimizers",
 ]
@@ -30,13 +30,6 @@ optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git" }
 dev = [
     "pytest>=7.0",
     "pytest-cov",
-    "matplotlib",
-    "scipy",
-    "scikit-learn",
-]
-full = [
-    "scipy",
-    "scikit-learn",
 ]
 
 [tool.hatch.build.targets.wheel]
