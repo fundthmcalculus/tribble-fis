@@ -12,8 +12,6 @@ dependencies = [
     "numpy",
     "numba",
     "tribble-clustering>=0.1.8",
-    "scikit-learn",
-    "scipy",
     "seaborn",
     "ucimlrepo>=0.0.7",
     "optimizers",
@@ -33,7 +31,12 @@ dev = [
     "pytest>=7.0",
     "pytest-cov",
     "matplotlib",
-    "scipy"
+    "scipy",
+    "scikit-learn",
+]
+full = [
+    "scipy",
+    "scikit-learn",
 ]
 
 [tool.hatch.build.targets.wheel]
