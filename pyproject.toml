@@ -30,6 +30,8 @@ optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git" }
 dev = [
     "pytest>=7.0",
     "pytest-cov",
+    "scipy",
+    "scikit-learn",
 ]
 
 [tool.hatch.build.targets.wheel]
