@@ -511,23 +511,36 @@ def _poly_features(X_rule: ndarray, degree: int, basis: str) -> ndarray:
     raise ValueError(f"Unknown basis: {basis!r} (expected 'raw' or 'orthogonal')")
 
 
-def _gaussian_rbf_features(X_rule: ndarray, centers: ndarray, gamma: float) -> ndarray:
-    """Compute Gaussian RBF features.
+def _gaussian_rbf_features(X_rule: ndarray, centers: ndarray, gamma: float,
+                           radius: float | None = None) -> ndarray:
+    """Compute Gaussian RBF features with optional compact support.
 
-    For each center point, compute: exp(-gamma * ||x - center||^2)
+    For each center point, compute: exp(-gamma * ||x - center||^2) if ||x - center|| <= radius, else 0.
 
     Args:
         X_rule: (n_samples, n_features) feature matrix.
         centers: (n_centers, n_features) RBF center points.
         gamma: Shape parameter controlling RBF width. Typical range: 0.1 to 10.
                Larger gamma = narrower, more localized RBFs.
+        radius: Compact support radius. RBF is exactly zero outside this radius.
+                If None, no truncation (infinite support). Typically set to ~0.5-1.0 in
+                normalized feature space.
 
     Returns:
         (n_samples, n_centers) matrix of RBF evaluations.
     """
     # Compute squared Euclidean distances: (n_samples, n_centers)
     sq_distances = np.sum((X_rule[:, np.newaxis, :] - centers[np.newaxis, :, :]) ** 2, axis=2)
-    return np.exp(-gamma * sq_distances)
+    distances = np.sqrt(sq_distances)
+
+    # Compute Gaussian RBF values
+    rbf = np.exp(-gamma * sq_distances)
+
+    # Apply compact support (truncate to zero outside radius)
+    if radius is not None:
+        rbf[distances > radius] = 0.0
+
+    return rbf
 
 
 def build_consequent_features(
@@ -537,6 +550,7 @@ def build_consequent_features(
     cross_pairs: list[tuple[int, int]] | None = None,
     rbf_centers: ndarray | None = None,
     rbf_gamma: float = 1.0,
+    rbf_radius: float | None = None,
 ) -> ndarray:
     """Build the consequent design columns (without the intercept) for one order.
 
@@ -545,7 +559,8 @@ def build_consequent_features(
     legacy ``np.hstack`` ordering exactly, so raw-basis coefficients are a
     drop-in replacement for the old code.
 
-    For 'gaussian-rbf' basis, returns RBF evaluations: exp(-gamma * ||x - center||^2).
+    For 'gaussian-rbf' basis, returns RBF evaluations: exp(-gamma * ||x - center||^2)
+    with optional compact support (zero outside radius).
 
     Args:
         X_rule: (n_samples, n_features) feature matrix.
@@ -554,6 +569,7 @@ def build_consequent_features(
         cross_pairs: For 'full-2nd', the explicit list of (i, j) feature-index pairs.
         rbf_centers: (n_centers, n_features) RBF center points. Required for 'gaussian-rbf' basis.
         rbf_gamma: Shape parameter for Gaussian RBFs (default 1.0).
+        rbf_radius: Compact support radius for RBFs. If None, RBFs have infinite support.
     """
     n_samples, n_features = X_rule.shape
     if order == "0th":
@@ -562,7 +578,7 @@ def build_consequent_features(
     if basis == "gaussian-rbf":
         if rbf_centers is None:
             raise ValueError("rbf_centers must be provided for 'gaussian-rbf' basis")
-        return _gaussian_rbf_features(X_rule, rbf_centers, rbf_gamma)
+        return _gaussian_rbf_features(X_rule, rbf_centers, rbf_gamma, radius=rbf_radius)
 
     if order not in _ORDER_DEGREES:
         raise ValueError(f"Unknown order: {order!r}")
@@ -617,6 +633,7 @@ def solve_tsk_consequents(
     feature_arrays: dict[str, np.ndarray] | None = None,
     rbf_centers: ndarray | None = None,
     rbf_gamma: float = 1.0,
+    rbf_radius: float | None = None,
 ) -> tuple[ndarray, ndarray]:
     """Solve for the globally optimal TSK consequent coefficients in closed form.
 
@@ -667,7 +684,8 @@ def solve_tsk_consequents(
     else:
         X_rule = X_train[top_n_todo].to_numpy()
     feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs,
-                                      rbf_centers=rbf_centers, rbf_gamma=rbf_gamma)
+                                      rbf_centers=rbf_centers, rbf_gamma=rbf_gamma,
+                                      rbf_radius=rbf_radius)
     n_terms = feats.shape[1]
     n_coeffs_per_rule = 1 + n_terms
 
@@ -767,6 +785,7 @@ def predict_tsk(
     feature_arrays: dict[str, np.ndarray] | None = None,
     rbf_centers: ndarray | None = None,
     rbf_gamma: float = 1.0,
+    rbf_radius: float | None = None,
 ) -> ndarray:
     """Shared TSK prediction path used by the solver's callers and CV.
 
@@ -791,7 +810,8 @@ def predict_tsk(
     else:
         X_rule = X[top_n_todo].to_numpy()
     feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs,
-                                      rbf_centers=rbf_centers, rbf_gamma=rbf_gamma)
+                                      rbf_centers=rbf_centers, rbf_gamma=rbf_gamma,
+                                      rbf_radius=rbf_radius)
     y_pred = np.zeros(len(X))
     for ij, _rule_id in enumerate(labels):
         y_pred += (y_bucket_mean[ij] + feats @ corr_terms[ij, :]) * norm_fs[:, ij]
@@ -888,6 +908,7 @@ def select_consequent_hyperparams(
     random_state: int = 42,
     rbf_n_centers: int = 3,
     rbf_gamma: float = 1.0,
+    rbf_radius: float | None = None,
 ) -> dict[str, typing.Any]:
     """Pick (order, basis, l2_reg) by k-fold cross-validated R² on X_train.
 
@@ -901,6 +922,7 @@ def select_consequent_hyperparams(
     Args:
         rbf_n_centers: Number of centers per feature for Gaussian RBF basis.
         rbf_gamma: Shape parameter for Gaussian RBF evaluations.
+        rbf_radius: Compact support radius for RBF basis. If None, RBFs have infinite support.
 
     Returns a dict with keys: order, basis, l2_reg, val_r2 (mean across folds),
     val_mse (mean across folds).
@@ -932,11 +954,12 @@ def select_consequent_hyperparams(
                         n_output_buckets=n_output_buckets, order=order, l2_reg=l2, basis=basis,
                         pin_extremes=pin_extremes,
                         verbose=False,
-                        rbf_centers=rbf_centers, rbf_gamma=rbf_gamma,
+                        rbf_centers=rbf_centers, rbf_gamma=rbf_gamma, rbf_radius=rbf_radius,
                     )
                     y_hat = predict_tsk(X_val, gaussian_memberships, top_n_todo, means, corr,
                                         order=order, basis=basis,
-                                        rbf_centers=rbf_centers, rbf_gamma=rbf_gamma)
+                                        rbf_centers=rbf_centers, rbf_gamma=rbf_gamma,
+                                        rbf_radius=rbf_radius)
                     keep = ~np.isnan(y_hat)
                     fold_r2.append(_rsquared(y_val_true[keep], y_hat[keep]))
                     fold_mse.append(_mse(y_val_true[keep], y_hat[keep]))

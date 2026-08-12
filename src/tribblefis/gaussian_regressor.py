@@ -52,6 +52,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         select_interactions=False,
         rbf_n_centers=3,
         rbf_gamma=1.0,
+        rbf_radius=None,
     ):
         """
         Initialize the TribbleRegressor.
@@ -115,6 +116,9 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                 (produces n_features * rbf_n_centers total centers).
             rbf_gamma: Shape parameter for Gaussian RBF evaluations. Larger values
                 create narrower, more localized RBFs (default 1.0).
+            rbf_radius: Compact support radius for RBF basis. RBFs are exactly zero
+                outside this radius. If None (default), RBFs have infinite support.
+                Typical values: 0.5-1.0 in normalized feature space.
         """
         self.is_fitted_ = False
         self.model_ = None
@@ -154,6 +158,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self.select_interactions = select_interactions
         self.rbf_n_centers = rbf_n_centers
         self.rbf_gamma = rbf_gamma
+        self.rbf_radius = rbf_radius
 
     def _norms(self) -> NormPair:
         """Resolved (t-norm, t-conorm) for this estimator.
@@ -296,6 +301,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             cross_pairs=self.cross_pairs_,
             verbose=False,
             rbf_centers=self.rbf_centers_, rbf_gamma=self.rbf_gamma,
+            rbf_radius=self.rbf_radius,
         )
 
         self.is_fitted_ = True
@@ -327,6 +333,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             norms=self._norms(),
             cross_pairs=self.cross_pairs_,
             rbf_centers=self.rbf_centers_, rbf_gamma=self.rbf_gamma,
+            rbf_radius=self.rbf_radius,
         )
 
 
