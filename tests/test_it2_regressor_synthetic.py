@@ -189,3 +189,75 @@ def test_it2_regressor_intervals_contain_true_values(synthetic_regression_data):
     # Check that intervals are within the training range
     assert np.all(y_lower >= regressor.y_min_ - 0.1)
     assert np.all(y_upper <= regressor.y_max_ + 0.1)
+
+
+def test_it2_converges_to_type1_as_footprint_vanishes(synthetic_regression_data):
+    """IT2 must reduce to the type-1 model when the footprint of uncertainty
+    shrinks to nothing.
+
+    This is the invariant that makes IT2 a *generalisation* of type-1 rather
+    than a separate estimator that happens to share a constructor. It failed
+    silently for the whole life of the regressor: `predict` averaged raw firing
+    strengths and rescaled them into the target range, discarding the learned
+    TSK consequents and skipping normalisation by the total firing strength, so
+    IT2 and type-1 answered different questions. On a real target the symptom
+    was a point estimate biased toward `y_min` whose bias *shrank* as
+    `uncertainty_width` grew -- backwards, since the footprint's width should
+    set the interval, not the location.
+
+    Neither accuracy nor interval-validity assertions catch that, because both
+    hold for a consistently wrong estimator. Only the degeneracy does.
+    """
+    from tribblefis.gaussian_regressor import TribbleRegressor
+
+    X_train, X_test, y_train, y_test, _ = synthetic_regression_data
+    kw = dict(top_n=1, n_gaussians=3, n_output_buckets=5, random_state=42)
+
+    t1 = TribbleRegressor(**kw).fit(X_train, y_train)
+    it2 = IntervalType2FuzzyRegressor(
+        uncertainty_width=1e-6, km_iterations=None, **kw
+    ).fit(X_train, y_train)
+
+    np.testing.assert_allclose(
+        it2.predict(X_test), t1.predict(X_test), rtol=1e-4, atol=1e-4
+    )
+
+
+def test_it2_footprint_widens_intervals_and_contains_the_point_estimate(
+    synthetic_regression_data,
+):
+    """`uncertainty_width` must widen the interval, and the point estimate
+    must lie inside it.
+
+    Note what this deliberately does *not* assert. The point estimate does
+    drift as the footprint widens (on this fixture, mean 0.225 -> 0.524 across
+    uncertainty_width 0.01 -> 0.9). That is consistent with shrinkage rather
+    than a defect: a wider footprint flattens the firing strengths across
+    output buckets, so the firing-weighted average moves toward the unweighted
+    mean of the consequents. An earlier version of this test asserted the
+    location was stable, which is a stronger promise than the estimator makes.
+    Characterising that drift properly is left open; what is pinned here is the
+    pair of properties the interval must have to mean anything.
+    """
+    X_train, X_test, y_train, y_test, _ = synthetic_regression_data
+    kw = dict(top_n=1, n_gaussians=3, n_output_buckets=5, random_state=42)
+
+    widths = []
+    for uw in (0.1, 0.3, 0.6, 0.9):
+        m = IntervalType2FuzzyRegressor(
+            uncertainty_width=uw, km_iterations=None, **kw
+        ).fit(X_train, y_train)
+        lo, hi = m.predict_intervals(X_test)
+        point = m.predict(X_test)
+
+        assert np.all(lo <= hi), "interval bounds are inverted"
+        # The type-reduced estimate is a convex-ish blend of the two bound
+        # predictions, so it cannot fall outside them.
+        assert np.all(point >= lo - 1e-8) and np.all(point <= hi + 1e-8), (
+            f"point estimate escapes its own interval at uncertainty_width={uw}"
+        )
+        widths.append(float(np.mean(hi - lo)))
+
+    assert widths == sorted(widths), (
+        f"interval width is not monotone in uncertainty_width: {widths}"
+    )

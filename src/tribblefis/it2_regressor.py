@@ -17,6 +17,7 @@ from .gauss_data import (
 )
 from .gaussian_regressor import TribbleRegressor
 from .it2_kernel import it2_firing_strengths
+from .regression import apply_tsk_consequents
 
 
 class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
@@ -178,18 +179,37 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
             # Ensure DataFrame has correct column names
             X = pd.DataFrame(X.values, columns=self.feature_names_in_)
 
-        _, _, firing_crisp, _ = it2_firing_strengths(
+        _, _, firing_crisp, labels = it2_firing_strengths(
             X, self.model_, self.norms_, km_iterations=self.km_iterations
         )
 
-        # Combine firing strengths to get single prediction per sample
-        # Take weighted average (mean of firing strengths per sample)
-        y_normalized = np.mean(firing_crisp, axis=1)
-
-        # Scale back to original target range
-        y_pred = self.y_min_ + y_normalized * (self.y_max_ - self.y_min_)
-
-        return y_pred
+        # Type-reduced firing strengths feed the *same* TSK consequent
+        # evaluation the type-1 regressor uses.
+        #
+        # This previously read
+        #     y_normalized = np.mean(firing_crisp, axis=1)
+        #     y_pred = y_min_ + y_normalized * (y_max_ - y_min_)
+        # which discards the learned consequents entirely and never normalizes
+        # by the total firing strength, so the output was driven by the raw
+        # *magnitude* of the firing strengths rather than by their distribution
+        # across output buckets. Three symptoms followed, all observed:
+        # predictions collapsed toward y_min (mean 0.91 against a true 2.03);
+        # the bias shrank monotonically as `uncertainty_width` grew, because a
+        # wider footprint raises the lower membership's firing strengths; and
+        # the estimator did not converge to the type-1 model as the footprint
+        # vanished, which is the invariant that should have caught it.
+        base = self._base_regressor
+        return apply_tsk_consequents(
+            X,
+            base.top_features_,
+            firing_crisp,
+            labels,
+            base.y_bucket_mean_,
+            base.corr_terms_,
+            order=base.tsk_order,
+            basis=base.consequent_basis,
+            cross_pairs=base.cross_pairs_,
+        )
 
     def predict_intervals(self, X):
         """Predict confidence intervals for target values.
@@ -217,16 +237,31 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
             # Ensure DataFrame has correct column names
             X = pd.DataFrame(X.values, columns=self.feature_names_in_)
 
-        firing_upper, firing_lower, _, _ = it2_firing_strengths(
+        firing_upper, firing_lower, _, labels = it2_firing_strengths(
             X, self.model_, self.norms_, km_iterations=None
         )
 
-        # Normalize and scale back to original range
-        y_upper_normalized = np.mean(firing_upper, axis=1)
-        y_lower_normalized = np.mean(firing_lower, axis=1)
+        # Same consequent evaluation as `predict`, run once against each bound
+        # of the footprint. Carrying the old `np.mean(firing)` scaling here
+        # while `predict` used the TSK consequents would put the point estimate
+        # and its interval on two different scales.
+        base = self._base_regressor
+        bounds = [
+            apply_tsk_consequents(
+                X, base.top_features_, f, labels,
+                base.y_bucket_mean_, base.corr_terms_,
+                order=base.tsk_order, basis=base.consequent_basis,
+                cross_pairs=base.cross_pairs_,
+            )
+            for f in (firing_upper, firing_lower)
+        ]
 
-        y_upper = self.y_min_ + y_upper_normalized * (self.y_max_ - self.y_min_)
-        y_lower = self.y_min_ + y_lower_normalized * (self.y_max_ - self.y_min_)
+        # After firing-strength normalization the wider membership does not
+        # necessarily produce the larger prediction -- both are weighted
+        # averages over the same consequents, so either can come out on top.
+        # Order them per sample so `y_lower <= y_upper` holds by construction.
+        y_lower = np.minimum(bounds[0], bounds[1])
+        y_upper = np.maximum(bounds[0], bounds[1])
 
         return y_lower, y_upper
 

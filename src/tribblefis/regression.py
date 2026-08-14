@@ -799,6 +799,38 @@ def predict_tsk(
     firing_strengths, labels = tsk_firing_strengths(
         X[top_n_todo], model, norms=norms, feature_arrays=feature_arrays
     )
+    return apply_tsk_consequents(
+        X, top_n_todo, firing_strengths, labels, y_bucket_mean, corr_terms,
+        order=order, basis=basis, cross_pairs=cross_pairs,
+        feature_arrays=feature_arrays,
+        rbf_centers=rbf_centers, rbf_gamma=rbf_gamma, rbf_radius=rbf_radius,
+    )
+
+
+def apply_tsk_consequents(
+    X: pd.DataFrame,
+    top_n_todo: list[typing.Any],
+    firing_strengths: ndarray,
+    labels: list[typing.Any],
+    y_bucket_mean: ndarray,
+    corr_terms: ndarray,
+    order: str = "2nd",
+    basis: str = "raw",
+    cross_pairs: list[tuple[int, int]] | None = None,
+    feature_arrays: dict[str, np.ndarray] | None = None,
+    rbf_centers: ndarray | None = None,
+    rbf_gamma: float = 1.0,
+    rbf_radius: float | None = None,
+) -> ndarray:
+    """Evaluate TSK consequents against *supplied* firing strengths.
+
+    Split out of `predict_tsk` so that inference schemes which compute firing
+    strengths differently -- notably the interval type-2 path, whose strengths
+    come out of type reduction rather than a single type-1 forward pass -- can
+    reuse the identical consequent evaluation and normalization instead of
+    reimplementing it. Sharing this is the point: the IT2 regressor previously
+    had its own `predict`, and it silently diverged (see `it2_regressor`).
+    """
     norm_fs = _normalize_firing_strengths(firing_strengths)
 
     if order == "0th":
