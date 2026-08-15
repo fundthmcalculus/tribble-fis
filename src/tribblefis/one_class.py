@@ -33,6 +33,36 @@ Feature selection is the one piece that cannot be inherited: the classifier's
 differentiation score is a *supervised* criterion (class separation) and is
 undefined with one class. See ``feature_selection`` below for the unsupervised
 alternatives.
+
+Scoring past a handful of features
+----------------------------------
+The complement above **saturates**, and past roughly 60 features it stops being
+usable. The product t-norm over per-feature Gaussians is
+``exp(-0.5 * sum_j z_j^2)``, and a *typical normal* point already carries
+``sum_j z_j^2 ~ n_features``. Once that exceeds ~74, ``exp(-37)`` falls below
+float64's resolution next to 1.0, so ``1 - firing`` rounds to exactly 1.0 for
+normal and anomalous points alike. Measured on synthetic correlated data, 32
+components whitened:
+
+===========  ==================  ==================  =================
+n_features   normal at exactly   AUROC (complement   det@1%FPR
+             1.0                 / surprisal)        (complement / surprisal)
+===========  ==================  ==================  =================
+32           0.0%                0.955 / 0.955       0.586 / 0.586
+64           22.8%               0.852 / 0.918       0.000 / 0.448
+128          100%                0.500 / 0.839       0.000 / 0.206
+===========  ==================  ==================  =================
+
+At 128 the complement is *chance* -- every point is tied at the top. AUROC hides
+the onset of this (0.955 at 32 features looks fine) while the strict operating
+point does not: det@1%FPR is already 0.000 at 64 features, where the summed
+surprisal still matches Mahalanobis exactly.
+
+``score="surprisal"`` sums ``-log(membership_j)`` instead of taking the
+complement of their product. It is the same fitted memberships and the same
+ordering the complement *intends*, just kept in the log domain where it does not
+round away. Use it whenever more than a handful of features reach the rules --
+which is essentially always under ``whiten=True``. See ``score`` below.
 """
 
 from __future__ import annotations
@@ -47,6 +77,9 @@ from sklearn.utils.validation import check_is_fitted
 
 from .gauss_data import AnomalyParameters, DefaultNormCornorm
 from .gauss_math import create_gaussian_membership_dict, tsk_firing_strengths
+# Aliased: this class has a `t_conorm` *parameter*, and an unaliased import
+# would read as that parameter at every use site inside the class body.
+from .gauss_math import t_conorm as _t_conorm_fold
 
 NORMAL_LABEL = "normal"
 
@@ -107,6 +140,31 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         you asked -- but warns, since flagging most of the "normal" training set
         as outlier is far more often a mistake than an intent. ``<= 0`` puts the
         threshold at the training minimum, flagging nothing.
+    score : {"complement", "surprisal", "trimmed"}, default "complement"
+        How the per-feature memberships are aggregated into an anomaly score.
+
+        * ``"complement"`` -- ``1 - max_rule firing_strength``, in ``[0, 1]``.
+          The original formulation, kept as the default so existing callers are
+          unaffected. **Saturates past ~60 features** -- see the module
+          docstring; do not use it with ``whiten=True`` on wide input.
+        * ``"surprisal"`` -- ``sum_j -log(membership_j)``, in ``[0, inf)``. The
+          same ordering the complement intends, computed in the log domain where
+          it does not round away. Non-saturating; recommended past a handful of
+          features. Under the product t-norm this is exactly
+          ``-log(firing_strength)``, so it is a monotone transform of the
+          complement wherever the complement has not lost resolution.
+        * ``"trimmed"`` -- the surprisal sum with the ``trim`` largest
+          per-sample terms dropped, so one odd feature cannot by itself flag an
+          otherwise normal point. Whether it beats ``"surprisal"`` is
+          data-dependent: measured better on some targets and worse on others,
+          so it is offered rather than recommended.
+
+        ``score_samples``/``decision_function``/``predict`` are unchanged in
+        meaning under all three -- only the ordering's resolution differs.
+    trim : int, default 2
+        Number of largest per-sample surprisal terms to drop when
+        ``score="trimmed"``. Must be smaller than the number of features
+        reaching the rules. Ignored by the other scores.
     max_samples : int or None, default None
         Cap on rows per feature when fitting memberships (see the classifier).
     random_state : int, default 42
@@ -123,6 +181,8 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         negative for the ``contamination`` fraction of the training data.
     """
 
+    _SCORES = ("complement", "surprisal", "trimmed")
+
     def __init__(
         self,
         n_gaussians: int = 0,
@@ -132,6 +192,8 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         whiten: bool = False,
         whiten_components: int | float | None = None,
         contamination: float = 0.05,
+        score: str = "complement",
+        trim: int = 2,
         t_norm=None,
         t_conorm=None,
         allow_mixed_norms: bool = False,
@@ -145,6 +207,8 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         self.whiten = whiten
         self.whiten_components = whiten_components
         self.contamination = contamination
+        self.score = score
+        self.trim = trim
         self.t_norm = t_norm
         self.t_conorm = t_conorm
         self.allow_mixed_norms = allow_mixed_norms
@@ -163,6 +227,50 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
             t_conorm=self.t_conorm,
             allow_mixed_norms=self.allow_mixed_norms,
         )
+
+    def _feature_memberships(self, X_df: pd.DataFrame) -> np.ndarray:
+        """``(n_samples, n_features)`` per-feature membership of the normal class.
+
+        This is `tsk_firing_strengths`' inner fold stopped one step early: within
+        a feature the label's membership functions are still combined with the
+        t-conorm, but the t-norm *across* features -- the step that multiplies
+        the terms together and destroys their magnitudes -- is left to the
+        caller. `anomaly_score` either applies it (``"complement"``) or works in
+        the log domain instead (``"surprisal"``/``"trimmed"``).
+
+        Iterating `model_.feature_models` rather than `top_features_` mirrors
+        `tsk_firing_strengths` exactly, so the columns here are the same terms
+        its product is taken over.
+        """
+        norms = self._norm_params().norms()
+        columns = []
+        for name, feature_model in self.model_.feature_models.items():
+            if NORMAL_LABEL not in feature_model.label_models or name not in X_df:
+                continue
+            data = np.asarray(X_df[name].values)
+            membership = np.zeros(len(data))
+            for mf in feature_model.label_models[NORMAL_LABEL].memberships:
+                membership = _t_conorm_fold(
+                    membership, mf.evaluate(data), norms.t_conorm
+                )
+            columns.append(membership)
+        if not columns:
+            raise ValueError("no fitted feature contributes a membership")
+        return np.column_stack(columns)
+
+    def _surprisal_terms(self, X_df: pd.DataFrame) -> np.ndarray:
+        """Per-feature ``-log(membership)``, finite everywhere.
+
+        A Gaussian membership underflows to exactly 0.0 around ``z = 38``, and
+        ``-log(0)`` is ``inf`` -- which would make every sufficiently-far point
+        tie at ``inf`` and reintroduce the very saturation this score exists to
+        avoid, just at the other end. Flooring at the smallest positive double
+        caps a single term at ~708 instead. Resolution is still lost past
+        ``z ~ 38``, but that is five times further out than the complement's
+        cliff and far beyond any separation that matters.
+        """
+        memberships = self._feature_memberships(X_df)
+        return -np.log(np.clip(memberships, np.finfo(float).tiny, 1.0))
 
     def _to_frame(self, X) -> pd.DataFrame:
         if not isinstance(X, pd.DataFrame):
@@ -247,9 +355,22 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
             ).fit(X_raw.to_numpy())
         X_df = self._transform(X_raw)
 
+        if self.score not in self._SCORES:
+            raise ValueError(
+                f"score must be one of {self._SCORES}; got {self.score!r}"
+            )
+
         self.top_features_ = self._select_features(X_df)
         if not self.top_features_:
             raise ValueError("no features selected")
+        if self.score == "trimmed" and not 0 <= self.trim < len(self.top_features_):
+            # Trimming every term leaves nothing to sum, which would score every
+            # point identically -- caught here rather than at the first scoring
+            # call, where the empty sum would just look like a broken detector.
+            raise ValueError(
+                f"trim={self.trim} must be in [0, {len(self.top_features_)}) "
+                f"for {len(self.top_features_)} selected features"
+            )
 
         y_normal = pd.Series([NORMAL_LABEL] * len(X_df))
         self.model_ = create_gaussian_membership_dict(
@@ -289,16 +410,33 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         return self
 
     def anomaly_score(self, X) -> np.ndarray:
-        """Anomaly score in ``[0, 1]``: ``1 - max_rule firing_strength``.
+        """Anomaly score, higher = more anomalous, per the ``score`` parameter.
 
-        Higher means more anomalous. This is the natural quantity to hand to
-        ``roc_auc_score`` as the positive-class score.
+        ``"complement"`` returns ``1 - max_rule firing_strength`` in ``[0, 1]``;
+        ``"surprisal"`` and ``"trimmed"`` return a summed surprisal in
+        ``[0, inf)``. Only the first is bounded -- the scale carries no meaning
+        under any of them, so this is the quantity to hand to ``roc_auc_score``
+        as the positive-class score in every case.
         """
         check_is_fitted(self, "model_")
         X_df = self._transform(self._to_frame(X))
-        firing, _ = tsk_firing_strengths(X_df, self.model_, self._norm_params())
-        max_firing = firing.max(axis=1) if firing.size else np.zeros(len(X_df))
-        return 1.0 - np.clip(max_firing, 0.0, 1.0)
+
+        if self.score == "complement":
+            firing, _ = tsk_firing_strengths(X_df, self.model_, self._norm_params())
+            max_firing = firing.max(axis=1) if firing.size else np.zeros(len(X_df))
+            return 1.0 - np.clip(max_firing, 0.0, 1.0)
+
+        terms = self._surprisal_terms(X_df)
+        if self.score == "surprisal":
+            return terms.sum(axis=1)
+        if self.score == "trimmed":
+            if self.trim <= 0:
+                return terms.sum(axis=1)
+            # Partition rather than a full sort: only the boundary between the
+            # `trim` largest terms and the rest matters, not their order.
+            cut = terms.shape[1] - self.trim
+            return np.partition(terms, cut - 1, axis=1)[:, :cut].sum(axis=1)
+        raise ValueError(f"score must be one of {self._SCORES}; got {self.score!r}")
 
     def score_samples(self, X) -> np.ndarray:
         """sklearn convention: higher = more normal. Returns ``-anomaly_score``."""

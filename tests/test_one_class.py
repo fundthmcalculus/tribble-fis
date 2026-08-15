@@ -229,3 +229,162 @@ def test_contamination_zero_flags_nothing(normal_and_outliers):
     assert (det.predict(X_train) == -1).sum() == 0
     # still separates -- contamination only moves the threshold, not the score
     assert (det.predict(X_out) == -1).mean() > 0.95
+
+
+# -- score aggregation (issue #108) ---------------------------------------
+
+
+@pytest.fixture
+def high_dimensional_one_class():
+    """Correlated normal data wide enough for the complement to saturate.
+
+    128 whitened components: a *typical normal* point carries
+    sum_j z_j^2 ~ 128, so firing = exp(-64) is far below float64's resolution
+    next to 1.0 and `1 - firing` rounds to exactly 1.0 for normal and anomalous
+    points alike.
+    """
+    d = 128
+    rng = np.random.default_rng(0)
+    A = rng.normal(size=(d, d))
+    L = np.linalg.cholesky(A @ A.T / d + 0.1 * np.eye(d))
+    cols = [f"f{i}" for i in range(d)]
+
+    def normal(n):
+        return pd.DataFrame(rng.normal(size=(n, d)) @ L.T, columns=cols)
+
+    def anomalous(n):
+        z = rng.normal(size=(n, d))
+        z[:, :4] += 2.5          # shifted along a few low-variance directions
+        return pd.DataFrame(z @ L.T, columns=cols)
+
+    return normal(1500), normal(500), anomalous(500)
+
+
+def test_surprisal_is_the_log_of_the_complement_firing(normal_and_outliers):
+    """`surprisal` must be the same quantity as the complement, in the log
+    domain -- not a different detector that happens to also work.
+
+    Under the product t-norm, firing = prod_j m_j, so
+    sum_j -log(m_j) == -log(firing) exactly. Pinning the identity is what makes
+    "same ordering, more resolution" a claim rather than a hope.
+    """
+    X_train, X_normal, _ = normal_and_outliers
+    kw = dict(n_gaussians=2, norm_conorm="probability")
+
+    complement = TribbleOneClassDetector(score="complement", **kw).fit(X_train)
+    surprisal = TribbleOneClassDetector(score="surprisal", **kw).fit(X_train)
+
+    firing = 1.0 - complement.anomaly_score(X_normal)
+    np.testing.assert_allclose(
+        surprisal.anomaly_score(X_normal), -np.log(firing), rtol=1e-9
+    )
+
+
+def test_complement_saturates_where_surprisal_does_not(high_dimensional_one_class):
+    """The defect in #108, and the fix, in one measurement.
+
+    At 128 features the complement ties every point at exactly 1.0, so it is
+    literally chance (AUROC 0.5) and catches nothing at a strict threshold. The
+    same fitted memberships, summed in the log domain, still separate.
+    """
+    X_train, X_normal, X_anom = high_dimensional_one_class
+    y = np.r_[np.zeros(len(X_normal)), np.ones(len(X_anom))]
+
+    def evaluate(score):
+        det = TribbleOneClassDetector(whiten=True, n_gaussians=1, score=score)
+        det.fit(X_train)
+        s_n, s_a = det.anomaly_score(X_normal), det.anomaly_score(X_anom)
+        assert np.all(np.isfinite(s_n)) and np.all(np.isfinite(s_a)), (
+            f"{score} produced non-finite scores"
+        )
+        # detection rate at a 1% false-positive threshold
+        det_at_1pct = float((s_a > np.quantile(s_n, 0.99)).mean())
+        return roc_auc_score(y, np.r_[s_n, s_a]), det_at_1pct, (s_n == 1.0).mean()
+
+    auc_c, det_c, saturated = evaluate("complement")
+    auc_s, det_s, _ = evaluate("surprisal")
+
+    assert saturated > 0.95, "fixture no longer saturates the complement"
+    assert auc_c < 0.6 and det_c < 0.05, "complement unexpectedly survives here"
+    assert auc_s > 0.8, f"surprisal AUROC collapsed to {auc_s}"
+    assert det_s > 0.15, f"surprisal det@1%FPR collapsed to {det_s}"
+
+
+def test_surprisal_terms_are_finite_under_membership_underflow():
+    """A Gaussian membership underflows to exactly 0.0 far from the mean, and
+    -log(0) is inf. Infinities would re-tie every distant point at the top --
+    the same failure the log domain exists to avoid, at the other end.
+    """
+    rng = np.random.default_rng(5)
+    cols = [f"f{i}" for i in range(4)]
+    X = pd.DataFrame(rng.normal(size=(200, 4)), columns=cols)
+    det = TribbleOneClassDetector(n_gaussians=1, score="surprisal").fit(X)
+
+    absurd = pd.DataFrame(np.full((3, 4), 1e6), columns=cols)
+    scores = det.anomaly_score(absurd)
+    assert np.all(np.isfinite(scores))
+    assert np.all(scores > det.anomaly_score(X).max())
+
+
+def test_trimmed_drops_the_largest_terms(normal_and_outliers):
+    X_train, X_normal, _ = normal_and_outliers
+    kw = dict(n_gaussians=1)
+    trimmed = TribbleOneClassDetector(score="trimmed", trim=2, **kw).fit(X_train)
+    full = TribbleOneClassDetector(score="surprisal", **kw).fit(X_train)
+
+    terms = trimmed._surprisal_terms(trimmed._transform(trimmed._to_frame(X_normal)))
+    np.testing.assert_allclose(
+        trimmed.anomaly_score(X_normal), np.sort(terms, axis=1)[:, :-2].sum(axis=1)
+    )
+    # dropping non-negative terms can only lower the score
+    assert np.all(trimmed.anomaly_score(X_normal) <= full.anomaly_score(X_normal) + 1e-9)
+
+
+def test_trim_zero_equals_surprisal(normal_and_outliers):
+    X_train, X_normal, _ = normal_and_outliers
+    a = TribbleOneClassDetector(n_gaussians=1, score="trimmed", trim=0).fit(X_train)
+    b = TribbleOneClassDetector(n_gaussians=1, score="surprisal").fit(X_train)
+    np.testing.assert_allclose(a.anomaly_score(X_normal), b.anomaly_score(X_normal))
+
+
+def test_default_score_is_unchanged(normal_and_outliers):
+    """`complement` stays the default: #105's callers must be unaffected."""
+    X_train, X_normal, _ = normal_and_outliers
+    default = TribbleOneClassDetector(n_gaussians=2).fit(X_train)
+    explicit = TribbleOneClassDetector(n_gaussians=2, score="complement").fit(X_train)
+    assert default.score == "complement"
+    np.testing.assert_allclose(
+        default.anomaly_score(X_normal), explicit.anomaly_score(X_normal)
+    )
+
+
+def test_sklearn_conventions_hold_for_every_score(normal_and_outliers):
+    """`score` changes the score's scale, not the estimator's contract."""
+    X_train, X_normal, X_out = normal_and_outliers
+    for score in ("complement", "surprisal", "trimmed"):
+        det = TribbleOneClassDetector(n_gaussians=2, score=score).fit(X_train)
+        assert det.anomaly_score(X_out).mean() > det.anomaly_score(X_normal).mean()
+        np.testing.assert_allclose(det.score_samples(X_normal),
+                                   -det.anomaly_score(X_normal))
+        assert np.all(
+            (det.decision_function(X_normal) >= 0) == (det.predict(X_normal) == 1)
+        )
+        assert (det.predict(X_out) == -1).mean() > 0.95
+
+
+def test_invalid_score_and_trim_are_rejected(normal_and_outliers):
+    X_train, _, _ = normal_and_outliers
+    with pytest.raises(ValueError, match="score must be one of"):
+        TribbleOneClassDetector(score="mahalanobis").fit(X_train)
+    # 6 features in the fixture, so trimming 6 leaves an empty sum
+    with pytest.raises(ValueError, match="trim=6"):
+        TribbleOneClassDetector(score="trimmed", trim=6).fit(X_train)
+    with pytest.raises(ValueError, match="trim=-1"):
+        TribbleOneClassDetector(score="trimmed", trim=-1).fit(X_train)
+
+
+def test_score_params_survive_clone():
+    from sklearn.base import clone
+
+    det = TribbleOneClassDetector(score="trimmed", trim=3)
+    assert clone(det).get_params() == det.get_params()
