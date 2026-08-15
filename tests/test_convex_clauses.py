@@ -21,6 +21,8 @@ from tribblefis.gauss_data import (
     GaussianMixtureModel,
     FeatureModel,
     LabelModel,
+    TrapezoidMembership,
+    TriangularMembership,
     mf_interval,
     split_convex_clauses,
 )
@@ -34,6 +36,16 @@ class TestMfInterval(unittest.TestCase):
         lo, hi = mf_interval(mf)
         self.assertAlmostEqual(lo, 4.0)
         self.assertAlmostEqual(hi, 16.0)
+
+    def test_triangular_interval_is_exact_a_c(self):
+        mf = TriangularMembership.create(a=1.0, b=2.0, c=5.0)
+        lo, hi = mf_interval(mf)
+        self.assertEqual((lo, hi), (1.0, 5.0))
+
+    def test_trapezoid_interval_is_exact_a_d(self):
+        mf = TrapezoidMembership.create(a=1.0, b=2.0, c=3.0, d=5.0)
+        lo, hi = mf_interval(mf)
+        self.assertEqual((lo, hi), (1.0, 5.0))
 
 
 class TestSplitConvexClausesInterval(unittest.TestCase):
@@ -64,6 +76,32 @@ class TestSplitConvexClausesInterval(unittest.TestCase):
         self.assertEqual(len(combos), 2)
         for combo in combos:
             self.assertEqual(combo["y"], [b1.id])
+
+    def test_disjoint_triangular_clause_splits_into_two(self):
+        near = TriangularMembership.create(a=-1.0, b=0.0, c=1.0)
+        far = TriangularMembership.create(a=99.0, b=100.0, c=101.0)
+        lookup = {near.id: near, far.id: far}
+        combos = split_convex_clauses({"x": [near.id, far.id]}, lookup)
+        self.assertEqual(len(combos), 2)
+        groups = sorted(tuple(sorted(c["x"], key=str)) for c in combos)
+        self.assertIn((near.id,), groups)
+        self.assertIn((far.id,), groups)
+
+    def test_touching_triangular_clause_stays_single_combination(self):
+        left = TriangularMembership.create(a=0.0, b=1.0, c=2.0)
+        right = TriangularMembership.create(a=2.0, b=3.0, c=4.0)
+        lookup = {left.id: left, right.id: right}
+        combos = split_convex_clauses({"x": [left.id, right.id]}, lookup)
+        self.assertEqual(len(combos), 1)
+
+    def test_mixed_triangular_and_gaussian_ids_in_same_clause(self):
+        """mf_interval dispatches on isinstance, so a single OR-clause mixing
+        membership types must still resolve correctly."""
+        tri = TriangularMembership.create(a=-1.0, b=0.0, c=1.0)
+        gauss = GaussianMembership.create(mu=100.0, sigma=0.1)
+        lookup = {tri.id: tri, gauss.id: gauss}
+        combos = split_convex_clauses({"x": [tri.id, gauss.id]}, lookup)
+        self.assertEqual(len(combos), 2)
 
 
 class TestGaussianMixtureConvexClausesOnly(unittest.TestCase):
@@ -105,6 +143,43 @@ class TestGaussianMixtureConvexClausesOnly(unittest.TestCase):
             # consecutive merged intervals within the same rule).
             for (lo1, hi1), (lo2, hi2) in zip(los_his, los_his[1:]):
                 self.assertLessEqual(lo2, hi1)
+
+    def test_predictions_unchanged_by_splitting(self):
+        gm = self._model()
+        X = pd.DataFrame({"x": [0.0, 100.0, 50.0]})
+        baseline = simple_gaussian_predict(X, gm.to_simple_model())
+        split = simple_gaussian_predict(X, gm.to_simple_model(convex_clauses_only=True))
+        np.testing.assert_array_equal(baseline, split)
+
+
+class TestTriangularMixtureConvexClausesOnly(unittest.TestCase):
+    """Same coverage as TestGaussianMixtureConvexClausesOnly, but for a model
+    built entirely out of TriangularMembership (e.g. what trapz_math's EM
+    fitter produces with shape="triangle") -- convex-clause splitting must
+    work identically."""
+
+    def _model(self):
+        near = TriangularMembership.create(a=-1.0, b=0.0, c=1.0)
+        far = TriangularMembership.create(a=99.0, b=100.0, c=101.0)
+        middle = TriangularMembership.create(a=49.0, b=50.0, c=51.0)
+        return GaussianMixtureModel(
+            feature_models={
+                "x": FeatureModel(
+                    label_models={
+                        0: LabelModel(memberships=[near, far]),
+                        1: LabelModel(memberships=[middle]),
+                    }
+                )
+            }
+        )
+
+    def test_convex_clauses_only_splits_disjoint_label(self):
+        gm = self._model()
+        simple = gm.to_simple_model(convex_clauses_only=True)
+        rules_for_0 = [r for r in simple.rules if r.consequent == 0]
+        rules_for_1 = [r for r in simple.rules if r.consequent == 1]
+        self.assertEqual(len(rules_for_0), 2)
+        self.assertEqual(len(rules_for_1), 1)
 
     def test_predictions_unchanged_by_splitting(self):
         gm = self._model()
