@@ -7,7 +7,9 @@ state of a fresh checkout -- the point of the accelerator being optional is that
 the machines that skip everything else.
 """
 
+import math
 import uuid
+import zlib
 
 import numpy as np
 import pandas as pd
@@ -33,12 +35,41 @@ requires_kernel = pytest.mark.skipif(
 NORMS = ["min/max", "probability", "luk", "hamacher", "einstein"]
 SHAPES = [(500, 3, 2, 1), (1000, 8, 3, 3), (997, 5, 4, 2), (2000, 12, 6, 4)]
 
-# The compiled kernel calls libm's `exp`; NumPy calls its own vectorized one.
-# They are not contractually the same function, so parity is asserted to a few
-# ULP rather than exactly. On the reference machine the two agree bit for bit,
-# and `test_backends_agree_bitwise_where_they_can` records that as an observation
-# without making the suite depend on it.
 ULP_TOL = 1e-13
+
+# The one and only way the two backends differ: the compiled kernel calls libm's
+# scalar `exp`, NumPy calls its own SIMD one. They are not contractually the same
+# function -- on NumPy 2.4 / AVX-512 they disagree by exactly 1 ULP on ~5% of
+# inputs. Everything downstream of `exp` is bit-identical, which
+# `test_folds_are_bit_identical_given_the_same_exp` proves directly, so these
+# tolerances bound *only* how far the folds amplify that 1 ULP.
+#
+# Firing strengths live in [0, 1], so absolute error is their natural scale.
+# `atol=0.0` with a pure `rtol` was the wrong contract: Łukasiewicz's
+# `max(0, a + b - 1)` lands on values near zero by construction, where any
+# absolute perturbation is an unbounded *relative* one.
+#
+# Worst absolute error measured over SHAPES x 6 seeds on x86-64/glibc:
+#   min/max 1.1e-16   probability 6.7e-16   luk 6.7e-16   einstein 1.3e-15
+# Hamacher is the outlier at 8.8e-13, ~4000 ULP, and it is inherent rather than a
+# defect: both its folds divide by a difference that cancels -- `1 - ab` in the
+# conorm as `ab -> 1`, `a + b - ab` in the t-norm as both go to zero -- so a
+# 1-ULP input perturbation is amplified once per fold step, and the t-norm chains
+# once per feature (the worst case above is the 12-feature shape).
+ATOL = {norm: 1e-14 for norm in NORMS}
+ATOL["hamacher"] = 1e-11
+
+
+def _seed_for(*parts) -> int:
+    """Stable across processes, unlike `hash()`.
+
+    `abs(hash((norm, shape))) % 1000` seeded these tests for a while, but Python
+    randomizes `hash()` of strings per process (PYTHONHASHSEED), so every run
+    drew *different* models and a different subset of parametrizations tripped
+    the tolerance. A numerical parity test that samples fresh data each run
+    cannot be a contract.
+    """
+    return zlib.crc32("".join(map(str, parts)).encode()) % 1000
 
 
 def _build(n_samples, n_features, n_labels, n_mf, seed=0, ragged=False):
@@ -70,12 +101,12 @@ def _prepare(X, model):
 @pytest.mark.parametrize("norm", NORMS)
 @pytest.mark.parametrize("shape", SHAPES)
 def test_compiled_matches_numpy(norm, shape):
-    X, model = _build(*shape, seed=abs(hash((norm, shape))) % 1000)
+    X, model = _build(*shape, seed=_seed_for(norm, shape))
     compiled, matrix = _prepare(X, model)
     norms = NormPair(norm, norm)
     expected = K.firing_strengths_numpy(compiled, matrix, norms)
     got = K.firing_strengths(compiled, matrix, norms, backend="cython")
-    assert np.allclose(expected, got, rtol=ULP_TOL, atol=0.0)
+    assert np.allclose(expected, got, rtol=ULP_TOL, atol=ATOL[norm])
 
 
 @requires_kernel
@@ -87,7 +118,7 @@ def test_compiled_handles_padded_cells(norm):
     norms = NormPair(norm, norm)
     expected = K.firing_strengths_numpy(compiled, matrix, norms)
     got = K.firing_strengths(compiled, matrix, norms, backend="cython")
-    assert np.allclose(expected, got, rtol=ULP_TOL, atol=0.0)
+    assert np.allclose(expected, got, rtol=ULP_TOL, atol=ATOL[norm])
 
 
 @requires_kernel
@@ -97,7 +128,7 @@ def test_compiled_honours_a_mixed_norm_pair():
     norms = NormPair(t_norm="probability", t_conorm="min/max")
     expected = K.firing_strengths_numpy(compiled, matrix, norms)
     got = K.firing_strengths(compiled, matrix, norms, backend="cython")
-    assert np.allclose(expected, got, rtol=ULP_TOL, atol=0.0)
+    assert np.allclose(expected, got, rtol=ULP_TOL, atol=ATOL["probability"])
 
 
 @requires_kernel
@@ -118,19 +149,71 @@ def test_thread_count_does_not_change_the_result(monkeypatch, threads):
 
 
 @requires_kernel
-def test_backends_agree_bitwise_where_they_can():
-    """Documents the stronger property actually observed: on a build without
-    fast-math, libm's exp and NumPy's agree exactly, so the whole forward pass
-    does. Recorded as its own test so that if a platform ever breaks it, the
-    failure names the reason rather than looking like a correctness bug."""
+@pytest.mark.parametrize("norm", NORMS)
+def test_folds_are_bit_identical_given_the_same_exp(monkeypatch, norm):
+    """The tight contract: every arithmetic step *after* `exp` matches exactly.
+
+    This used to assert that the whole forward pass was bit-identical, which
+    held only where libm's `exp` and NumPy's happened to agree -- true on the
+    machine it was written on, false on NumPy 2.4 with AVX-512, where they
+    differ by 1 ULP on ~5% of inputs. So it failed as if the kernel were wrong
+    when the kernel was not wrong.
+
+    Feeding both backends the *same* exp values separates the two claims. What
+    is left is exact and platform-independent: the compiled folds are the NumPy
+    folds, bit for bit, for every norm family -- including the ill-conditioned
+    Hamacher one, where `test_compiled_matches_numpy` can only afford a loose
+    absolute tolerance. That looseness is bounded amplification of the exp
+    difference, not slack in the arithmetic, and this is what says so.
+    """
     X, model = _build(1200, 7, 3, 2, seed=24)
     compiled, matrix = _prepare(X, model)
-    norms = NormPair("min/max", "min/max")
-    expected = K.firing_strengths_numpy(compiled, matrix, norms)
+    norms = NormPair(norm, norm)
     got = K.firing_strengths(compiled, matrix, norms, backend="cython")
+
+    # `kernel.firing_strengths_numpy` calls `np.exp`; route it through the same
+    # libm `exp` the compiled kernel is linked against. Slow, hence one shape.
+    libm = np.frompyfunc(math.exp, 1, 1)
+
+    def libm_exp(x, out=None, **kwargs):
+        result = libm(x).astype(np.float64)
+        if out is None:
+            return result
+        out[...] = result
+        return out
+
+    monkeypatch.setattr(np, "exp", libm_exp)
+    expected = K.firing_strengths_numpy(compiled, matrix, norms)
+
     assert np.array_equal(expected, got), (
-        "compiled and NumPy exp diverged; if this is a fast-math build that is "
-        "expected -- the allclose parity tests are the binding contract"
+        f"compiled and NumPy folds differ for {norm} even on identical exp "
+        "values -- that is an arithmetic divergence, not a libm/SIMD one"
+    )
+
+
+@requires_kernel
+def test_the_exp_difference_is_at_most_one_ulp():
+    """Bounds the *only* thing the two backends do differently.
+
+    The parity tolerances above are derived from this number, so if a platform's
+    `exp` ever drifts further -- a fast-math build, a new SIMD path -- this test
+    names the cause directly instead of leaving the parity tests to fail with no
+    explanation of which half moved.
+    """
+    rng = np.random.default_rng(0)
+    d = (rng.normal(0, 2, 200_000) - rng.normal(0, 2)) / rng.uniform(0.3, 2.0)
+    arg = -0.5 * d * d
+
+    numpy_exp = np.exp(arg)
+    libm_exp = np.array([math.exp(v) for v in arg])
+
+    differing = numpy_exp != libm_exp
+    if not differing.any():
+        return  # platform where they agree exactly; nothing to bound
+    ulps = np.abs(numpy_exp - libm_exp)[differing] / np.spacing(libm_exp[differing])
+    assert ulps.max() <= 1.0, (
+        f"libm and NumPy exp differ by up to {ulps.max():.1f} ULP; the parity "
+        "tolerances in this module assume 1"
     )
 
 
@@ -146,7 +229,7 @@ def test_tsk_firing_strengths_fast_path_matches_the_reference_loop(monkeypatch):
     slow, labels_slow = tsk_firing_strengths(X, model, norms=norms)
 
     assert list(labels_fast) == list(labels_slow)
-    assert np.allclose(fast, slow, rtol=ULP_TOL, atol=0.0)
+    assert np.allclose(fast, slow, rtol=ULP_TOL, atol=ATOL["min/max"])
 
 
 @requires_kernel
@@ -164,7 +247,7 @@ def test_fast_path_reproduces_the_anomaly_column(monkeypatch):
 
     assert labels_fast == labels_slow
     assert labels_fast[-1] == "anomaly"
-    assert np.allclose(fast, slow, rtol=ULP_TOL, atol=0.0)
+    assert np.allclose(fast, slow, rtol=ULP_TOL, atol=ATOL["probability"])
 
 
 @requires_kernel

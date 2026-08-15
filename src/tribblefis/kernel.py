@@ -411,8 +411,17 @@ def firing_strengths(
     `backend` is one of:
 
     ``"auto"``
-        The compiled kernel when it was built, else NumPy. Bit-identical to the
-        reference forward pass either way, which is why it is the default.
+        The compiled kernel when it was built, else NumPy.
+
+        The two agree bit for bit in every arithmetic step, but not necessarily
+        in ``exp``: the compiled kernel calls libm's scalar one and NumPy calls
+        its own SIMD one, which on NumPy 2.4 with AVX-512 round differently by
+        1 ULP on roughly 5% of inputs. Propagated through the folds that is
+        under 1e-15 absolute for every norm family except Hamacher, whose two
+        divisions are ill-conditioned (``1 - ab`` cancels as ``ab -> 1``) and
+        reach ~1e-12. Cheap and equivalent to well past any tolerance that
+        matters, which is why this is the default -- but it is not a bitwise
+        guarantee, so pin ``backend`` explicitly for a reproducible checksum.
     ``"cython"`` / ``"numpy"``
         Force one of those two.
     ``"torch"``
