@@ -237,8 +237,12 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
             # Ensure DataFrame has correct column names
             X = pd.DataFrame(X.values, columns=self.feature_names_in_)
 
-        firing_upper, firing_lower, _, labels = it2_firing_strengths(
-            X, self.model_, self.norms_, km_iterations=None
+        # One pass yields both footprint bounds *and* the type-reduced strengths
+        # `predict` uses, so the interval is built from exactly the quantity the
+        # point estimate is built from. `km_iterations` only affects the crisp
+        # column; the upper/lower bounds are unchanged by it.
+        firing_upper, firing_lower, firing_crisp, labels = it2_firing_strengths(
+            X, self.model_, self.norms_, km_iterations=self.km_iterations
         )
 
         # Same consequent evaluation as `predict`, run once against each bound
@@ -253,15 +257,20 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
                 order=base.tsk_order, basis=base.consequent_basis,
                 cross_pairs=base.cross_pairs_,
             )
-            for f in (firing_upper, firing_lower)
+            for f in (firing_upper, firing_lower, firing_crisp)
         ]
 
         # After firing-strength normalization the wider membership does not
         # necessarily produce the larger prediction -- both are weighted
         # averages over the same consequents, so either can come out on top.
-        # Order them per sample so `y_lower <= y_upper` holds by construction.
-        y_lower = np.minimum(bounds[0], bounds[1])
-        y_upper = np.maximum(bounds[0], bounds[1])
+        # The type-reduced estimate is *not* a convex blend of the two either:
+        # each of the three is normalized by its own row sum, and that division
+        # is nonlinear, so `predict` can and does land outside the two bound
+        # predictions (measured at 3% of rows on a `make_regression` target).
+        # An interval that fails to contain its own point estimate is not an
+        # interval, so the reduction spans all three.
+        y_lower = np.minimum.reduce(bounds)
+        y_upper = np.maximum.reduce(bounds)
 
         return y_lower, y_upper
 
