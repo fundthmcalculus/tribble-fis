@@ -114,3 +114,65 @@ if __name__ == "__main__":
     test_anomaly_stops_refinement()
     test_anomaly_label_collision_raises()
     print("All sequence classifier tests passed!")
+
+
+def _make_numeric_blobs(n_per_class: int = 60, seed: int = 0):
+    """`_make_blobs` with integer labels, which is where the dtype matters."""
+    X, y = _make_blobs(n_per_class, seed)
+    return X, y.map({"a": 0, "b": 1})
+
+
+def test_predict_returns_the_label_dtype_not_object():
+    """`predict` must return `classes_`' dtype, or the estimator is unscoreable.
+
+    `preds` is an object array *during* the expert loop, because writing a label
+    into a fixed-width array truncates it. Returning object is not a cosmetic
+    dtype quibble: `type_of_target` classifies a numeric object array as
+    "unknown", so `accuracy_score`, `ClassifierMixin.score` and every other
+    metric raise "can't handle a mix of multiclass and unknown targets" -- this
+    estimator could not be evaluated against integer labels at all.
+    """
+    from sklearn.metrics import accuracy_score
+    from sklearn.utils.multiclass import type_of_target
+
+    X, y = _make_numeric_blobs()
+    clf = TribbleSequenceClassifier(max_layers=4, min_confused=5, min_class_samples=2)
+    clf.fit(X, y)
+
+    pred = clf.predict(X)
+    assert pred.dtype == clf.classes_.dtype
+    # The fixture is two-class, so "binary"; what matters is that it is no
+    # longer "unknown", which is what an object array reports.
+    assert type_of_target(pred) == type_of_target(y)
+
+    # The metrics that used to raise
+    assert 0.0 <= accuracy_score(y, pred) <= 1.0
+    assert 0.0 <= clf.score(X, y) <= 1.0
+
+
+def test_predict_labels_are_always_members_of_classes():
+    """The narrowing cast is only safe because every predicted value came from
+    the base layer or from an expert's `true_class`, both drawn from
+    `classes_`. Pinned for string labels too, where the cast is a no-op but the
+    membership claim is the same one.
+    """
+    for X, y in (_make_blobs(), _make_numeric_blobs()):
+        clf = TribbleSequenceClassifier(max_layers=4, min_confused=5,
+                                        min_class_samples=2).fit(X, y)
+        pred = clf.predict(X)
+        assert set(np.unique(pred)).issubset(set(clf.classes_.tolist()))
+        # the anomaly label is never emitted
+        assert clf.anomaly_label not in set(np.unique(pred).tolist())
+
+
+def test_sequence_classifier_survives_cross_val_score():
+    """The end-to-end consequence: sklearn model selection works on it."""
+    from sklearn.model_selection import cross_val_score
+
+    X, y = _make_numeric_blobs()
+    scores = cross_val_score(
+        TribbleSequenceClassifier(max_layers=2, min_confused=5, min_class_samples=2),
+        X, y, cv=3,
+    )
+    assert scores.shape == (3,)
+    assert np.all(np.isfinite(scores))

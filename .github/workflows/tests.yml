@@ -24,16 +24,35 @@ jobs:
       fail-fast: false
       matrix:
         kernel: [numpy, compiled]
+    env:
+      # The interpreter every `uv` command below resolves to. This used to be a
+      # `python-version:` input on setup-uv, which that action does not have --
+      # it warned "Unexpected input(s) 'python-version'" and ignored it, so the
+      # pin had never taken effect and the suite ran on whatever Python the
+      # runner image happened to ship. `UV_PYTHON` is uv's own mechanism and
+      # does bind; uv fetches the interpreter if the image lacks it.
+      UV_PYTHON: "3.11"
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
-        with:
-          python-version: "3.11"
 
       - name: Install dependencies
         run: uv sync --extra dev
+
+      # Same reasoning as the kernel assertion below: a pin that silently stops
+      # binding is worse than no pin, because the workflow still looks pinned.
+      - name: Confirm the interpreter matches the pin
+        run: |
+          uv run python - <<'PY'
+          import os, sys
+          want = os.environ["UV_PYTHON"]
+          got = ".".join(map(str, sys.version_info[:2]))
+          if got != want:
+              raise SystemExit(f"expected Python {want}, got {got}")
+          print(f"python under test: {sys.version.split()[0]}")
+          PY
 
       # cython/setuptools are build-time only, so they stay out of the project's
       # dependencies -- `--with` supplies them for this command alone.
