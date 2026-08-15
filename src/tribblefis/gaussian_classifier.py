@@ -728,9 +728,9 @@ class TribbleSequenceClassifier(BaseEstimator, ClassifierMixin):
         """
         Predict class labels for X by running the base model then its experts.
 
-        Returns a numpy object array of class labels. The anomaly label is never
-        returned; a high anomaly level only freezes the sample on the base
-        prediction and stops any further expert from touching it.
+        Returns an array of class labels in ``classes_``' own dtype. The anomaly
+        label is never returned; a high anomaly level only freezes the sample on
+        the base prediction and stops any further expert from touching it.
         """
         check_is_fitted(self)
         X_df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X, columns=self.feature_names_in_)
@@ -768,7 +768,17 @@ class TribbleSequenceClassifier(BaseEstimator, ClassifierMixin):
             # Out-of-region samples are frozen on the base prediction.
             frozen = frozen | (target & ~in_region)
 
-        return preds
+        # Narrow back to the label dtype before returning. `preds` has to be
+        # object *during* the loop -- writing a label into a fixed-width array
+        # truncates it -- but returning object is not a cosmetic dtype quibble:
+        # `type_of_target` classifies an object array as "unknown", so
+        # `accuracy_score`, `ClassifierMixin.score` and every other metric raise
+        # "can't handle a mix of multiclass and unknown targets". This estimator
+        # could not be scored against integer labels at all. Every entry came
+        # either from the base layer's prediction or from an expert's
+        # `true_class`, so all of them are members of `classes_` and the cast is
+        # exact.
+        return preds.astype(self.classes_.dtype, copy=False)
 
     def predict_proba(self, X):
         """
