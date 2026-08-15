@@ -1,17 +1,40 @@
 """
-Trapezoidal membership function fitting using histogram-based Expectation Maximization.
+Trapezoidal (and triangular) membership function fitting using histogram-based
+Expectation Maximization.
 
-This module provides fitting routines for mixtures of trapezoidal membership functions,
-analogous to the Gaussian fitting in gauss_math.py but designed for 1D histogram data.
+This module provides fitting routines for mixtures of trapezoidal membership
+functions, analogous to the Gaussian fitting in gauss_math.py but designed for
+1D histogram data.
+
+A triangular membership function is not a separate algorithm: it is the
+degenerate trapezoid whose plateau ``[b, c]`` has collapsed to a single apex
+point (``b == c``). Every function below that does real EM work -- the
+histogram init, the E-step, the M-step, the log-likelihood, the BIC
+selection -- takes a ``shape`` argument (``"trapezoid"`` or ``"triangle"``)
+and is the *only* place that logic lives; there is no parallel triangle
+implementation to keep in sync. Only the M-step's optimization actually
+branches on ``shape`` (3 free parameters instead of 4, since the plateau is a
+point rather than an independent interval); the histogram init, E-step,
+weight M-step, and log-likelihood are shape-agnostic by construction, because
+they only ever consume/produce ``(a, b, c, d)`` 4-tuples and evaluate them
+through :func:`trapz_pdf` -- for a triangle that 4-tuple simply always has
+``b == c``.
+
+The ``fit_triangles_em`` / ``TriangleMixtureModel`` / etc. names at the
+bottom of this module are thin, triangle-flavored entry points for callers
+who don't want to pass ``shape="triangle"`` everywhere; each is a one-line
+forward into the shared engine above it.
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 import numpy as np
 from scipy import signal, ndimage
 from scipy.optimize import minimize
 
-from .gauss_data import TrapezoidMembership
+from .gauss_data import TrapezoidMembership, TriangularMembership
+
+Shape = Literal["trapezoid", "triangle"]
 
 
 def trapz_pdf(x: np.ndarray, a: float, b: float, c: float, d: float) -> np.ndarray:
@@ -72,8 +95,9 @@ def _init_trapz_from_histogram(
     n_components: int,
     data_min: float,
     data_max: float,
+    shape: Shape = "trapezoid",
 ) -> tuple[list[tuple[float, float, float, float]], np.ndarray]:
-    """Initialize trapezoid parameters from histogram peaks.
+    """Initialize trapezoid (or triangle) parameters from histogram peaks.
 
     Strategy:
     1. Smooth histogram with Gaussian kernel
@@ -81,15 +105,21 @@ def _init_trapz_from_histogram(
     3. For each peak, set [b,c] at half-power width
     4. Set [a,d] at valley edges or data boundaries
     5. Apply minimum-width guards
+    6. If shape="triangle", collapse [b,c] to their midpoint -- a single
+       apex -- so every downstream 4-tuple already satisfies b == c before
+       the EM loop's first E-step.
 
     Args:
         bin_centers: Histogram bin centers
         bin_counts: Counts per bin
         n_components: Number of trapezoid components
         data_min, data_max: Data range for bounds
+        shape: "trapezoid" (default) keeps the full [b,c] plateau; "triangle"
+            collapses it to a single apex point.
 
     Returns:
-        (params_list, weights) where params_list is [(a,b,c,d), ...]
+        (params_list, weights) where params_list is [(a,b,c,d), ...] (with
+        b == c when shape="triangle")
     """
     # Normalize histogram to density
     density = bin_counts / np.sum(bin_counts) if np.sum(bin_counts) > 0 else bin_counts
@@ -185,6 +215,10 @@ def _init_trapz_from_histogram(
         d = min(d, data_max)
         b = np.clip(b, a, d)
         c = np.clip(c, b, d)
+
+        if shape == "triangle":
+            apex = (b + c) / 2
+            b = c = apex
 
         params_list.append((a, b, c, d))
 
@@ -293,17 +327,28 @@ def _em_m_step_params(
     params_list: list[tuple[float, float, float, float]],
     data_min: float,
     data_max: float,
+    shape: Shape = "trapezoid",
 ) -> list[tuple[float, float, float, float]]:
-    """M-step for trapezoid parameters using constrained optimization.
+    """M-step for trapezoid (or triangle) parameters using constrained optimization.
 
-    For each component k, minimize the negative weighted log-likelihood using SLSQP.
+    For each component k, minimize the negative weighted log-likelihood using
+    SLSQP. This is the one place shape actually changes what gets optimized:
+    a trapezoid has 4 free parameters (independent [b,c] plateau); a triangle
+    has 3 (the plateau is a single apex, optimized directly rather than fit
+    as two independent shoulders and averaged afterwards). Either way the
+    result is handed back as a 4-tuple -- b == c for a triangle -- so every
+    other function in this module (the E-step, the log-likelihood, the
+    weight M-step) stays shape-agnostic.
 
     Args:
         bin_centers: Histogram bin centers
         bin_counts: Counts per bin
         responsibilities: Shape (n_bins, n_components)
-        params_list: Current trapezoid parameters
+        params_list: Current trapezoid parameters (b == c per component when
+            shape="triangle")
         data_min, data_max: Data range for bounds
+        shape: "trapezoid" (default) optimizes all 4 parameters independently;
+            "triangle" optimizes (a, apex, d) and returns (a, apex, apex, d).
 
     Returns:
         Updated trapezoid parameters
@@ -319,6 +364,40 @@ def _em_m_step_params(
         # Per-bin coefficient c_i = responsibility * count, precomputed once so the
         # SLSQP objective (called many times per iteration) is a single vectorized pass.
         coeff_k = responsibilities[:, k] * bin_counts
+
+        if shape == "triangle":
+            def objective(params, _coeff=coeff_k):
+                a, apex, d = params
+                pdf_vals = np.maximum(trapz_pdf(bin_centers, a, apex, apex, d), 1e-10)
+                return -np.dot(_coeff, np.log(pdf_vals))
+
+            # Constraints: a <= apex <= d (with analytic linear Jacobians)
+            constraints = [
+                {'type': 'ineq', 'fun': lambda p: p[1] - p[0],
+                 'jac': lambda p: np.array([-1.0, 1.0, 0.0])},  # apex >= a
+                {'type': 'ineq', 'fun': lambda p: p[2] - p[1],
+                 'jac': lambda p: np.array([0.0, -1.0, 1.0])},  # d >= apex
+            ]
+
+            bounds = [(data_min, data_max)] * 3
+            x0 = [a_k, b_k, d_k]  # b_k == c_k already, one apex value
+
+            result = minimize(
+                objective,
+                x0,
+                method='SLSQP',
+                bounds=bounds,
+                constraints=constraints,
+                options={'ftol': 1e-9, 'maxiter': 100}
+            )
+
+            if result.success and result.x is not None:
+                a_new, apex_new, d_new = result.x
+            else:
+                a_new, apex_new, d_new = x0
+
+            new_params.append((a_new, apex_new, apex_new, d_new))
+            continue
 
         def objective(params, _coeff=coeff_k):
             a, b, c, d = params
@@ -368,19 +447,25 @@ def fit_trapezoids_em(
     max_iter: int = 100,
     tol: float = 1e-4,
     random_state: Optional[int] = None,
-) -> tuple[list[TrapezoidMembership], np.ndarray, float]:
-    """Run EM to fit a mixture of trapezoids to 1D data.
+    shape: Shape = "trapezoid",
+) -> "tuple[list, np.ndarray, float]":
+    """Run EM to fit a mixture of trapezoids -- or triangles -- to 1D data.
 
     Args:
         data_1d: 1D array of observations
-        n_components: Number of trapezoid components
+        n_components: Number of components
         n_bins: Number of histogram bins
         max_iter: Maximum EM iterations
         tol: Convergence tolerance on log-likelihood relative change
         random_state: Random seed (currently unused, for API compatibility)
+        shape: "trapezoid" (default) returns TrapezoidMembership objects with
+            an independently-fit [b,c] plateau; "triangle" returns
+            TriangularMembership objects (apex fit directly as one free
+            parameter -- see :func:`_em_m_step_params`).
 
     Returns:
-        (trapezoids, weights, log_likelihood): List of fitted TrapezoidMembership objects,
+        (memberships, weights, log_likelihood): List of fitted membership
+        objects (TrapezoidMembership or TriangularMembership per ``shape``),
         their mixing weights, and final log-likelihood
     """
     if random_state is not None:
@@ -392,8 +477,11 @@ def fit_trapezoids_em(
     if data_min == data_max:
         # Degenerate case: all data identical
         mid = data_min
-        trapz = TrapezoidMembership.create(mid, mid, mid, mid)
-        return [trapz], np.array([1.0]), 0.0
+        if shape == "triangle":
+            degenerate = TriangularMembership.create(mid, mid, mid)
+        else:
+            degenerate = TrapezoidMembership.create(mid, mid, mid, mid)
+        return [degenerate], np.array([1.0]), 0.0
 
     # Compute histogram
     bin_counts, bin_edges = np.histogram(data_1d, bins=n_bins, range=(data_min, data_max))
@@ -401,7 +489,7 @@ def fit_trapezoids_em(
 
     # Initialize parameters from histogram peaks
     params_list, weights = _init_trapz_from_histogram(
-        bin_centers, bin_counts, n_components, data_min, data_max
+        bin_centers, bin_counts, n_components, data_min, data_max, shape=shape
     )
 
     # Prune components with zero responsibility
@@ -424,7 +512,7 @@ def fit_trapezoids_em(
 
         # M-step (parameters)
         params_list = _em_m_step_params(
-            bin_centers, bin_counts, responsibilities, params_list, data_min, data_max
+            bin_centers, bin_counts, responsibilities, params_list, data_min, data_max, shape=shape
         )
 
         # Compute log-likelihood
@@ -444,13 +532,19 @@ def fit_trapezoids_em(
 
         prev_ll = ll
 
-    # Convert to TrapezoidMembership objects
-    trapezoids = [
-        TrapezoidMembership.create(a, b, c, d)
-        for a, b, c, d in best_params
-    ]
+    # Convert to membership objects
+    if shape == "triangle":
+        memberships = [
+            TriangularMembership.create(a, b, d)
+            for a, b, c, d in best_params
+        ]
+    else:
+        memberships = [
+            TrapezoidMembership.create(a, b, c, d)
+            for a, b, c, d in best_params
+        ]
 
-    return trapezoids, best_weights, best_ll
+    return memberships, best_weights, best_ll
 
 
 def fit_trapezoid_mixture_1d(
@@ -458,34 +552,38 @@ def fit_trapezoid_mixture_1d(
     n_trapezoids: int = 0,
     max_components: int = 4,
     n_bins: int = 50,
-) -> tuple[list[TrapezoidMembership], int]:
-    """Fit a 1-D trapezoid mixture, choosing the component count by BIC.
+    shape: Shape = "trapezoid",
+) -> "tuple[list, int]":
+    """Fit a 1-D trapezoid (or triangle) mixture, choosing the component count by BIC.
 
-    Returns ``(trapezoids, n_selected)`` -- both, so the caller does not refit.
+    Returns ``(memberships, n_selected)`` -- both, so the caller does not refit.
     :func:`find_optimal_trapezoids` used to run :func:`fit_trapezoids_em` at
     every candidate k, return only the winning *count*, and leave the caller to
     run the same EM again at that k. The winning fit was already in hand.
 
-    BIC = n_params * log(N) - 2 * log_likelihood, with n_params = 5K - 1
-    (4 parameters per trapezoid plus K-1 free weights).
+    BIC = n_params * log(N) - 2 * log_likelihood, with n_params = 5K - 1 for a
+    trapezoid (4 parameters per component plus K-1 free weights) or 4K - 1 for
+    a triangle (3 parameters per component -- one fewer, since the plateau is
+    a single apex rather than an independent interval).
     """
     data_1d = np.asarray(data_1d, dtype=float)
+    params_per_component = 3 if shape == "triangle" else 4
 
     if n_trapezoids > 0:
-        trapezoids, _weights, _ll = fit_trapezoids_em(
-            data_1d, n_components=n_trapezoids, n_bins=n_bins, max_iter=100, tol=1e-4
+        memberships, _weights, _ll = fit_trapezoids_em(
+            data_1d, n_components=n_trapezoids, n_bins=n_bins, max_iter=100, tol=1e-4, shape=shape
         )
-        return trapezoids, n_trapezoids
+        return memberships, n_trapezoids
 
     N = len(data_1d)
     best = (np.inf, [], 0)
     for k in range(1, max_components + 1):
-        trapezoids, _weights, ll = fit_trapezoids_em(
-            data_1d, n_components=k, n_bins=n_bins, max_iter=100
+        memberships, _weights, ll = fit_trapezoids_em(
+            data_1d, n_components=k, n_bins=n_bins, max_iter=100, shape=shape
         )
-        bic = (5 * k - 1) * np.log(N) - 2 * ll
+        bic = ((params_per_component + 1) * k - 1) * np.log(N) - 2 * ll
         if bic < best[0]:
-            best = (bic, trapezoids, k)
+            best = (bic, memberships, k)
 
     return best[1], best[2]
 
@@ -494,15 +592,16 @@ def find_optimal_trapezoids(
     data_1d: np.ndarray,
     max_components: int = 4,
     n_bins: int = 50,
+    shape: Shape = "trapezoid",
 ) -> int:
-    """Number of trapezoid components the data supports, by BIC.
+    """Number of trapezoid (or triangle) components the data supports, by BIC.
 
     Thin wrapper over :func:`fit_trapezoid_mixture_1d`, kept because it is
     public. Prefer that function directly: it returns the fit the count came
     from rather than discarding it.
     """
     return fit_trapezoid_mixture_1d(
-        data_1d, n_trapezoids=0, max_components=max_components, n_bins=n_bins
+        data_1d, n_trapezoids=0, max_components=max_components, n_bins=n_bins, shape=shape
     )[1]
 
 
@@ -515,17 +614,18 @@ def fit_trapezoids(
     max_samples: int | None = None,
     random_state: int = 42,
     verbose: bool = False,
-) -> list[TrapezoidMembership]:
-    """Fit multiple trapezoidal MFs to a single variable filtered by label.
+    shape: Shape = "trapezoid",
+) -> list:
+    """Fit multiple trapezoidal (or triangular) MFs to a single variable filtered by label.
 
-    Analogue of gauss_math.fit_gaussians() but for trapezoids.
+    Analogue of gauss_math.fit_gaussians() but for trapezoids/triangles.
 
     Args:
         X: Feature dataframe
         y: Label series
         column: Column name to fit
         label_value: Class label to filter by
-        n_trapezoids: Number of trapezoid components (0 for automatic BIC selection)
+        n_trapezoids: Number of components (0 for automatic BIC selection)
         max_samples: Cap on the rows used for the fit; ``None`` -- the default --
             uses every row. When a cap is given the rows are drawn at random
             without replacement, seeded by ``random_state``. This defaulted to
@@ -533,9 +633,11 @@ def fit_trapezoids(
             an invisible one from the caller's side.
         random_state: Seeds the subsample draw.
         verbose: Print the automatically-selected component count.
+        shape: "trapezoid" (default) or "triangle" -- see :func:`fit_trapezoids_em`.
 
     Returns:
-        List of fitted TrapezoidMembership objects
+        List of fitted membership objects (TrapezoidMembership or
+        TriangularMembership per ``shape``)
     """
     data = X[column][y == label_value].dropna().values
 
@@ -546,13 +648,14 @@ def fit_trapezoids(
     if len(data) == 0:
         return []
 
-    trapezoids, n_selected = fit_trapezoid_mixture_1d(
-        data, n_trapezoids=n_trapezoids, max_components=4
+    memberships, n_selected = fit_trapezoid_mixture_1d(
+        data, n_trapezoids=n_trapezoids, max_components=4, shape=shape
     )
     if verbose and n_trapezoids <= 0:
-        print(f"  Automatically selected {n_selected} trapezoids for {column} (label {label_value})")
+        noun = "triangles" if shape == "triangle" else "trapezoids"
+        print(f"  Automatically selected {n_selected} {noun} for {column} (label {label_value})")
 
-    return trapezoids
+    return memberships
 
 
 def create_trapz_membership_dict(
@@ -563,26 +666,31 @@ def create_trapz_membership_dict(
     max_samples: int | None = None,
     random_state: int = 42,
     verbose: bool = False,
+    shape: Shape = "trapezoid",
 ) -> "GaussianMixtureModel":
-    """Create a trapezoid membership model for top-n variables across all class labels.
+    """Create a trapezoid (or triangle) membership model for top-n variables
+    across all class labels.
 
-    Analogue of gauss_math.create_gaussian_membership_dict() but uses trapezoids.
+    Analogue of gauss_math.create_gaussian_membership_dict() but uses
+    trapezoids/triangles.
 
     Returns the same GaussianMixtureModel container type — the model is agnostic
-    about whether LabelModel.memberships contains Gaussian or Trapezoid objects.
+    about whether LabelModel.memberships contains Gaussian, Trapezoid, or
+    Triangular objects.
 
     Args:
         X: Feature dataframe
         y: Label series
         top_n_var_names: List of feature names to fit
-        n_trapezoids: Number of trapezoids (0 for automatic, or dict per feature)
+        n_trapezoids: Number of components (0 for automatic, or dict per feature)
         max_samples: Rows per (feature, label) used for the fit; ``None`` uses
             all of them. See :func:`fit_trapezoids`.
         random_state: Seeds the subsample draw.
         verbose: Print each automatically-selected component count.
+        shape: "trapezoid" (default) or "triangle" -- see :func:`fit_trapezoids_em`.
 
     Returns:
-        GaussianMixtureModel containing fitted trapezoid MFs
+        GaussianMixtureModel containing fitted trapezoid/triangle MFs
     """
     from concurrent.futures.thread import ThreadPoolExecutor
     from .gauss_data import GaussianMixtureModel, FeatureModel, LabelModel
@@ -593,7 +701,7 @@ def create_trapz_membership_dict(
         """Process a single feature across all labels"""
         label_models = {}
 
-        # Determine number of trapezoids for this feature
+        # Determine number of components for this feature
         if isinstance(n_trapezoids, dict):
             feature_n_trapezoids = n_trapezoids.get(feature_name, 0)
         else:
@@ -615,6 +723,7 @@ def create_trapz_membership_dict(
                 max_samples=max_samples,
                 random_state=random_state,
                 verbose=verbose,
+                shape=shape,
             )
             label_models[label_value] = LabelModel(memberships=trapz_params)
 
@@ -632,10 +741,11 @@ def create_trapz_membership_dict(
 
 
 class TrapzMixtureModel:
-    """Fits a mixture of trapezoidal membership functions to 1D histogram data.
+    """Fits a mixture of trapezoidal (or triangular) membership functions to
+    1D histogram data.
 
     This class provides a simple API analogous to scikit-learn for fitting
-    trapezoid MFs to 1D data using histogram-based EM.
+    trapezoid/triangle MFs to 1D data using histogram-based EM.
 
     Attributes:
         n_components: Number of components (0 = auto-select via BIC)
@@ -644,9 +754,11 @@ class TrapzMixtureModel:
         max_iter: Maximum EM iterations
         tol: Convergence tolerance
         random_state: Random seed
+        shape: "trapezoid" (default) or "triangle" -- see :func:`fit_trapezoids_em`.
 
     After calling fit(), access:
-        trapezoids_: List of fitted TrapezoidMembership objects
+        trapezoids_: List of fitted membership objects (TrapezoidMembership or
+            TriangularMembership per ``shape``)
         weights_: Mixing weights
         log_likelihood_: Final log-likelihood
         bic_: BIC of the fitted model
@@ -660,6 +772,7 @@ class TrapzMixtureModel:
         max_iter: int = 100,
         tol: float = 1e-4,
         random_state: Optional[int] = None,
+        shape: Shape = "trapezoid",
     ):
         self.n_components = n_components
         self.max_components = max_components
@@ -667,15 +780,16 @@ class TrapzMixtureModel:
         self.max_iter = max_iter
         self.tol = tol
         self.random_state = random_state
+        self.shape = shape
 
         # Set after fit
-        self.trapezoids_: Optional[list[TrapezoidMembership]] = None
+        self.trapezoids_: Optional[list] = None
         self.weights_: Optional[np.ndarray] = None
         self.log_likelihood_: Optional[float] = None
         self.bic_: Optional[float] = None
 
     def fit(self, data_1d: np.ndarray) -> "TrapzMixtureModel":
-        """Fit trapezoidal MFs to 1D data.
+        """Fit trapezoidal (or triangular) MFs to 1D data.
 
         Args:
             data_1d: 1D array of observations
@@ -689,7 +803,7 @@ class TrapzMixtureModel:
         n_comp = self.n_components
         if n_comp <= 0:
             n_comp = find_optimal_trapezoids(
-                data_1d, max_components=self.max_components, n_bins=self.n_bins
+                data_1d, max_components=self.max_components, n_bins=self.n_bins, shape=self.shape
             )
 
         # Fit EM
@@ -700,6 +814,7 @@ class TrapzMixtureModel:
             max_iter=self.max_iter,
             tol=self.tol,
             random_state=self.random_state,
+            shape=self.shape,
         )
 
         self.trapezoids_ = trapezoids
@@ -709,7 +824,137 @@ class TrapzMixtureModel:
         # Compute BIC
         N = len(data_1d)
         K = len(trapezoids)
-        n_params = 5 * K - 1
+        params_per_component = 3 if self.shape == "triangle" else 4
+        n_params = (params_per_component + 1) * K - 1
         self.bic_ = n_params * np.log(N) - 2 * ll
 
         return self
+
+
+def triangle_pdf(x: np.ndarray, a: float, b: float, c: float) -> np.ndarray:
+    """Normalized triangular probability density function.
+
+    Piecewise linear: 0 outside [a, c], rises linearly from 0 to 1 over [a, b],
+    falls linearly from 1 to 0 over [b, c]. Apex ``b`` satisfies ``a <= b <= c``.
+
+    This is exactly the trapezoidal PDF with its plateau collapsed to a point:
+    ``triangle_pdf(x, a, b, c) == trapz_pdf(x, a, b, b, c)``.
+    """
+    return trapz_pdf(x, a, b, b, c)
+
+
+def fit_triangles_em(
+    data_1d: np.ndarray,
+    n_components: int,
+    n_bins: int = 50,
+    max_iter: int = 100,
+    tol: float = 1e-4,
+    random_state: Optional[int] = None,
+) -> tuple[list[TriangularMembership], np.ndarray, float]:
+    """Run EM to fit a mixture of triangles to 1D data.
+
+    Thin, triangle-named entry point over :func:`fit_trapezoids_em` --
+    ``shape="triangle"`` pinned. See that function's docstring for the
+    algorithm; there is no separate triangle implementation.
+    """
+    return fit_trapezoids_em(
+        data_1d, n_components, n_bins=n_bins, max_iter=max_iter, tol=tol,
+        random_state=random_state, shape="triangle",
+    )
+
+
+def fit_triangle_mixture_1d(
+    data_1d: np.ndarray,
+    n_triangles: int = 0,
+    max_components: int = 4,
+    n_bins: int = 50,
+) -> tuple[list[TriangularMembership], int]:
+    """Fit a 1-D triangle mixture, choosing the component count by BIC.
+
+    Thin, triangle-named entry point over :func:`fit_trapezoid_mixture_1d`.
+    """
+    return fit_trapezoid_mixture_1d(
+        data_1d, n_trapezoids=n_triangles, max_components=max_components, n_bins=n_bins, shape="triangle",
+    )
+
+
+def find_optimal_triangles(
+    data_1d: np.ndarray,
+    max_components: int = 4,
+    n_bins: int = 50,
+) -> int:
+    """Number of triangle components the data supports, by BIC.
+
+    Thin, triangle-named entry point over :func:`find_optimal_trapezoids`.
+    """
+    return find_optimal_trapezoids(data_1d, max_components=max_components, n_bins=n_bins, shape="triangle")
+
+
+def fit_triangles(
+    X,
+    y,
+    column: str,
+    label_value: int,
+    n_triangles: int = 0,
+    max_samples: int | None = None,
+    random_state: int = 42,
+    verbose: bool = False,
+) -> list[TriangularMembership]:
+    """Fit multiple triangular MFs to a single variable filtered by label.
+
+    Thin, triangle-named entry point over :func:`fit_trapezoids`.
+    """
+    return fit_trapezoids(
+        X, y, column, label_value, n_trapezoids=n_triangles, max_samples=max_samples,
+        random_state=random_state, verbose=verbose, shape="triangle",
+    )
+
+
+def create_triangle_membership_dict(
+    X,
+    y,
+    top_n_var_names: list[str],
+    n_triangles: int | dict[str, int] = 0,
+    max_samples: int | None = None,
+    random_state: int = 42,
+    verbose: bool = False,
+) -> "GaussianMixtureModel":
+    """Create a triangle membership model for top-n variables across all class labels.
+
+    Thin, triangle-named entry point over :func:`create_trapz_membership_dict`.
+    """
+    return create_trapz_membership_dict(
+        X, y, top_n_var_names, n_trapezoids=n_triangles, max_samples=max_samples,
+        random_state=random_state, verbose=verbose, shape="triangle",
+    )
+
+
+class TriangleMixtureModel(TrapzMixtureModel):
+    """Fits a mixture of triangular membership functions to 1D histogram data.
+
+    Thin, triangle-named subclass of :class:`TrapzMixtureModel` with
+    ``shape="triangle"`` pinned; ``triangles_`` is an alias for the parent's
+    ``trapezoids_`` attribute, since the underlying fit is identical.
+    """
+
+    def __init__(
+        self,
+        n_components: int = 0,
+        max_components: int = 4,
+        n_bins: int = 50,
+        max_iter: int = 100,
+        tol: float = 1e-4,
+        random_state: Optional[int] = None,
+    ):
+        super().__init__(
+            n_components=n_components, max_components=max_components, n_bins=n_bins,
+            max_iter=max_iter, tol=tol, random_state=random_state, shape="triangle",
+        )
+
+    @property
+    def triangles_(self) -> Optional[list[TriangularMembership]]:
+        return self.trapezoids_
+
+    @triangles_.setter
+    def triangles_(self, value: Optional[list[TriangularMembership]]) -> None:
+        self.trapezoids_ = value

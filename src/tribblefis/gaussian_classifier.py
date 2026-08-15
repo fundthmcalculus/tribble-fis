@@ -43,10 +43,12 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             n_gaussians: Number of Gaussians per feature per label (0 for automatic).
                          Can also be a dictionary mapping feature names or labels to number of Gaussians.
             member_function: Type of membership function ("gaussian", "trap", or "triangular").
-                "triangular" fits triangles directly via histogram-based EM (see
-                tribblefis.triangle_math), treating the triangle as a trapezoid whose plateau has
-                collapsed to a single apex point (one fewer free parameter than the trapezoid case).
-                There is no "fast" (non-EM) triangular counterpart yet, unlike "trap" below.
+                "triangular" fits triangles directly via the same histogram-based EM engine as
+                "trap"/"em" (tribblefis.trapz_math, called with shape="triangle") -- a triangle
+                is exactly a trapezoid whose plateau has collapsed to a single apex point, so
+                there is only one EM implementation, not two; the triangle case simply optimizes
+                one fewer free parameter per component. There is no "fast" (non-EM) triangular
+                counterpart yet, unlike "trap" below.
             trapz_method: Method for trapezoid fitting ("fast" for histogram-based default, "em" for
                 EM-based). Ignored when member_function="triangular".
             norm_conorm: Fuzzy norm/conorm family -- one of "min/max",
@@ -165,10 +167,13 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             else:
                 raise ValueError(f"Unknown trapz_method: {self.trapz_method}")
         elif self.member_function == "triangular":
-            from .triangle_math import create_triangle_membership_dict
-            self.model_ = create_triangle_membership_dict(
-                X_df, y_series, top_n_var_names=self.top_features_, n_triangles=self.n_gaussians,
-                max_samples=self.max_samples, random_state=self.random_state,
+            # Same engine as "trap"/"em" above (trapz_math.create_trapz_membership_dict) --
+            # a triangle is the degenerate trapezoid whose plateau has collapsed to a
+            # single apex point, so shape="triangle" reuses the identical EM code path.
+            from .trapz_math import create_trapz_membership_dict
+            self.model_ = create_trapz_membership_dict(
+                X_df, y_series, top_n_var_names=self.top_features_, n_trapezoids=self.n_gaussians,
+                max_samples=self.max_samples, random_state=self.random_state, shape="triangle",
             )
         else:
             raise ValueError(f"Unknown member_function: {self.member_function}")

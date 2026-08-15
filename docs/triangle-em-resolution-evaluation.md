@@ -8,11 +8,13 @@ exists, is the peak-detection *initialization*, and a naive unbinned ("raw
 sample") EM does not fix that -- it makes it markedly worse, because the
 existing peak-finder implicitly assumes evenly-spaced bins.
 
-This came out of designing `triangle_math.py` (histogram-based EM for
-triangular membership functions, fitting the triangle directly as a trapezoid
-whose plateau has collapsed to a single apex point -- see that module's
-docstring). Before committing to the same histogram-based design that
-`trapz_math.py` already uses, three questions needed answers:
+This came out of designing histogram-based EM for triangular membership
+functions -- fitting the triangle directly as a trapezoid whose plateau has
+collapsed to a single apex point, which is why the fitting code lives in
+`trapz_math.py` itself (via a `shape="trapezoid"|"triangle"` argument) rather
+than a separate module -- see that module's docstring. Before committing to
+histogram-based EM for the triangle case at all, three questions needed
+answers:
 
 1. Does the 50-bin default under-resolve components once they get narrow?
 2. Does increasing `n_bins` reliably fix that?
@@ -103,11 +105,12 @@ current *toy* substitution of raw data into a bins-shaped algorithm breaks it.
 
 ## Decision
 
-`triangle_math.py` uses the same histogram-based EM design as
-`trapz_math.py` (`n_bins=50` default, unchanged). No raw/unbinned mode was
-added. If a future case turns up where separated components are genuinely
-too narrow relative to the data range for the default to resolve, the fix
-indicated by this evaluation is a better *initialization* (e.g. k-means
-seeding, matching the Gaussian mixture's own precedent), not a larger or
-absent histogram -- and that is future work, not something this change
-attempts.
+The triangle case uses the same histogram-based EM design as the trapezoid
+case (`n_bins=50` default, unchanged) -- literally the same engine in
+`trapz_math.py`, just with `shape="triangle"` optimizing one fewer parameter
+per component in the M-step. No raw/unbinned mode was added. If a future
+case turns up where separated components are genuinely too narrow relative
+to the data range for the default to resolve, the fix indicated by this
+evaluation is a better *initialization* (e.g. k-means seeding, matching the
+Gaussian mixture's own precedent), not a larger or absent histogram -- and
+that is future work, not something this change attempts.

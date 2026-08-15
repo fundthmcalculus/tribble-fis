@@ -29,7 +29,7 @@ from tribblefis.trapz_math_fast import (
     fit_trapezoids_fast,
     trapz_pdf_fast,
 )
-from tribblefis.gauss_data import TrapezoidMembership, GaussianMixtureModel
+from tribblefis.gauss_data import TrapezoidMembership, TriangularMembership, GaussianMixtureModel
 
 
 class TestTrapzPDF(unittest.TestCase):
@@ -512,6 +512,83 @@ class TestPerformanceComparison(unittest.TestCase):
         # Fast typically creates more (literal) trapezoids
         self.assertGreaterEqual(n_fast, 1)
         self.assertGreaterEqual(n_em, 1)
+
+
+class TestShapeParameterUnification(unittest.TestCase):
+    """fit_trapezoids_em (and everything built on it) is one engine for both
+    shapes -- a triangle is a trapezoid whose plateau has collapsed to a
+    single apex point. These pin the two things that unification promises:
+    the default (shape="trapezoid") behavior is completely unchanged, and
+    shape="triangle" runs through the identical code path, just returning
+    TriangularMembership objects with one fewer optimized parameter."""
+
+    def test_default_shape_is_trapezoid(self):
+        np.random.seed(42)
+        data = np.random.normal(0, 1, 300)
+        trapezoids, weights, ll = fit_trapezoids_em(data, n_components=1, n_bins=50)
+        self.assertIsInstance(trapezoids[0], TrapezoidMembership)
+
+    def test_shape_triangle_returns_triangular_membership(self):
+        np.random.seed(42)
+        data = np.random.normal(0, 1, 300)
+        triangles, weights, ll = fit_trapezoids_em(data, n_components=1, n_bins=50, shape="triangle")
+        self.assertIsInstance(triangles[0], TriangularMembership)
+
+    def test_trapezoid_shape_unaffected_by_triangle_support(self):
+        """Adding shape="triangle" must not perturb a single bit of the
+        default trapezoid path's output -- same seed, same result as before
+        the shape parameter existed."""
+        np.random.seed(42)
+        data = np.concatenate([np.random.normal(-3, 0.5, 300), np.random.normal(3, 0.5, 300)])
+        trapezoids_a, weights_a, ll_a = fit_trapezoids_em(data, n_components=2, n_bins=50)
+        trapezoids_b, weights_b, ll_b = fit_trapezoids_em(data, n_components=2, n_bins=50, shape="trapezoid")
+        self.assertEqual(len(trapezoids_a), len(trapezoids_b))
+        for ta, tb in zip(trapezoids_a, trapezoids_b):
+            self.assertEqual((ta.a, ta.b, ta.c, ta.d), (tb.a, tb.b, tb.c, tb.d))
+        self.assertEqual(ll_a, ll_b)
+
+    def test_triangle_shape_has_collapsed_plateau(self):
+        np.random.seed(42)
+        data = np.random.normal(0, 1, 300)
+        triangles, _weights, _ll = fit_trapezoids_em(data, n_components=1, n_bins=50, shape="triangle")
+        # TriangularMembership itself has no separate b/c plateau -- a is the
+        # left foot, b the apex, c the right foot -- so there is nothing to
+        # collapse at this layer; this just pins the field count/shape.
+        tri = triangles[0]
+        self.assertLessEqual(tri.a, tri.b)
+        self.assertLessEqual(tri.b, tri.c)
+
+    def test_trapz_mixture_model_shape_param_selects_membership_type(self):
+        np.random.seed(42)
+        data = np.random.normal(0, 1, 300)
+        trapz_model = TrapzMixtureModel(n_components=1, shape="trapezoid").fit(data)
+        tri_model = TrapzMixtureModel(n_components=1, shape="triangle").fit(data)
+        self.assertIsInstance(trapz_model.trapezoids_[0], TrapezoidMembership)
+        self.assertIsInstance(tri_model.trapezoids_[0], TriangularMembership)
+
+    def test_bic_formula_differs_by_one_parameter_per_component(self):
+        """Uses genuinely separated bimodal data so the requested component
+        count (2) is actually what gets fitted -- unimodal data collapses to
+        1 component regardless of request (a pre-existing histogram-peak-init
+        limitation, see docs/triangle-em-resolution-evaluation.md), which
+        would make a hardcoded K=2 expectation wrong for the wrong reason."""
+        np.random.seed(42)
+        data = np.concatenate([np.random.normal(-3, 0.5, 300), np.random.normal(3, 0.5, 300)])
+        trapz_model = TrapzMixtureModel(n_components=2, shape="trapezoid").fit(data)
+        tri_model = TrapzMixtureModel(n_components=2, shape="triangle").fit(data)
+        N = len(data)
+        K_trapz = len(trapz_model.trapezoids_)
+        K_tri = len(tri_model.trapezoids_)
+        self.assertEqual(K_trapz, 2)
+        self.assertEqual(K_tri, 2)
+        expected_trapz_params = 5 * K_trapz - 1
+        expected_tri_params = 4 * K_tri - 1
+        self.assertAlmostEqual(
+            trapz_model.bic_, expected_trapz_params * np.log(N) - 2 * trapz_model.log_likelihood_
+        )
+        self.assertAlmostEqual(
+            tri_model.bic_, expected_tri_params * np.log(N) - 2 * tri_model.log_likelihood_
+        )
 
 
 if __name__ == '__main__':

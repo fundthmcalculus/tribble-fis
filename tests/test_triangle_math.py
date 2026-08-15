@@ -1,10 +1,13 @@
 """
 Tests for triangular membership function fitting via histogram-based EM.
 
-Mirrors tests/test_trapz_math.py's structure: the triangle is fit as a
-trapezoid whose plateau has collapsed to a single apex point, so most of the
-same scenarios (unimodal, bimodal, degenerate, BIC selection) apply directly,
-just with one fewer free parameter per component.
+There is no separate triangle implementation to test: trapz_math.py's EM
+engine is shape-agnostic (see that module's docstring), and everything here
+is either testing the shared engine with shape="triangle", or testing the
+thin triangle-named wrappers (fit_triangles_em, TriangleMixtureModel, etc.)
+that pin that argument. Most scenarios (unimodal, bimodal, degenerate, BIC
+selection) mirror tests/test_trapz_math.py directly, just with one fewer
+free parameter per component.
 """
 
 import io
@@ -15,7 +18,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from tribblefis.triangle_math import (
+from tribblefis.trapz_math import (
     triangle_pdf,
     TriangleMixtureModel,
     fit_triangles_em,
@@ -23,11 +26,12 @@ from tribblefis.triangle_math import (
     find_optimal_triangles,
     fit_triangles,
     create_triangle_membership_dict,
+    trapz_pdf,
+    fit_trapezoids_em,
     _em_e_step,
     _em_m_step_params,
-    _init_triangles_from_histogram,
+    _init_trapz_from_histogram,
 )
-from tribblefis.trapz_math import trapz_pdf, fit_trapezoids_em
 from tribblefis.gauss_data import TriangularMembership, GaussianMixtureModel
 from tribblefis.gaussian_classifier import TribbleClassifier
 
@@ -100,15 +104,19 @@ class TestTrianglePDF(unittest.TestCase):
 
 class TestEStepInvariants(unittest.TestCase):
     """The E-step must always produce a valid responsibility distribution,
-    regardless of how the mixture parameters happen to be initialized."""
+    regardless of how the mixture parameters happen to be initialized. This
+    exercises the shared _em_e_step directly with shape="triangle" init --
+    it is the same function the trapezoid path uses, since the E-step never
+    needed to know the shape (it only consumes (a,b,c,d) 4-tuples, with
+    b == c for a triangle)."""
 
     def test_responsibilities_sum_to_one_per_bin(self):
         rng = np.random.default_rng(1)
         data = rng.normal(0, 1, 500)
         bin_counts, bin_edges = np.histogram(data, bins=50)
         bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-        params_list, weights = _init_triangles_from_histogram(
-            bin_centers, bin_counts, 3, data.min(), data.max()
+        params_list, weights = _init_trapz_from_histogram(
+            bin_centers, bin_counts, 3, data.min(), data.max(), shape="triangle"
         )
         responsibilities = _em_e_step(bin_centers, bin_counts, params_list, weights)
         row_sums = responsibilities.sum(axis=1)
@@ -119,39 +127,55 @@ class TestEStepInvariants(unittest.TestCase):
         data = rng.normal(0, 1, 500)
         bin_counts, bin_edges = np.histogram(data, bins=50)
         bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-        params_list, weights = _init_triangles_from_histogram(
-            bin_centers, bin_counts, 2, data.min(), data.max()
+        params_list, weights = _init_trapz_from_histogram(
+            bin_centers, bin_counts, 2, data.min(), data.max(), shape="triangle"
         )
         responsibilities = _em_e_step(bin_centers, bin_counts, params_list, weights)
         self.assertTrue(np.all(responsibilities >= 0.0))
         self.assertTrue(np.all(responsibilities <= 1.0))
 
+    def test_init_produces_collapsed_plateau(self):
+        """shape="triangle" init must hand back b == c for every component --
+        that's the whole basis for reusing the trapezoid E-step unchanged."""
+        rng = np.random.default_rng(4)
+        data = rng.normal(0, 1, 500)
+        bin_counts, bin_edges = np.histogram(data, bins=50)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        params_list, _weights = _init_trapz_from_histogram(
+            bin_centers, bin_counts, 2, data.min(), data.max(), shape="triangle"
+        )
+        for a, b, c, d in params_list:
+            self.assertEqual(b, c)
+
 
 class TestMStepBounds(unittest.TestCase):
     """The M-step's constrained optimization must never hand back a shape
-    that violates a <= b <= c or strays outside the data range, across a
-    spread of random initializations and component counts."""
+    that violates a <= b(==c) <= d or strays outside the data range, across a
+    spread of random initializations and component counts. Params are
+    (a, b, c, d) 4-tuples throughout -- shape="triangle" only changes how the
+    M-step optimizes them, not their shape -- so b == c must hold on the way
+    out too."""
 
     def test_params_respect_ordering_and_data_bounds(self):
-        rng = np.random.default_rng(3)
         for seed in range(10):
             local_rng = np.random.default_rng(seed)
             data = local_rng.normal(0, 1, 300)
             data_min, data_max = data.min(), data.max()
             bin_counts, bin_edges = np.histogram(data, bins=40, range=(data_min, data_max))
             bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-            params_list, weights = _init_triangles_from_histogram(
-                bin_centers, bin_counts, 2, data_min, data_max
+            params_list, weights = _init_trapz_from_histogram(
+                bin_centers, bin_counts, 2, data_min, data_max, shape="triangle"
             )
             responsibilities = _em_e_step(bin_centers, bin_counts, params_list, weights)
             new_params = _em_m_step_params(
-                bin_centers, bin_counts, responsibilities, params_list, data_min, data_max
+                bin_centers, bin_counts, responsibilities, params_list, data_min, data_max, shape="triangle"
             )
-            for a, b, c in new_params:
+            for a, b, c, d in new_params:
+                self.assertEqual(b, c)
                 self.assertLessEqual(a, b + 1e-9)
-                self.assertLessEqual(b, c + 1e-9)
+                self.assertLessEqual(b, d + 1e-9)
                 self.assertGreaterEqual(a, data_min - 1e-9)
-                self.assertLessEqual(c, data_max + 1e-9)
+                self.assertLessEqual(d, data_max + 1e-9)
 
 
 class TestTriangleMixtureModel(unittest.TestCase):

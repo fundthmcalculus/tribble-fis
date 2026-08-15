@@ -154,8 +154,9 @@ class TestGaussianMixtureConvexClausesOnly(unittest.TestCase):
 
 class TestTriangularMixtureConvexClausesOnly(unittest.TestCase):
     """Same coverage as TestGaussianMixtureConvexClausesOnly, but for a model
-    built entirely out of TriangularMembership (e.g. what triangle_math's EM
-    fitter produces) -- convex-clause splitting must work identically."""
+    built entirely out of TriangularMembership (e.g. what trapz_math's EM
+    fitter produces with shape="triangle") -- convex-clause splitting must
+    work identically."""
 
     def _model(self):
         near = TriangularMembership.create(a=-1.0, b=0.0, c=1.0)
