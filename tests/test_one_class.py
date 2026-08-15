@@ -156,3 +156,42 @@ def test_whiten_get_params_roundtrip():
 
     det = TribbleOneClassDetector(whiten=True, whiten_components=0.95)
     assert clone(det).get_params() == det.get_params()
+
+
+def test_scoring_is_invariant_to_column_order(normal_and_outliers):
+    """Scoring must key off column *names*, not the caller's column order.
+
+    The raw path already did -- `tsk_firing_strengths` looks columns up by name.
+    The whitening path did not: `PCA.transform` is positional, so a permuted
+    frame was decorrelated against the wrong axes and scored nonsense without
+    raising.
+    """
+    X_train, X_normal, _ = normal_and_outliers
+    permuted = X_normal[list(X_normal.columns)[::-1]]
+
+    for kwargs in ({"whiten": False}, {"whiten": True}):
+        det = TribbleOneClassDetector(n_gaussians=2, **kwargs).fit(X_train)
+        np.testing.assert_allclose(
+            det.anomaly_score(X_normal), det.anomaly_score(permuted)
+        )
+
+
+def test_scoring_rejects_a_frame_missing_fitted_features(normal_and_outliers):
+    """A missing column must raise, not score everything as normal.
+
+    `tsk_firing_strengths` skips features it cannot find in `X`, so a frame
+    whose columns do not match the fitted ones leaves the rule firing at 1.0 --
+    anomaly 0.0 for every row. Silently reporting "all normal" is the worst
+    possible failure mode for a detector, so it is an error instead.
+    """
+    X_train, X_normal, _ = normal_and_outliers
+    det = TribbleOneClassDetector(n_gaussians=2).fit(X_train)
+
+    with pytest.raises(ValueError, match="missing features"):
+        det.anomaly_score(X_normal.drop(columns=["f0"]))
+
+    # The specific case that produced the silent zeros: fit on numpy (synthetic
+    # `feature_0..` names), then score a real frame with its own column names.
+    numpy_fit = TribbleOneClassDetector(n_gaussians=2).fit(X_train.to_numpy())
+    with pytest.raises(ValueError, match="missing features"):
+        numpy_fit.anomaly_score(X_normal)

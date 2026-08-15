@@ -72,8 +72,13 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         * an explicit list of column names -- use exactly these.
 
         A dispersion / tightness-based ranking is a natural future addition; it
-        is intentionally not implemented yet. Ignored when ``whiten=True`` (the
-        whitened components are used directly).
+        is intentionally not implemented yet.
+
+        Under ``whiten=True`` selection applies to the whitened components
+        (named ``pc0``, ``pc1``, ...), not the input columns: ``"all"`` and
+        ``"variance"`` keep the leading components, and an explicit list must
+        name components rather than original features -- naming input columns
+        raises rather than silently selecting nothing.
     top_n : int, default -1
         Number of features to keep when ``feature_selection="variance"``. ``-1``
         keeps all.
@@ -153,9 +158,19 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         )
 
     def _to_frame(self, X) -> pd.DataFrame:
-        if isinstance(X, pd.DataFrame):
-            return X.reset_index(drop=True).copy()
-        return pd.DataFrame(np.asarray(X), columns=self.feature_names_in_)
+        if not isinstance(X, pd.DataFrame):
+            return pd.DataFrame(np.asarray(X), columns=self.feature_names_in_)
+        missing = [c for c in self.feature_names_in_ if c not in X.columns]
+        if missing:
+            raise ValueError(f"X is missing features seen during fit: {missing}")
+        # Re-select by name in fit order rather than trusting the caller's
+        # layout. Neither failure mode below announces itself:
+        #   * the whitening PCA transform is *positional*, so a permuted frame
+        #     is decorrelated against the wrong axes and scores nonsense;
+        #   * `tsk_firing_strengths` silently skips features it cannot find in
+        #     `X`, so a frame missing a fitted column fires every rule at 1.0 --
+        #     i.e. reports every point as perfectly normal.
+        return X[self.feature_names_in_].reset_index(drop=True).copy()
 
     def _transform(self, X_df: pd.DataFrame) -> pd.DataFrame:
         """Apply the stored whitening transform (identity when whiten=False).

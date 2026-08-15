@@ -251,8 +251,11 @@ def test_it2_footprint_widens_intervals_and_contains_the_point_estimate(
         point = m.predict(X_test)
 
         assert np.all(lo <= hi), "interval bounds are inverted"
-        # The type-reduced estimate is a convex-ish blend of the two bound
-        # predictions, so it cannot fall outside them.
+        # Containment holds because `predict_intervals` spans the type-reduced
+        # prediction as well as the two footprint bounds -- not because the
+        # type-reduced estimate is a blend of them. It is not: each of the three
+        # is normalized by its own row sum, so the point estimate can land
+        # outside the bound predictions (see the regression test below).
         assert np.all(point >= lo - 1e-8) and np.all(point <= hi + 1e-8), (
             f"point estimate escapes its own interval at uncertainty_width={uw}"
         )
@@ -261,3 +264,37 @@ def test_it2_footprint_widens_intervals_and_contains_the_point_estimate(
     assert widths == sorted(widths), (
         f"interval width is not monotone in uncertainty_width: {widths}"
     )
+
+
+def test_it2_intervals_contain_the_point_estimate_off_fixture():
+    """Containment must hold on data where the bound predictions do *not*
+    bracket the point estimate on their own.
+
+    The synthetic fixture above happens not to exercise this; a plain
+    `make_regression` target does. `predict` normalizes the type-reduced firing
+    strengths by their own row sum, and `predict_intervals` normalizes the upper
+    and lower strengths by theirs -- three separate nonlinear divisions, so the
+    middle one is not trapped between the outer two. Before `predict_intervals`
+    spanned the type-reduced prediction as well, the point estimate escaped its
+    own interval on ~3% of rows here.
+    """
+    from sklearn.datasets import make_regression
+
+    X, y = make_regression(n_samples=400, n_features=5, noise=8.0, random_state=0)
+    X = pd.DataFrame(X, columns=[f"x{i}" for i in range(5)])
+    y = pd.Series(y)
+
+    for km in (None, 10):
+        m = IntervalType2FuzzyRegressor(
+            top_n=3, n_gaussians=2, n_output_buckets=5,
+            uncertainty_width=0.5, km_iterations=km,
+        ).fit(X[:300], y[:300])
+        lo, hi = m.predict_intervals(X[300:])
+        point = m.predict(X[300:])
+
+        assert np.all(lo <= hi)
+        escapes = np.mean((point < lo - 1e-8) | (point > hi + 1e-8))
+        assert escapes == 0.0, (
+            f"point estimate escapes its interval on {escapes:.1%} of rows "
+            f"at km_iterations={km}"
+        )
