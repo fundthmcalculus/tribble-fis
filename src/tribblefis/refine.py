@@ -804,16 +804,19 @@ def _run_optimizer_search(
     with _single_threaded():
         if method == "ga":
             opt = GeneticAlgorithmOptimizer(
-                GeneticAlgorithmOptimizerConfig(**common), fcn, variables, existing_soln_deck=deck)
+                config=GeneticAlgorithmOptimizerConfig(**common), fcn=fcn,
+                variables=variables, existing_soln_deck=deck)
         elif method == "pso":
             opt = ParticleSwarmOptimizer(
-                ParticleSwarmOptimizerConfig(**common), fcn, variables, existing_soln_deck=deck)
+                config=ParticleSwarmOptimizerConfig(**common), fcn=fcn,
+                variables=variables, existing_soln_deck=deck)
         elif method == "aco":
             opt = AntColonyOptimizer(
-                AntColonyOptimizerConfig(**common), fcn, variables, existing_soln_deck=deck)
+                config=AntColonyOptimizerConfig(**common), fcn=fcn,
+                variables=variables, existing_soln_deck=deck)
         else:  # "multi"
             opt = MultiTypeOptimizer(
-                IOptimizerConfig(**common), fcn, variables, existing_soln_deck=deck)
+                config=IOptimizerConfig(**common), fcn=fcn, variables=variables)
         result = opt.solve(preserve_percent=preserve)
 
     best_x = np.clip(np.asarray(result.solution_vector, dtype=float), lo, hi)
