@@ -649,7 +649,7 @@ wheels = [
 [[package]]
 name = "optimizers"
 version = "0.2.0"
-source = { git = "https://github.com/fundthmcalculus/optimizers.git#94547ff7f9794584a06352efb2889f77abfde466" }
+source = { git = "https://github.com/fundthmcalculus/optimizers.git#7b5958a1d27928451ec71d6909a768e7bf730323" }
 dependencies = [
     { name = "contextlib2" },
     { name = "joblib" },
