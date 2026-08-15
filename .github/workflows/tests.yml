@@ -25,18 +25,35 @@ jobs:
       matrix:
         kernel: [numpy, compiled]
     env:
-      # The interpreter every `uv` command below resolves to. This used to be a
-      # `python-version:` input on setup-uv, which that action does not have --
-      # it warned "Unexpected input(s) 'python-version'" and ignored it, so the
-      # pin had never taken effect and the suite ran on whatever Python the
-      # runner image happened to ship. `UV_PYTHON` is uv's own mechanism and
-      # does bind; uv fetches the interpreter if the image lacks it.
+      # The interpreter every `uv` command below resolves to. This was once a
+      # `python-version:` input on setup-uv@v3, which had no such input: the
+      # action warned "Unexpected input(s) 'python-version'" and ignored it, so
+      # the pin never took effect and the suite ran on whatever Python the runner
+      # image happened to ship. `UV_PYTHON` is uv's own mechanism and does bind;
+      # uv fetches the interpreter if the image lacks it. See the note on the
+      # setup-uv step for why it stays an env var now that the input exists.
       UV_PYTHON: "3.11"
     steps:
-      - uses: actions/checkout@v4
+      # Both actions run with no inputs, so these major bumps carry no
+      # configuration risk; what they buy is the Node 24 runtime. checkout@v4
+      # and setup-uv@v3 declared `using: node20`, which GitHub is retiring -- the
+      # runner was already force-running them on Node 24 and warning every job.
+      # Checked against each tag's action.yml rather than assumed: setup-uv only
+      # reached node24 at v7 (v6 is still node20, so the obvious small bump would
+      # have fixed nothing), and checkout reached it at v5.
+      - uses: actions/checkout@v7
 
+      # v7 is the newest setup-uv major published as a floating tag; the v10.0.1
+      # release has no `v10` ref to track, and pinning an exact patch would mean
+      # hand-editing this file for every future patch.
+      #
+      # Newer majors do offer a `python-version:` input, which just sets
+      # UV_PYTHON. The env var above stays the single source of truth: it governs
+      # uv whatever the action version, and this pin broke in the first place
+      # because a version-specific input silently stopped existing. Two
+      # mechanisms for one value is how that recurs.
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v7
 
       - name: Install dependencies
         run: uv sync --extra dev
