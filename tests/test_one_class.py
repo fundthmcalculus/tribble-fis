@@ -1,5 +1,7 @@
 """Tests for TribbleOneClassDetector -- fuzzy one-class novelty detection."""
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -195,3 +197,35 @@ def test_scoring_rejects_a_frame_missing_fitted_features(normal_and_outliers):
     numpy_fit = TribbleOneClassDetector(n_gaussians=2).fit(X_train.to_numpy())
     with pytest.raises(ValueError, match="missing features"):
         numpy_fit.anomaly_score(X_normal)
+
+
+def test_contamination_above_half_warns_but_is_honoured(normal_and_outliers):
+    """A contamination past 0.5 must reach the threshold, and must warn.
+
+    It used to be silently clipped to 0.5, so `contamination=0.9` flagged 50%
+    of the training data and said nothing -- the threshold ended up somewhere
+    the caller did not ask for. Now the value is used as given, and the warning
+    carries the "this is probably a mistake" signal that the clip was standing
+    in for.
+    """
+    X_train, _, _ = normal_and_outliers
+
+    with pytest.warns(UserWarning, match="above 0.5"):
+        det = TribbleOneClassDetector(n_gaussians=2, contamination=0.9).fit(X_train)
+    assert 0.85 < (det.predict(X_train) == -1).mean() < 0.95
+
+
+def test_contamination_within_range_does_not_warn(normal_and_outliers):
+    X_train, _, _ = normal_and_outliers
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        TribbleOneClassDetector(n_gaussians=2, contamination=0.5).fit(X_train)
+
+
+def test_contamination_zero_flags_nothing(normal_and_outliers):
+    """`<= 0` puts the threshold at the training minimum: nothing flagged."""
+    X_train, _, X_out = normal_and_outliers
+    det = TribbleOneClassDetector(n_gaussians=2, contamination=0.0).fit(X_train)
+    assert (det.predict(X_train) == -1).sum() == 0
+    # still separates -- contamination only moves the threshold, not the score
+    assert (det.predict(X_out) == -1).mean() > 0.95

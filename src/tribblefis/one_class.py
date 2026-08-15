@@ -37,6 +37,7 @@ alternatives.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import numpy as np
@@ -100,6 +101,12 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         ``decision_function`` threshold (the ``contamination`` quantile of the
         training anomaly scores), matching sklearn's outlier-detector convention.
         It does not affect ``score_samples`` or ``anomaly_score``.
+
+        sklearn's detectors restrict this to ``(0, 0.5]``. This one takes the
+        value as given -- a value past ``0.5`` still places the threshold where
+        you asked -- but warns, since flagging most of the "normal" training set
+        as outlier is far more often a mistake than an intent. ``<= 0`` puts the
+        threshold at the training minimum, flagging nothing.
     max_samples : int or None, default None
         Cap on rows per feature when fitting memberships (see the classifier).
     random_state : int, default 42
@@ -260,7 +267,21 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         # the RAW input -- score_samples applies the whitening transform itself,
         # so passing the already-transformed frame would whiten twice.
         train_scores = self.score_samples(X_raw)  # higher = more normal
-        q = float(np.clip(self.contamination, 0.0, 0.5))
+        q = float(self.contamination)
+        if q > 0.5:
+            # Honoured rather than clipped -- silently moving the threshold
+            # somewhere other than where the caller put it is worse than an
+            # unusual threshold. But past 0.5 the majority of the data the
+            # detector was told is normal gets labelled outlier, which is
+            # almost always a mistake, so it does not pass quietly.
+            warnings.warn(
+                f"contamination={q} is above 0.5, so more than half of the "
+                "training data will be flagged as outlier. The value is used "
+                "as given; sklearn's outlier detectors restrict contamination "
+                "to (0, 0.5].",
+                UserWarning,
+                stacklevel=2,
+            )
         self.offset_ = float(np.quantile(train_scores, q)) if q > 0 else float(
             train_scores.min()
         )
