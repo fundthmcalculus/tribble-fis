@@ -388,3 +388,154 @@ def test_score_params_survive_clone():
 
     det = TribbleOneClassDetector(score="trimmed", trim=3)
     assert clone(det).get_params() == det.get_params()
+
+
+# -- whitening covariance and few-shot mode (issues #111, #112) -------------
+
+
+@pytest.fixture
+def correlated_one_class():
+    """Correlated normal data with anomalies displaced along a few directions."""
+    d = 24
+    rng = np.random.default_rng(0)
+    A = rng.normal(size=(d, d))
+    L = np.linalg.cholesky(A @ A.T / d + 0.1 * np.eye(d))
+    cols = [f"f{i}" for i in range(d)]
+
+    def normal(n):
+        return pd.DataFrame(rng.normal(size=(n, d)) @ L.T, columns=cols)
+
+    def anomalous(n):
+        z = rng.normal(size=(n, d))
+        z[:, :3] += 2.2
+        return pd.DataFrame(z @ L.T, columns=cols)
+
+    # The labelled set is an independent draw, so the few-shot comparison is not
+    # scored on the same anomalies it was trained on.
+    return normal(800), normal(300), anomalous(300), anomalous(15)
+
+
+def _auc(det, X_normal, X_anom):
+    y = np.r_[np.zeros(len(X_normal)), np.ones(len(X_anom))]
+    return roc_auc_score(y, np.r_[det.anomaly_score(X_normal), det.anomaly_score(X_anom)])
+
+
+def test_ledoit_wolf_whitening_actually_whitens(correlated_one_class):
+    """The transform must decorrelate to roughly unit variance -- that is the
+    assumption the per-feature product t-norm needs. Loose bound because
+    Ledoit-Wolf shrinks deliberately: it trades exactness for conditioning.
+    """
+    X_train, _, _, _ = correlated_one_class
+    det = TribbleOneClassDetector(whiten=True, cov="ledoit_wolf").fit(X_train)
+
+    Z = det._transform(det._to_frame(X_train)).to_numpy()
+    covariance = np.cov(Z.T)
+    assert np.abs(covariance - np.eye(Z.shape[1])).max() < 0.25
+    # full rank, unlike rank-truncated PCA
+    assert Z.shape[1] == X_train.shape[1]
+
+
+def test_ledoit_wolf_separates_at_least_as_well_as_pca(correlated_one_class):
+    X_train, X_normal, X_anom, _ = correlated_one_class
+    kw = dict(whiten=True, score="surprisal", n_gaussians=1)
+    pca = TribbleOneClassDetector(cov="pca", **kw).fit(X_train)
+    lw = TribbleOneClassDetector(cov="ledoit_wolf", **kw).fit(X_train)
+    assert _auc(lw, X_normal, X_anom) >= _auc(pca, X_normal, X_anom) - 0.01
+
+
+def test_ledoit_wolf_scoring_is_invariant_to_column_order(correlated_one_class):
+    """The Ledoit-Wolf transform is positional, exactly like the PCA one, so it
+    inherits the same hazard and must inherit the same protection."""
+    X_train, X_normal, _, _ = correlated_one_class
+    det = TribbleOneClassDetector(whiten=True, cov="ledoit_wolf").fit(X_train)
+    permuted = X_normal[list(X_normal.columns)[::-1]]
+    np.testing.assert_allclose(det.anomaly_score(X_normal), det.anomaly_score(permuted))
+
+
+def test_few_shot_labels_beat_pure_one_class(correlated_one_class):
+    """A handful of labelled anomalies supplies the direction the one-class
+    magnitude cannot, which is the whole claim."""
+    X_train, X_normal, X_anom, labelled = correlated_one_class
+    X_mixed = pd.concat([X_train, labelled], ignore_index=True)
+    y_mixed = np.r_[np.zeros(len(X_train)), np.ones(len(labelled))]
+
+    kw = dict(whiten=True, cov="ledoit_wolf")
+    one_class = TribbleOneClassDetector(score="surprisal", **kw).fit(X_train)
+    few_shot = TribbleOneClassDetector(few_shot="logistic", **kw).fit(X_mixed, y_mixed)
+
+    assert few_shot._logit_ is not None
+    assert _auc(few_shot, X_normal, X_anom) > _auc(one_class, X_normal, X_anom)
+
+
+def test_few_shot_is_off_by_default_so_y_is_still_ignored(correlated_one_class):
+    """#105's contract is that `fit(X, y)` accepts y and ignores it, so the
+    estimator drops into pipelines unchanged. A `Pipeline` or `cross_val_score`
+    passes its own y through, so defaulting to the discriminant would silently
+    turn this into a supervised model for callers who never asked.
+    """
+    X_train, X_normal, _, _ = correlated_one_class
+    y = np.r_[np.zeros(len(X_train) - 20), np.ones(20)]
+
+    with_y = TribbleOneClassDetector(whiten=True).fit(X_train, y)
+    without_y = TribbleOneClassDetector(whiten=True).fit(X_train)
+
+    assert with_y.few_shot == "none"
+    assert getattr(with_y, "_logit_", None) is None
+    np.testing.assert_array_equal(
+        with_y.anomaly_score(X_normal), without_y.anomaly_score(X_normal)
+    )
+
+
+@pytest.mark.parametrize("y_value", [None, "single_class"])
+def test_few_shot_falls_back_to_one_class_without_two_labels(
+    correlated_one_class, y_value
+):
+    """Opting in is not enough -- there must actually be anomalies to learn from."""
+    X_train, _, _, _ = correlated_one_class
+    y = None if y_value is None else np.zeros(len(X_train))
+    det = TribbleOneClassDetector(few_shot="logistic").fit(X_train, y)
+    assert det._logit_ is None
+
+
+def test_few_shot_density_and_threshold_see_only_the_normal_rows(
+    correlated_one_class,
+):
+    """The labelled anomalies must not enter the density, the whitening, or the
+    contamination quantile -- a handful of points cannot estimate a
+    distribution, and letting them in would move the frame the discriminant is
+    fit in.
+    """
+    X_train, _, _, labelled = correlated_one_class
+    X_mixed = pd.concat([X_train, labelled], ignore_index=True)
+    y_mixed = np.r_[np.zeros(len(X_train)), np.ones(len(labelled))]
+
+    few_shot = TribbleOneClassDetector(whiten=True, few_shot="logistic").fit(
+        X_mixed, y_mixed
+    )
+    normal_only = TribbleOneClassDetector(whiten=True).fit(X_train)
+
+    # identical whitening means identical memberships: the anomalies were excluded
+    np.testing.assert_allclose(few_shot._pca_.mean_, normal_only._pca_.mean_)
+    assert few_shot.top_features_ == normal_only.top_features_
+
+
+def test_invalid_cov_and_few_shot_are_rejected(correlated_one_class):
+    X_train, _, _, _ = correlated_one_class
+    with pytest.raises(ValueError, match="cov must be one of"):
+        TribbleOneClassDetector(cov="mahalanobis").fit(X_train)
+    with pytest.raises(ValueError, match="few_shot must be one of"):
+        TribbleOneClassDetector(few_shot="svm").fit(X_train)
+
+
+def test_mismatched_y_length_is_rejected(correlated_one_class):
+    X_train, _, _, _ = correlated_one_class
+    with pytest.raises(ValueError, match="y has"):
+        TribbleOneClassDetector(few_shot="logistic").fit(X_train, np.zeros(5))
+
+
+def test_new_params_survive_clone():
+    from sklearn.base import clone
+
+    det = TribbleOneClassDetector(cov="ledoit_wolf", few_shot="logistic",
+                                  few_shot_C=0.25)
+    assert clone(det).get_params() == det.get_params()

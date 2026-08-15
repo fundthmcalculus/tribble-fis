@@ -165,6 +165,40 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         Number of largest per-sample surprisal terms to drop when
         ``score="trimmed"``. Must be smaller than the number of features
         reaching the rules. Ignored by the other scores.
+    cov : {"pca", "ledoit_wolf"}, default "pca"
+        How the whitening covariance is estimated when ``whiten=True``.
+
+        * ``"pca"`` -- rank-truncated PCA whitening, keeping
+          ``whiten_components``. The truncation discards low-variance
+          directions, which is a denoiser as much as a decorrelator.
+        * ``"ledoit_wolf"`` -- full-rank whitening from a Ledoit-Wolf shrunk
+          covariance, i.e. a well-regularised full-covariance Mahalanobis. No
+          rank to choose, and measured as a small consistent gain in tail
+          separation over rank-truncated PCA on the corpora tested. Prefer it
+          when ``n_features`` approaches ``n_samples``, where the sample
+          covariance is ill-conditioned and shrinkage is doing real work.
+
+        Ignored when ``whiten=False``.
+    few_shot : {"none", "logistic"}, default "none"
+        What to do when ``fit`` is given labels.
+
+        The one-class score is a *magnitude* -- how far a point sits from
+        normal -- and discards the *direction* anomalies actually lie in, which
+        is what a strict operating point needs. ``"logistic"`` fits an L2
+        discriminant on the whitened features over all supplied rows and uses it
+        as the anomaly score; a handful of labelled anomalies (5-25) is enough
+        to help substantially. The whitening and the density are still fit on
+        the normal rows alone.
+
+        The default is ``"none"`` -- ``y`` ignored, pure one-class -- because
+        this estimator's documented contract is that ``fit(X, y)`` accepts ``y``
+        and ignores it, so that it drops into pipelines unchanged. Defaulting to
+        ``"logistic"`` would silently turn any ``fit(X, y)`` call into a
+        supervised discriminant, including the ``y`` a ``Pipeline`` or
+        ``cross_val_score`` passes through on its own. Opting in is one keyword.
+    few_shot_C : float, default 1.0
+        Inverse regularisation strength for the few-shot logistic discriminant.
+        Ignored unless ``few_shot="logistic"`` and ``fit`` received two classes.
     max_samples : int or None, default None
         Cap on rows per feature when fitting memberships (see the classifier).
     random_state : int, default 42
@@ -182,6 +216,8 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
     """
 
     _SCORES = ("complement", "surprisal", "trimmed")
+    _COVS = ("pca", "ledoit_wolf")
+    _FEW_SHOTS = ("none", "logistic")
 
     def __init__(
         self,
@@ -194,6 +230,9 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         contamination: float = 0.05,
         score: str = "complement",
         trim: int = 2,
+        cov: str = "pca",
+        few_shot: str = "none",
+        few_shot_C: float = 1.0,
         t_norm=None,
         t_conorm=None,
         allow_mixed_norms: bool = False,
@@ -209,6 +248,9 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         self.contamination = contamination
         self.score = score
         self.trim = trim
+        self.cov = cov
+        self.few_shot = few_shot
+        self.few_shot_C = few_shot_C
         self.t_norm = t_norm
         self.t_conorm = t_conorm
         self.allow_mixed_norms = allow_mixed_norms
@@ -297,7 +339,14 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         """
         if not self.whiten:
             return X_df
-        Z = self._pca_.transform(X_df.to_numpy())
+        if self.cov == "ledoit_wolf":
+            # Sigma^{-1/2} is symmetric, so left- and right-multiplying agree;
+            # centring first is what makes this a whitening rather than a
+            # rotation. `_to_frame` has already put the columns in fit order,
+            # which matters because this product is positional.
+            Z = (X_df.to_numpy() - self._white_mu_) @ self._white_W_
+        else:
+            Z = self._pca_.transform(X_df.to_numpy())
         return pd.DataFrame(
             Z, columns=[f"pc{i}" for i in range(Z.shape[1])], index=X_df.index
         )
@@ -328,23 +377,71 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
     # -- sklearn API ------------------------------------------------------
 
     def fit(self, X, y=None):
-        """Fit on normal data.
+        """Fit on normal data, optionally with a few labelled anomalies.
 
-        ``y`` is ignored -- every row is treated as the normal class. It is
-        accepted so the estimator drops into pipelines and ``fit(X, y)`` call
-        sites unchanged.
+        With the default ``few_shot="none"``, ``y`` is ignored -- every row is
+        treated as the normal class, and ``y`` is accepted only so the estimator
+        drops into pipelines and ``fit(X, y)`` call sites unchanged.
+
+        With ``few_shot="logistic"`` and a two-class ``y``, the majority label is
+        taken as normal: the whitening and the membership density are fit on
+        those rows alone, exactly as in the one-class case, and the minority rows
+        additionally train a logistic discriminant that becomes the anomaly
+        score. See ``few_shot``.
         """
+        if self.score not in self._SCORES:
+            raise ValueError(
+                f"score must be one of {self._SCORES}; got {self.score!r}"
+            )
+        if self.cov not in self._COVS:
+            raise ValueError(f"cov must be one of {self._COVS}; got {self.cov!r}")
+        if self.few_shot not in self._FEW_SHOTS:
+            raise ValueError(
+                f"few_shot must be one of {self._FEW_SHOTS}; got {self.few_shot!r}"
+            )
+
         if isinstance(X, pd.DataFrame):
             self.feature_names_in_ = X.columns.tolist()
         else:
             X = np.asarray(X)
             self.feature_names_in_ = [f"feature_{i}" for i in range(X.shape[1])]
-        X_raw = self._to_frame(X)
+        X_all = self._to_frame(X)
+
+        # Split normal from anomaly, if labels were given and opted into. The
+        # density only ever sees the normal rows: a few anomalies are far too
+        # few to estimate a distribution from, and letting them into the
+        # whitening would move the very frame the discriminant is fit in.
+        self._is_few_shot_ = False
+        X_raw = X_all
+        if y is not None and self.few_shot == "logistic":
+            y_arr = np.asarray(y)
+            if len(y_arr) != len(X_all):
+                raise ValueError(
+                    f"y has {len(y_arr)} rows, X has {len(X_all)}"
+                )
+            classes, counts = np.unique(y_arr, return_counts=True)
+            if len(classes) >= 2:
+                self.normal_label_ = classes[np.argmax(counts)]
+                self._y_fit_ = y_arr
+                self._is_few_shot_ = True
+                X_raw = X_all[y_arr == self.normal_label_].reset_index(drop=True)
 
         # Fit the whitening transform on the normal data, if requested, before
         # anything else -- feature selection and membership fitting then operate
         # on the decorrelated components.
-        if self.whiten:
+        if self.whiten and self.cov == "ledoit_wolf":
+            from sklearn.covariance import LedoitWolf
+
+            A = X_raw.to_numpy()
+            self._white_mu_ = A.mean(axis=0)
+            # Sigma^{-1/2} from the shrunk covariance, full rank. The eigenvalue
+            # floor is a guard for an exactly-singular direction (a constant
+            # column); shrinkage makes that vanishingly unlikely, but an inf
+            # here would poison every score rather than one component.
+            eigenvalues, eigenvectors = np.linalg.eigh(LedoitWolf().fit(A).covariance_)
+            inv_sqrt = 1.0 / np.sqrt(np.clip(eigenvalues, 1e-12, None))
+            self._white_W_ = (eigenvectors * inv_sqrt) @ eigenvectors.T
+        elif self.whiten:
             from sklearn.decomposition import PCA
 
             n_comp = self.whiten_components
@@ -354,11 +451,6 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
                 n_components=n_comp, whiten=True, random_state=self.random_state
             ).fit(X_raw.to_numpy())
         X_df = self._transform(X_raw)
-
-        if self.score not in self._SCORES:
-            raise ValueError(
-                f"score must be one of {self._SCORES}; got {self.score!r}"
-            )
 
         self.top_features_ = self._select_features(X_df)
         if not self.top_features_:
@@ -382,11 +474,30 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
             random_state=self.random_state,
         )
 
+        # The discriminant trains on ALL supplied rows, in the frame the normal
+        # rows defined. `class_weight="balanced"` is what makes a handful of
+        # anomalies against thousands of normals trainable at all.
+        self._logit_ = None
+        if self._is_few_shot_:
+            from sklearn.linear_model import LogisticRegression
+
+            self._logit_ = LogisticRegression(
+                class_weight="balanced",
+                C=self.few_shot_C,
+                max_iter=1000,
+                random_state=self.random_state,
+            ).fit(
+                self._transform(X_all).to_numpy(),
+                (self._y_fit_ != self.normal_label_).astype(int),
+            )
+
         # Place the decision threshold at the contamination quantile of the
         # training anomaly scores: the `contamination` fraction with the highest
         # anomaly become outliers, matching sklearn's outlier detectors. Score
         # the RAW input -- score_samples applies the whitening transform itself,
-        # so passing the already-transformed frame would whiten twice.
+        # so passing the already-transformed frame would whiten twice. Only the
+        # normal rows count: `contamination` means "of the normal data", and
+        # including the labelled anomalies would drag the quantile toward them.
         train_scores = self.score_samples(X_raw)  # higher = more normal
         q = float(self.contamination)
         if q > 0.5:
@@ -414,12 +525,19 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
 
         ``"complement"`` returns ``1 - max_rule firing_strength`` in ``[0, 1]``;
         ``"surprisal"`` and ``"trimmed"`` return a summed surprisal in
-        ``[0, inf)``. Only the first is bounded -- the scale carries no meaning
-        under any of them, so this is the quantity to hand to ``roc_auc_score``
-        as the positive-class score in every case.
+        ``[0, inf)``. When ``fit`` received labels under ``few_shot="logistic"``
+        this is instead the discriminant's decision function, which is signed.
+        None of the scales carry meaning, so this is the quantity to hand to
+        ``roc_auc_score`` as the positive-class score in every case.
         """
         check_is_fitted(self, "model_")
         X_df = self._transform(self._to_frame(X))
+
+        if getattr(self, "_logit_", None) is not None:
+            # Few-shot: the discriminant replaces the density score outright.
+            # `score` and `trim` no longer apply -- the labels supply a direction
+            # the one-class magnitude cannot, which is the whole point.
+            return self._logit_.decision_function(X_df.to_numpy())
 
         if self.score == "complement":
             firing, _ = tsk_firing_strengths(X_df, self.model_, self._norm_params())
