@@ -8,7 +8,22 @@ on:
 
 jobs:
   pytest:
+    # Two legs, because the accelerator is optional and both states are real.
+    #
+    # `numpy` is what a fresh checkout does: no C compiler, `tribblefis.kernel`
+    # falls back, and the kernel tests skip themselves. That is the leg which
+    # keeps "pip install needs no compiler" honest.
+    #
+    # `compiled` builds the extension so the ~40 parity tests guarding it
+    # actually execute. Without it they skip, and CI reports green over a kernel
+    # nothing ran -- which is how the compiled/NumPy `exp` divergence sat
+    # unnoticed until someone built it by hand.
+    name: pytest (${{ matrix.kernel }} kernel)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: [numpy, compiled]
     steps:
       - uses: actions/checkout@v4
 
@@ -19,6 +34,29 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --extra dev
+
+      # cython/setuptools are build-time only, so they stay out of the project's
+      # dependencies -- `--with` supplies them for this command alone.
+      - name: Build the compiled kernel
+        if: matrix.kernel == 'compiled'
+        run: uv run --with cython --with setuptools python setup_cython.py build_ext --inplace
+
+      # Assert the leg is testing what it claims. Both directions matter: a
+      # silently-unbuilt extension turns the `compiled` leg back into a second
+      # copy of `numpy` with every kernel test skipped, which is precisely the
+      # blind spot this matrix exists to close.
+      - name: Confirm the kernel state matches the matrix leg
+        run: |
+          uv run python - <<'PY'
+          from tribblefis import kernel
+          want = "${{ matrix.kernel }}" == "compiled"
+          if kernel.HAVE_CYTHON_KERNEL != want:
+              raise SystemExit(
+                  f"expected HAVE_CYTHON_KERNEL={want} on the "
+                  f"'${{ matrix.kernel }}' leg, got {kernel.HAVE_CYTHON_KERNEL}"
+              )
+          print(f"kernel backend under test: {'compiled' if want else 'numpy'}")
+          PY
 
       - name: Run tests
         run: uv run pytest ${{ github.event_name == 'pull_request' && '-m "not performance"' || '' }}

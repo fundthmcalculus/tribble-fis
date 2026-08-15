@@ -197,15 +197,28 @@ def test_kernel_backend_torch_routes_here():
 
 
 def test_torch_is_never_chosen_automatically():
-    """`auto` must stay bit-exact against the reference, which the GPU backend is
-    not. If this ever flips, every benchmark checksum in the repo silently
-    becomes a different number."""
+    """`auto` must resolve to a CPU backend, never the GPU one. If this ever
+    flips, every benchmark checksum in the repo silently becomes a different
+    number.
+
+    Asserted as "auto's output is bit-identical to one of the two CPU backends",
+    which is what the claim actually is. It used to be asserted against the NumPy
+    backend alone, so it also silently required libm's `exp` and NumPy's to
+    agree bit for bit -- they differ by 1 ULP on NumPy 2.4 with AVX-512, and
+    this failed there for a reason that has nothing to do with Torch. Both CPU
+    backends are exact candidates because `auto` picks between them on a size
+    heuristic (`_cython_is_faster`), so either answer proves Torch was not used.
+    """
     compiled, matrix = _setup(n_samples=100, seed=13)
     norms = NormPair("min/max", "min/max")
-    assert np.array_equal(
-        K.firing_strengths(compiled, matrix, norms, backend="auto"),
-        K.firing_strengths_numpy(compiled, matrix, norms),
-    )
+    auto = K.firing_strengths(compiled, matrix, norms, backend="auto")
+
+    candidates = [K.firing_strengths_numpy(compiled, matrix, norms)]
+    if K.HAVE_CYTHON_KERNEL:
+        candidates.append(
+            K.firing_strengths(compiled, matrix, norms, backend="cython")
+        )
+    assert any(np.array_equal(auto, cpu) for cpu in candidates)
 
 
 def test_backend_validation_lists_torch():
