@@ -156,3 +156,67 @@ def test_whiten_get_params_roundtrip():
 
     det = TribbleOneClassDetector(whiten=True, whiten_components=0.95)
     assert clone(det).get_params() == det.get_params()
+
+
+def test_score_options_run_and_rank(normal_and_outliers):
+    """All three score options produce a valid, correctly-oriented score."""
+    X_train, X_normal, X_out = normal_and_outliers
+    for score in ("complement", "surprisal", "trimmed"):
+        det = TribbleOneClassDetector(n_gaussians=2, score=score).fit(X_train)
+        s_n = det.anomaly_score(X_normal); s_a = det.anomaly_score(X_out)
+        assert s_a.mean() > s_n.mean(), f"{score}: outliers should score higher"
+        y = np.r_[np.zeros(len(X_normal)), np.ones(len(X_out))]
+        assert roc_auc_score(y, np.r_[s_n, s_a]) > 0.9
+
+
+def test_surprisal_is_non_saturating_vs_complement():
+    """With many features the complement score saturates (ties at ~1) while the
+    surprisal score keeps a spread -- the reason surprisal exists."""
+    rng = np.random.default_rng(0)
+    cols = [f"f{i}" for i in range(40)]
+    Xtr = pd.DataFrame(rng.normal(size=(300, 40)), columns=cols)
+    Xte = pd.DataFrame(rng.normal(size=(200, 40)), columns=cols)
+    comp = TribbleOneClassDetector(n_gaussians=1, score="complement").fit(Xtr).anomaly_score(Xte)
+    surp = TribbleOneClassDetector(n_gaussians=1, score="surprisal").fit(Xtr).anomaly_score(Xte)
+    # complement piles up near 1 (tiny spread); surprisal stays spread out
+    assert comp.std() < 0.05
+    assert surp.std() > comp.std() * 5
+
+
+def test_ledoit_wolf_whitening_runs(normal_and_outliers):
+    X_train, X_normal, X_out = normal_and_outliers
+    det = TribbleOneClassDetector(whiten=True, cov="ledoit_wolf",
+                                  n_gaussians=1, score="surprisal").fit(X_train)
+    assert det._white_W_.shape == (X_train.shape[1], X_train.shape[1])
+    y = np.r_[np.zeros(len(X_normal)), np.ones(len(X_out))]
+    s = np.r_[det.anomaly_score(X_normal), det.anomaly_score(X_out)]
+    assert roc_auc_score(y, s) > 0.9
+
+
+def test_few_shot_uses_labelled_anomalies():
+    """A handful of labelled anomalies fit a discriminant that separates a
+    held-out anomaly cluster the one-class density alone would rank poorly."""
+    rng = np.random.default_rng(1)
+    d = 8
+    base = lambda n, shift: rng.normal(0, 1, (n, d)) + shift
+    cols = [f"f{i}" for i in range(d)]
+    Xn = base(400, 0.0)
+    Xa = base(40, 2.5)                       # anomaly cluster
+    X = pd.DataFrame(np.vstack([Xn, Xa[:10]]), columns=cols)   # 10 few-shot anomalies
+    y = np.r_[np.zeros(400), np.ones(10)].astype(int)
+    det = TribbleOneClassDetector(whiten=True, cov="ledoit_wolf",
+                                  n_gaussians=1, few_shot="logistic").fit(X, y)
+    assert det._logit_ is not None
+    Xn_te = pd.DataFrame(base(100, 0.0), columns=cols)
+    Xa_te = pd.DataFrame(base(100, 2.5), columns=cols)
+    yy = np.r_[np.zeros(100), np.ones(100)]
+    ss = np.r_[det.anomaly_score(Xn_te), det.anomaly_score(Xa_te)]
+    assert roc_auc_score(yy, ss) > 0.95
+
+
+def test_few_shot_none_ignores_labels(normal_and_outliers):
+    """few_shot='none' falls back to pure one-class even when y is given."""
+    X_train, _, _ = normal_and_outliers
+    y = np.r_[np.zeros(len(X_train) - 3), np.ones(3)].astype(int)
+    det = TribbleOneClassDetector(few_shot="none").fit(X_train, y)
+    assert det._logit_ is None
