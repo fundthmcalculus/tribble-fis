@@ -72,10 +72,24 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         * an explicit list of column names -- use exactly these.
 
         A dispersion / tightness-based ranking is a natural future addition; it
-        is intentionally not implemented yet.
+        is intentionally not implemented yet. Ignored when ``whiten=True`` (the
+        whitened components are used directly).
     top_n : int, default -1
         Number of features to keep when ``feature_selection="variance"``. ``-1``
         keeps all.
+    whiten : bool, default False
+        If True, PCA-whiten the features (decorrelate to unit variance) on the
+        normal data before fitting memberships, and apply the same stored
+        transform when scoring. The per-feature product-t-norm rule assumes
+        feature independence, so on correlated features (embeddings, activations)
+        the raw detector misses cross-feature covariance and scores near chance;
+        whitening makes the independence assumption approximately hold. Off by
+        default -- no behaviour change for existing callers.
+    whiten_components : int, float or None, default None
+        ``n_components`` for the internal ``PCA`` when ``whiten=True`` (int for a
+        component count, float for an explained-variance ratio). ``None`` keeps
+        ``min(n_samples - 1, n_features)`` components. Ignored when
+        ``whiten=False``.
     contamination : float, default 0.05
         Expected fraction of outliers, used only to place the
         ``decision_function`` threshold (the ``contamination`` quantile of the
@@ -103,6 +117,8 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         norm_conorm=DefaultNormCornorm,
         feature_selection: str | list = "all",
         top_n: int = -1,
+        whiten: bool = False,
+        whiten_components: int | float | None = None,
         contamination: float = 0.05,
         t_norm=None,
         t_conorm=None,
@@ -114,6 +130,8 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         self.norm_conorm = norm_conorm
         self.feature_selection = feature_selection
         self.top_n = top_n
+        self.whiten = whiten
+        self.whiten_components = whiten_components
         self.contamination = contamination
         self.t_norm = t_norm
         self.t_conorm = t_conorm
@@ -134,6 +152,26 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
             allow_mixed_norms=self.allow_mixed_norms,
         )
 
+    def _to_frame(self, X) -> pd.DataFrame:
+        if isinstance(X, pd.DataFrame):
+            return X.reset_index(drop=True).copy()
+        return pd.DataFrame(np.asarray(X), columns=self.feature_names_in_)
+
+    def _transform(self, X_df: pd.DataFrame) -> pd.DataFrame:
+        """Apply the stored whitening transform (identity when whiten=False).
+
+        Fitting and scoring both route through here so the memberships and the
+        decorrelation can never desync -- the concern that folding whitening
+        into the estimator (rather than leaving it to the caller) exists to
+        remove.
+        """
+        if not self.whiten:
+            return X_df
+        Z = self._pca_.transform(X_df.to_numpy())
+        return pd.DataFrame(
+            Z, columns=[f"pc{i}" for i in range(Z.shape[1])], index=X_df.index
+        )
+
     def _select_features(self, X: pd.DataFrame) -> list:
         fs = self.feature_selection
         if isinstance(fs, (list, tuple)):
@@ -144,6 +182,12 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         if fs == "all":
             return list(X.columns)
         if fs == "variance":
+            if self.whiten:
+                # Whitened components are unit-variance and already ordered by
+                # explained variance, so a variance filter is moot; keep the
+                # leading top_n components (or all).
+                cols = list(X.columns)
+                return cols if self.top_n <= 0 else cols[: self.top_n]
             var = X.var(axis=0, numeric_only=True)
             order = var.sort_values(ascending=False).index.tolist()
             return order if self.top_n <= 0 else order[: self.top_n]
@@ -162,11 +206,24 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         """
         if isinstance(X, pd.DataFrame):
             self.feature_names_in_ = X.columns.tolist()
-            X_df = X.reset_index(drop=True).copy()
         else:
             X = np.asarray(X)
             self.feature_names_in_ = [f"feature_{i}" for i in range(X.shape[1])]
-            X_df = pd.DataFrame(X, columns=self.feature_names_in_)
+        X_raw = self._to_frame(X)
+
+        # Fit the whitening transform on the normal data, if requested, before
+        # anything else -- feature selection and membership fitting then operate
+        # on the decorrelated components.
+        if self.whiten:
+            from sklearn.decomposition import PCA
+
+            n_comp = self.whiten_components
+            if n_comp is None:
+                n_comp = min(len(X_raw) - 1, X_raw.shape[1])
+            self._pca_ = PCA(
+                n_components=n_comp, whiten=True, random_state=self.random_state
+            ).fit(X_raw.to_numpy())
+        X_df = self._transform(X_raw)
 
         self.top_features_ = self._select_features(X_df)
         if not self.top_features_:
@@ -184,8 +241,10 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
 
         # Place the decision threshold at the contamination quantile of the
         # training anomaly scores: the `contamination` fraction with the highest
-        # anomaly become outliers, matching sklearn's outlier detectors.
-        train_scores = self.score_samples(X_df)  # higher = more normal
+        # anomaly become outliers, matching sklearn's outlier detectors. Score
+        # the RAW input -- score_samples applies the whitening transform itself,
+        # so passing the already-transformed frame would whiten twice.
+        train_scores = self.score_samples(X_raw)  # higher = more normal
         q = float(np.clip(self.contamination, 0.0, 0.5))
         self.offset_ = float(np.quantile(train_scores, q)) if q > 0 else float(
             train_scores.min()
@@ -200,10 +259,7 @@ class TribbleOneClassDetector(OutlierMixin, BaseEstimator):
         ``roc_auc_score`` as the positive-class score.
         """
         check_is_fitted(self, "model_")
-        if isinstance(X, pd.DataFrame):
-            X_df = X.copy()
-        else:
-            X_df = pd.DataFrame(np.asarray(X), columns=self.feature_names_in_)
+        X_df = self._transform(self._to_frame(X))
         firing, _ = tsk_firing_strengths(X_df, self.model_, self._norm_params())
         max_firing = firing.max(axis=1) if firing.size else np.zeros(len(X_df))
         return 1.0 - np.clip(max_firing, 0.0, 1.0)

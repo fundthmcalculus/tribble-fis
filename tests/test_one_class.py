@@ -103,3 +103,56 @@ def test_get_params_roundtrip():
                                   feature_selection="variance", top_n=5)
     cloned = clone(det)
     assert cloned.get_params() == det.get_params()
+
+
+def test_whiten_recovers_covariance_anomaly_invisible_per_feature():
+    """The decisive case: an anomaly whose per-feature marginals are all normal
+    but whose *correlation structure* is violated. Per-feature Gaussians (the
+    raw detector) cannot see it; whitening decorrelates and catches it.
+    """
+    rng = np.random.default_rng(3)
+    d = 6
+    # normal: all features nearly equal (a single latent factor) -> tight
+    # positive correlation, each marginal ~ N(0, 1).
+    def positively_correlated(n):
+        base = rng.normal(0, 1, size=(n, 1))
+        return base + rng.normal(0, 0.05, size=(n, d))
+
+    # anomaly: same per-feature marginals (~N(0,1)) but the correlation is
+    # broken -- features are independent draws, so each column is in-range yet
+    # the joint pattern never occurs in normal data.
+    def decorrelated(n):
+        return rng.normal(0, 1, size=(n, d))
+
+    cols = [f"f{i}" for i in range(d)]
+    Xtr = pd.DataFrame(positively_correlated(400), columns=cols)
+    Xn = pd.DataFrame(positively_correlated(100), columns=cols)
+    Xa = pd.DataFrame(decorrelated(100), columns=cols)
+    y = np.r_[np.zeros(100), np.ones(100)]
+
+    raw = TribbleOneClassDetector(whiten=False, n_gaussians=1).fit(Xtr)
+    wht = TribbleOneClassDetector(whiten=True, n_gaussians=1).fit(Xtr)
+    auc_raw = roc_auc_score(y, np.r_[raw.anomaly_score(Xn), raw.anomaly_score(Xa)])
+    auc_wht = roc_auc_score(y, np.r_[wht.anomaly_score(Xn), wht.anomaly_score(Xa)])
+    # per-feature marginals match, so the raw detector is near chance...
+    assert auc_raw < 0.65
+    # ...and whitening recovers the covariance-borne signal.
+    assert auc_wht > 0.85
+    assert auc_wht > auc_raw + 0.2
+
+
+def test_whiten_components_limits_rank():
+    rng = np.random.default_rng(4)
+    X = pd.DataFrame(rng.normal(size=(200, 10)), columns=[f"f{i}" for i in range(10)])
+    det = TribbleOneClassDetector(whiten=True, whiten_components=4).fit(X)
+    assert det._pca_.n_components_ == 4
+    assert len(det.top_features_) == 4
+    # scoring still runs end to end through the stored transform
+    assert det.anomaly_score(X).shape == (200,)
+
+
+def test_whiten_get_params_roundtrip():
+    from sklearn.base import clone
+
+    det = TribbleOneClassDetector(whiten=True, whiten_components=0.95)
+    assert clone(det).get_params() == det.get_params()
