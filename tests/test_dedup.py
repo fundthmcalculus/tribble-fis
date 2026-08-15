@@ -17,6 +17,7 @@ from tribblefis.gauss_data import (
     GaussianMembership,
     GaussianMixtureModel,
     LabelModel,
+    TriangularMembership,
 )
 from tribblefis.gauss_math import simple_gaussian_predict, tsk_predict
 from tribblefis.gaussian_classifier import TribbleClassifier
@@ -105,6 +106,53 @@ class TestGaussianMixtureModelDedup(unittest.TestCase):
         via_simple = simple_gaussian_predict(X, model.to_simple_model(rtol=0.0, atol=0.0))
 
         np.testing.assert_array_equal(direct, np.asarray(via_simple))
+
+
+class TestTriangularMembershipDedup(unittest.TestCase):
+    """`_is_close` previously had no branch for TriangularMembership at all,
+    so two triangles were never treated as duplicates regardless of how close
+    their (a, b, c) were -- this pins that it now works like the Gaussian and
+    Trapezoid cases."""
+
+    def test_identical_triangles_are_duplicates(self):
+        dup_a = TriangularMembership.create(a=0.0, b=1.0, c=2.0)
+        dup_b = TriangularMembership.create(a=0.0, b=1.0, c=2.0)
+        distinct = TriangularMembership.create(a=3.0, b=4.0, c=5.0)
+
+        model = GaussianMixtureModel(
+            feature_models={
+                "f": FeatureModel(
+                    label_models={0: LabelModel(memberships=[dup_a, dup_b, distinct])}
+                )
+            }
+        )
+        duplicates = model.identify_duplicate_membership_fcns(rtol=0.0, atol=0.0)
+        self.assertEqual(len(duplicates), 1)
+
+    def test_shoulder_triangles_with_matching_infinities_are_duplicates(self):
+        """Ruspini left/right shoulders use +/-inf; np.allclose treats matching
+        same-signed infinities as equal, so this must not raise or return False
+        just because of the infinities involved."""
+        shoulder_a = TriangularMembership.create(a=float("-inf"), b=1.0, c=2.0)
+        shoulder_b = TriangularMembership.create(a=float("-inf"), b=1.0, c=2.0)
+
+        model = GaussianMixtureModel(
+            feature_models={
+                "f": FeatureModel(label_models={0: LabelModel(memberships=[shoulder_a, shoulder_b])})
+            }
+        )
+        duplicates = model.identify_duplicate_membership_fcns(rtol=0.0, atol=0.0)
+        self.assertEqual(len(duplicates), 1)
+
+    def test_different_types_are_never_close(self):
+        tri = TriangularMembership.create(a=0.0, b=1.0, c=2.0)
+        gauss = GaussianMembership.create(mu=1.0, sigma=1.0)
+        model = GaussianMixtureModel(
+            feature_models={
+                "f": FeatureModel(label_models={0: LabelModel(memberships=[tri, gauss])})
+            }
+        )
+        self.assertEqual(len(model.identify_duplicate_membership_fcns(rtol=0.0, atol=0.0)), 0)
 
 
 class TestTribbleClassifierDedup(unittest.TestCase):

@@ -613,6 +613,15 @@ def _is_close(
                 atol=atol
             )
         )
+    elif isinstance(g1, TriangularMembership):
+        return bool(
+            np.allclose(
+                [g1.a, g1.b, g1.c],
+                [g2.a, g2.b, g2.c],
+                rtol=rtol,
+                atol=atol
+            )
+        )
     return False
 
 
