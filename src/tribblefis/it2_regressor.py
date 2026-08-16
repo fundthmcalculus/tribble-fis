@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.model_selection import train_test_split
 from sklearn.utils.validation import check_X_y, check_is_fitted
 
 from .gauss_data import (
@@ -18,7 +19,11 @@ from .gauss_data import (
 from .gaussian_regressor import TribbleRegressor
 from .it2_kernel import it2_firing_strengths, karnik_mendel_tsk
 from .it2_refine import refine_it2_regressor_antecedents
-from .regression import rule_consequent_values, _normalize_firing_strengths
+from .regression import (
+    rule_consequent_values,
+    _normalize_firing_strengths,
+    conformal_calibration_margin,
+)
 
 
 class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
@@ -76,6 +81,28 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
     refine_it2_n_folds : int, default=3
         Cross-validation folds for `refine_it2`'s held-out MSE objective.
 
+    conformal_calibration : bool, default=False
+        If True, holds out `conformal_calibration_frac` of the training rows
+        (never seen by the base fit, any refinement, or antecedent
+        conversion), and uses them to compute an additive split-conformal
+        margin (`regression.conformal_calibration_margin`) that
+        `predict_intervals` pads both bounds with. Fixes #149: the raw
+        interval's empirical coverage plateaus well under any target
+        regardless of `uncertainty_width`, because it only encodes antecedent
+        firing disagreement, never residual/aleatoric uncertainty. Does not
+        affect `predict`, which always uses the raw (unpadded) interval's
+        midpoint.
+
+    conformal_alpha : float, default=0.1
+        Target miscoverage rate for `conformal_calibration` -- i.e. the
+        margin targets `1 - conformal_alpha` empirical coverage on held-out
+        data drawn from the same distribution as training.
+
+    conformal_calibration_frac : float, default=0.2
+        Fraction of the training rows held out as the calibration split when
+        `conformal_calibration=True`. Larger values give a more reliable
+        margin estimate at the cost of less data for the base fit.
+
     random_state : int, default=42
         Seed for reproducibility.
 
@@ -86,6 +113,10 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
     ----------
     model_ : IT2GaussianMixtureModel
         The fitted IT2 model with upper and lower membership functions.
+
+    conformal_margin_ : float | None
+        Additive margin from `conformal_calibration`, or `None` if it was
+        never enabled.
 
     y_bucket_mean_ : ndarray
         Rule bucket-mean consequent coefficients currently in use for
@@ -119,6 +150,9 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
         refine_it2_n_sweeps=3,
         refine_it2_km_iterations=None,
         refine_it2_n_folds=3,
+        conformal_calibration=False,
+        conformal_alpha=0.1,
+        conformal_calibration_frac=0.2,
         random_state=42,
         max_samples=None,
     ):
@@ -133,6 +167,9 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
         self.refine_it2_n_sweeps = refine_it2_n_sweeps
         self.refine_it2_km_iterations = refine_it2_km_iterations
         self.refine_it2_n_folds = refine_it2_n_folds
+        self.conformal_calibration = conformal_calibration
+        self.conformal_alpha = conformal_alpha
+        self.conformal_calibration_frac = conformal_calibration_frac
         self.random_state = random_state
         self.max_samples = max_samples
 
@@ -145,6 +182,7 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
         self.y_max_ = None
         self.feature_names_in_ = None
         self.norms_ = None
+        self.conformal_margin_ = None
         self._base_regressor = None
 
     def fit(self, X, y):
@@ -180,6 +218,15 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
         self.y_max_ = float(y.max())
         self.norms_ = resolve_norm_pair(self.norm_conorm)
 
+        if self.conformal_calibration:
+            # Held out before anything else touches the data, so the
+            # calibration split satisfies conformal prediction's
+            # exchangeability requirement (see `conformal_calibration_margin`).
+            X, X_calib, y, y_calib = train_test_split(
+                X, y, test_size=self.conformal_calibration_frac,
+                random_state=self.random_state,
+            )
+
         # Fit base Type-1 regressor
         base = TribbleRegressor(
             top_n=self.top_n,
@@ -212,6 +259,12 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
                     n_sweeps=self.refine_it2_n_sweeps, n_folds=self.refine_it2_n_folds,
                     verbose=False,
                 )
+            )
+
+        if self.conformal_calibration:
+            y_lower_calib, y_upper_calib = self._predict_interval_arrays(X_calib)
+            self.conformal_margin_ = conformal_calibration_margin(
+                y_calib, y_lower_calib, y_upper_calib, self.conformal_alpha
             )
 
         return self
@@ -296,7 +349,9 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
 
         Returns the Karnik-Mendel type-reduced output interval -- guaranteed by
         construction to contain `predict`'s point estimate, which is this
-        interval's midpoint.
+        interval's midpoint -- widened by `conformal_margin_` on both sides
+        when `conformal_calibration=True` (the margin is symmetric, so this
+        guarantee holds regardless).
 
         Parameters
         ----------
@@ -319,7 +374,11 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
             # Ensure DataFrame has correct column names
             X = pd.DataFrame(X.values, columns=self.feature_names_in_)
 
-        return self._predict_interval_arrays(X)
+        y_lower, y_upper = self._predict_interval_arrays(X)
+        if self.conformal_margin_ is not None:
+            y_lower = y_lower - self.conformal_margin_
+            y_upper = y_upper + self.conformal_margin_
+        return y_lower, y_upper
 
     def _convert_to_it2(self, type1_model) -> IT2GaussianMixtureModel:
         """Convert a Type-1 model to IT2.

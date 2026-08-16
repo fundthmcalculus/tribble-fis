@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.model_selection import train_test_split
 from sklearn.utils.validation import check_X_y, check_is_fitted
 
 from .gauss_data import (
@@ -17,7 +18,11 @@ from .gauss_data import (
 from .gaussian_regressor import TribbleRegressor
 from .gt2_kernel import gt2_rule_firing, gt2_karnik_mendel_tsk, alpha_weighted_average
 from .gt2_refine import refine_gt2_regressor_antecedents
-from .regression import rule_consequent_values, _normalize_firing_strengths
+from .regression import (
+    rule_consequent_values,
+    _normalize_firing_strengths,
+    conformal_calibration_margin,
+)
 
 
 class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
@@ -75,10 +80,20 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
     refine_gt2_n_folds : int, default=3
         Cross-validation folds for `refine_gt2`'s held-out MSE objective.
 
+    conformal_calibration, conformal_alpha, conformal_calibration_frac :
+        as in `IT2TribbleRegressor` -- fixes #149's regression coverage
+        finding by padding `predict_intervals`'s output with an additive
+        split-conformal margin, since the raw interval's coverage plateaus
+        well under any target no matter how `uncertainty_width` is tuned.
+
     Attributes
     ----------
     model_ : GT2GaussianMixtureModel
         The fitted GT2 model.
+
+    conformal_margin_ : float | None
+        Additive margin from `conformal_calibration`, or `None` if it was
+        never enabled.
 
     y_bucket_mean_, corr_terms_ : ndarray
         Rule consequent coefficients currently in use for prediction -- the
@@ -105,6 +120,9 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
         refine_gt2_n_sweeps=3,
         refine_gt2_km_iterations=None,
         refine_gt2_n_folds=3,
+        conformal_calibration=False,
+        conformal_alpha=0.1,
+        conformal_calibration_frac=0.2,
         random_state=42,
         max_samples=None,
     ):
@@ -120,6 +138,9 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
         self.refine_gt2_n_sweeps = refine_gt2_n_sweeps
         self.refine_gt2_km_iterations = refine_gt2_km_iterations
         self.refine_gt2_n_folds = refine_gt2_n_folds
+        self.conformal_calibration = conformal_calibration
+        self.conformal_alpha = conformal_alpha
+        self.conformal_calibration_frac = conformal_calibration_frac
         self.random_state = random_state
         self.max_samples = max_samples
 
@@ -127,6 +148,7 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
         self.model_ = None
         self.y_bucket_mean_ = None
         self.corr_terms_ = None
+        self.conformal_margin_ = None
         self.refine_gt2_info_ = None
         self.y_min_ = None
         self.y_max_ = None
@@ -167,6 +189,15 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
         self.y_max_ = float(y.max())
         self.norms_ = resolve_norm_pair(self.norm_conorm)
 
+        if self.conformal_calibration:
+            # Held out before anything else touches the data, so the
+            # calibration split satisfies conformal prediction's
+            # exchangeability requirement (see `conformal_calibration_margin`).
+            X, X_calib, y, y_calib = train_test_split(
+                X, y, test_size=self.conformal_calibration_frac,
+                random_state=self.random_state,
+            )
+
         base = TribbleRegressor(
             top_n=self.top_n,
             top_p=self.top_p,
@@ -198,6 +229,12 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
                     n_sweeps=self.refine_gt2_n_sweeps, n_folds=self.refine_gt2_n_folds,
                     verbose=False,
                 )
+            )
+
+        if self.conformal_calibration:
+            y_lower_calib, y_upper_calib = self._predict_interval_arrays(X_calib)
+            self.conformal_margin_ = conformal_calibration_margin(
+                y_calib, y_lower_calib, y_upper_calib, self.conformal_alpha
             )
 
         return self
@@ -269,7 +306,9 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
         Returns the alpha-combined Karnik-Mendel type-reduced output
         interval -- guaranteed by construction to contain `predict`'s point
         estimate, which is this interval's midpoint, exactly as in
-        `IT2TribbleRegressor`.
+        `IT2TribbleRegressor` -- widened by `conformal_margin_` on both sides
+        when `conformal_calibration=True` (the margin is symmetric, so this
+        guarantee holds regardless).
 
         Parameters
         ----------
@@ -291,7 +330,11 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
         else:
             X = pd.DataFrame(X.values, columns=self.feature_names_in_)
 
-        return self._predict_interval_arrays(X)
+        y_lower, y_upper = self._predict_interval_arrays(X)
+        if self.conformal_margin_ is not None:
+            y_lower = y_lower - self.conformal_margin_
+            y_upper = y_upper + self.conformal_margin_
+        return y_lower, y_upper
 
     def _convert_to_gt2(self, type1_model) -> GT2GaussianMixtureModel:
         """Convert a Type-1 model to GT2 -- identical to

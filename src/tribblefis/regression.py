@@ -773,6 +773,36 @@ def _normalize_firing_strengths(firing_strengths: ndarray) -> ndarray:
     return norm
 
 
+def conformal_calibration_margin(
+    y_calib: pd.Series | ndarray,
+    y_lower_calib: ndarray,
+    y_upper_calib: ndarray,
+    alpha: float,
+) -> float:
+    """Additive split-conformal margin from a held-out calibration split.
+
+    `predict_intervals()`'s raw IT2/GT2 interval only encodes how much rules
+    disagree about which one fires -- it carries no residual/aleatoric
+    uncertainty, so its empirical coverage plateaus well under any target no
+    matter how `uncertainty_width` is tuned (issue #149). Padding the raw
+    interval by this margin is not subject to that ceiling, since it operates
+    on the output directly rather than re-deriving width from antecedents.
+
+    Standard split-conformal (Vovk, Gammerman & Shafer 2005): the
+    nonconformity score is how far outside its own predicted interval each
+    calibration point falls (0 if already inside); the
+    `ceil((n+1)(1-alpha))/n` quantile of those scores, added to both bounds,
+    gives finite-sample marginal coverage >= 1-alpha, provided the
+    calibration points were never seen during training (exchangeability).
+    """
+    y_calib = np.asarray(y_calib, dtype=float)
+    nonconformity = np.maximum(y_lower_calib - y_calib, y_calib - y_upper_calib)
+    nonconformity = np.maximum(nonconformity, 0.0)
+    n = len(nonconformity)
+    q = min(1.0, np.ceil((n + 1) * (1.0 - alpha)) / n)
+    return float(np.quantile(nonconformity, q))
+
+
 def solve_tsk_consequents(
     X_train: pd.DataFrame,
     gaussian_memberships: GaussianMixtureModel,

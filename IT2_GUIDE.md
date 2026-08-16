@@ -35,6 +35,8 @@ y_pred = clf.predict(X_test)
 upper, lower = clf.predict_intervals(X_test)
 # upper[i, j] = upper bound firing strength for sample i, class j
 # lower[i, j] = lower bound firing strength for sample i, class j
+# NOTE: this width is antecedent-boundary ambiguity, not a calibrated
+# confidence score -- see "Interval Calibration" below before using it as one.
 ```
 
 ### Regression
@@ -59,6 +61,9 @@ y_pred = reg.predict(X_test)
 y_lower, y_upper = reg.predict_intervals(X_test)
 # y_lower[i] = lower bound prediction for sample i
 # y_upper[i] = upper bound prediction for sample i
+# NOTE: raw coverage plateaus well under any real target regardless of
+# uncertainty_width -- pass conformal_calibration=True to fix this,
+# see "Interval Calibration" below.
 ```
 
 ## Membership Function Types
@@ -198,10 +203,13 @@ IT2-FIS converts a fitted Type-1 TSK classifier/regressor to IT2 by creating upp
 ```
 Type-1 Gaussian: (μ=5, σ=2)
          ↓
-IT2 Membership:
-  Upper: (μ=6, σ=2)     [μ + 0.5×σ]
-  Lower: (μ=4, σ=2)     [μ - 0.5×σ]
+IT2 Membership (uncertainty_width=0.5), μ unchanged:
+  Upper: (μ=5, σ=3.0)     [σ × (1 + 0.5)]     -- wider, more permissive
+  Lower: (μ=5, σ=1.0)     [σ × max(0.1, 1 - 0.5)]  -- narrower, more restrictive
 ```
+Both bounds share the same `μ`, only `σ` changes -- which means upper and
+lower **always evaluate to exactly 1 at `x=μ` regardless of
+`uncertainty_width`**. See "Interval Calibration" below for why this matters.
 
 ### 2. Firing Strength Computation
 
@@ -261,6 +269,49 @@ strengths, with no cross-rule optimization and no containment guarantee).
 - Easy to add other norm families (min/max, luk, hamacher, einstein)
 - Easy to add post-fit refinement (use existing refinement module)
 - Easy to add compiled Cython/GPU kernels (mirror Type-1 pattern)
+
+## Interval Calibration
+
+`predict_intervals()` means something different for the two tasks, and
+neither is "a confidence score" out of the box. See
+`docs/t1-it2-gt2-tradeoff.md` for the full investigation (issue #149).
+
+**Classification**: the interval is antecedent-boundary ambiguity, not
+correctness confidence, and it is fundamentally **non-monotonic** in the
+predicted class's own firing strength. Because upper/lower share `μ` (see
+above), `width = upper - lower` is exactly 0 at `x=μ` for *any*
+`uncertainty_width`, rises as `x` moves away from `μ`, then falls back
+toward 0 again as both bounds decay toward 0 in the tails -- a hump, not a
+ramp. Depending on where a dataset's typical points land on that hump,
+"correct" and "incorrect" predictions can end up on either side of it, so
+interval width should not be read as a proxy for "how likely is this
+prediction to be right." There is no `conformal_calibration` fix for this --
+fixing the *sign* would require a different secondary-membership
+representation (see #145), not a recalibration of this one.
+
+**Regression**: the interval's width is bounded by how much the *rules*
+disagree about which one should fire, weighted by their firing-strength
+interval -- never by any actual residual/aleatoric noise estimate, because
+each rule's own TSK consequent is a crisp point value. Empirically, this
+caps coverage well under any real target (e.g. ~70% on a synthetic
+benchmark) **no matter how high `uncertainty_width` is set** -- the ceiling
+is fixed by the base Type-1 model's own per-rule consequent spread, not by
+the antecedent footprint. Pass `conformal_calibration=True` to
+`IT2TribbleRegressor`/`GT2TribbleRegressor` to fix this: it holds out
+`conformal_calibration_frac` (default 0.2) of the training rows, and pads
+both bounds with an additive split-conformal margin sized to hit
+`1 - conformal_alpha` coverage (default target 90%) on unseen data. This
+margin is not subject to the antecedent-disagreement ceiling, since it pads
+the output directly instead of widening the underlying antecedents further.
+
+```python
+reg = IT2TribbleRegressor(
+    conformal_calibration=True,
+    conformal_alpha=0.1,   # target 90% coverage
+)
+reg.fit(X_train, y_train)
+y_lower, y_upper = reg.predict_intervals(X_test)  # now actually ~90%-covering
+```
 
 ## Testing
 
