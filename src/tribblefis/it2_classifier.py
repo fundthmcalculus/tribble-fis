@@ -231,9 +231,20 @@ class IT2TribbleClassifier(BaseEstimator, ClassifierMixin):
         return self.classes_[class_indices]
 
     def predict_intervals(self, X):
-        """Predict confidence intervals for each class.
+        """Predict per-class firing-strength intervals.
 
         Returns the upper and lower bound firing strengths before type reduction.
+
+        This is antecedent-boundary ambiguity, not a calibrated confidence
+        score: because upper/lower bounds share the same `mu` (only `sigma`
+        is scaled -- see `_convert_to_it2`), `upper - lower` is exactly 0 at
+        `mu` for any `uncertainty_width`, rises moving away from `mu`, then
+        falls back toward 0 again in the tails as both bounds decay -- a hump,
+        not a ramp in firing strength. Empirically (issue #149,
+        `docs/t1-it2-gt2-tradeoff.md`) this means width does not track
+        correctness monotonically: whether correct or incorrect predictions
+        land on the rising or falling side of that hump depends on the
+        dataset, and is not something `uncertainty_width` can fix.
 
         Parameters
         ----------
