@@ -24,6 +24,7 @@ from tribblefis.trapz_math import (
     find_optimal_trapezoids,
     fit_trapezoids,
     create_trapz_membership_dict,
+    _solve_ordered_params,
 )
 from tribblefis.trapz_math_fast import (
     fit_trapezoids_fast,
@@ -82,6 +83,47 @@ class TestTrapzPDF(unittest.TestCase):
         y = trapz_pdf(x, a=0.5, b=0.5, c=0.5, d=0.5)
         # All values should be 0 (no area)
         self.assertTrue(np.allclose(y, 0))
+
+
+class TestSolveOrderedParams(unittest.TestCase):
+    """`_solve_ordered_params` replaced `scipy.optimize.minimize(method="SLSQP",
+    constraints=[...])`'s ``a <= b <= c <= d`` ordering constraint with a
+    gap reparametrization (see its docstring). These tests target that
+    reparametrization directly, independent of the EM M-step that calls it.
+    """
+
+    def test_result_is_ordered_and_within_bounds(self):
+        def objective(params):
+            # Minimized at (0.1, 0.4, 0.6, 0.9), safely inside [0, 1].
+            target = np.array([0.1, 0.4, 0.6, 0.9])
+            return float(np.sum((np.asarray(params) - target) ** 2))
+
+        x0 = np.array([0.2, 0.3, 0.5, 0.8])
+        solved, _ = _solve_ordered_params(objective, x0, data_min=0.0, data_max=1.0)
+        self.assertEqual(len(solved), 4)
+        self.assertTrue(np.all(np.diff(solved) >= -1e-9))
+        self.assertTrue(np.all(solved >= 0.0 - 1e-9))
+        self.assertTrue(np.all(solved <= 1.0 + 1e-9))
+
+    def test_recovers_near_optimum_inside_bounds(self):
+        def objective(params):
+            target = np.array([0.1, 0.4, 0.6, 0.9])
+            return float(np.sum((np.asarray(params) - target) ** 2))
+
+        x0 = np.array([0.0, 0.25, 0.5, 0.75])
+        solved, solved_obj = _solve_ordered_params(objective, x0, data_min=0.0, data_max=1.0)
+        np.testing.assert_allclose(solved, [0.1, 0.4, 0.6, 0.9], atol=0.05)
+        self.assertLess(solved_obj, 1e-3)
+
+    def test_three_parameter_triangle_case(self):
+        def objective(params):
+            target = np.array([0.2, 0.5, 0.8])
+            return float(np.sum((np.asarray(params) - target) ** 2))
+
+        x0 = np.array([0.1, 0.4, 0.9])
+        solved, _ = _solve_ordered_params(objective, x0, data_min=0.0, data_max=1.0)
+        self.assertEqual(len(solved), 3)
+        self.assertTrue(np.all(np.diff(solved) >= -1e-9))
 
 
 class TestTrapzMixtureModel(unittest.TestCase):

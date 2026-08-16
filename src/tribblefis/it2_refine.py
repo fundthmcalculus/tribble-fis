@@ -40,9 +40,9 @@ consequents in closed form for the candidate antecedents first (the
 uses, before scoring held-out MSE through the full Karnik-Mendel prediction
 path (`it2_kernel.karnik_mendel_tsk`) -- mirroring the bilevel structure of
 `refine.py`'s Type-1 regressor coordinate descent (antecedents outer, LSE-fit
-consequents inner), just with a finite-difference-driven L-BFGS-B search on
-the outer loop rather than the Type-1 path's analytic gradient (KM's
-switch-point search isn't differentiable in closed form -- see above).
+consequents inner), just with a finite-difference-driven search on the outer
+loop rather than the Type-1 path's analytic gradient (KM's switch-point
+search isn't differentiable in closed form -- see above).
 The consequent re-solve uses each rule's *midpoint* firing strength,
 ``0.5 * (firing_upper + firing_lower)``, as its ridge design weight: this is
 the natural "Type-1-equivalent" firing-strength matrix for a candidate whose
@@ -60,7 +60,8 @@ from .gauss_data import (
 )
 from .gauss_math import tsk_firing_strengths
 from .it2_kernel import it2_firing_strengths, karnik_mendel_tsk, _extract_upper_model, _extract_lower_model
-from .refine import _make_folds, _prepare_folds, _optimizers_sub_solve
+from .optimizer_utils import optimizers_sub_solve as _optimizers_sub_solve
+from .refine import _make_folds, _prepare_folds
 from .regression import solve_tsk_consequents_from_firing, rule_consequent_values, _mse
 
 

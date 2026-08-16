@@ -38,7 +38,6 @@ tribble-clustering = { git = "https://github.com/fundthmcalculus/clustering.git"
 dev = [
     "pytest>=7.0",
     "pytest-cov",
-    "scipy",
     "scikit-learn",
 ]
 

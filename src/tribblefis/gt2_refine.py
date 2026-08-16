@@ -35,7 +35,6 @@ directly -- neither depends on whether the underlying model is IT2 or GT2.
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
 
 from .gauss_data import (
     GT2GaussianMixtureModel, GT2FeatureModel, GT2LabelModel, GT2GaussianMembership,
@@ -45,6 +44,7 @@ from .gt2_kernel import (
     gt2_firing_strengths, gt2_rule_firing, gt2_karnik_mendel_tsk, alpha_weighted_average,
 )
 from .it2_refine import _normalize_proba
+from .optimizer_utils import optimizers_sub_solve as _optimizers_sub_solve
 from .refine import _make_folds, _prepare_folds
 from .regression import solve_tsk_consequents_from_firing, rule_consequent_values, _mse
 
@@ -222,10 +222,7 @@ def refine_gt2_antecedents(
                 penalty = l2_shrink * float(np.sum((v - x0) ** 2))
                 return loss + penalty
 
-            res = minimize(
-                fitness, x0, method="L-BFGS-B", bounds=bounds,
-                options={"maxfun": sub_maxfun, "maxiter": sub_maxfun},
-            )
+            res = _optimizers_sub_solve(fitness, x0, bounds)
 
             candidate = _replace_slot(
                 current, fname, label, idx,
@@ -431,10 +428,7 @@ def refine_gt2_regressor_antecedents(
                 trial = _replace_slot(current, fname, label, idx, new_gt2_mf)
                 return cv_fitness(trial)
 
-            res = minimize(
-                fitness, x0, method="L-BFGS-B", bounds=bounds,
-                options={"maxfun": sub_maxfun, "maxiter": sub_maxfun},
-            )
+            res = _optimizers_sub_solve(fitness, x0, bounds)
 
             candidate = _replace_slot(
                 current, fname, label, idx,

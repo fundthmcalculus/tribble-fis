@@ -30,11 +30,49 @@ from typing import Literal, Optional
 
 import numpy as np
 from scipy import signal, ndimage
-from scipy.optimize import minimize
 
 from .gauss_data import TrapezoidMembership, TriangularMembership
+from .optimizer_utils import optimizers_sub_solve
 
 Shape = Literal["trapezoid", "triangle"]
+
+
+def _solve_ordered_params(objective, x0: np.ndarray, data_min: float, data_max: float):
+    """Minimize `objective(params)` over `params` constrained to be
+    non-decreasing (``params[0] <= params[1] <= ... <= params[-1]``), each
+    within ``[data_min, data_max]``.
+
+    This used to be `scipy.optimize.minimize(method="SLSQP", constraints=...)`
+    with explicit ``a <= b <= c <= d``-style inequality constraints.
+    `optimizer_utils.optimizers_sub_solve`'s local search only supports box
+    bounds, not general inequality constraints, so the ordering is folded into
+    the parameterization instead: search over (first value, non-negative gaps
+    between consecutive values) rather than the ordered values directly, which
+    turns "non-decreasing" into plain per-gap box bounds. `to_ordered` also
+    clips the reconstructed values into ``[data_min, data_max]`` -- a clip is
+    monotonic, so it cannot undo the ordering the cumulative sum already
+    guarantees.
+
+    Returns ``(ordered_params, objective_value)``.
+    """
+    x0 = np.asarray(x0, dtype=float)
+    n = len(x0)
+    span = data_max - data_min if data_max > data_min else 1.0
+    gaps0 = np.clip(np.diff(x0), 0.0, span)
+    z0 = np.concatenate([[x0[0]], gaps0])
+
+    def to_ordered(z):
+        first = z[0]
+        gaps = np.clip(z[1:], 0.0, None)
+        raw = first + np.concatenate([[0.0], np.cumsum(gaps)])
+        return np.clip(raw, data_min, data_max)
+
+    def objective_z(z):
+        return objective(to_ordered(z))
+
+    bounds = [(data_min, data_max)] + [(0.0, span)] * (n - 1)
+    result = optimizers_sub_solve(objective_z, z0, bounds)
+    return to_ordered(result.x), float(result.fun)
 
 
 def trapz_pdf(x: np.ndarray, a: float, b: float, c: float, d: float) -> np.ndarray:
@@ -331,8 +369,9 @@ def _em_m_step_params(
 ) -> list[tuple[float, float, float, float]]:
     """M-step for trapezoid (or triangle) parameters using constrained optimization.
 
-    For each component k, minimize the negative weighted log-likelihood using
-    SLSQP. This is the one place shape actually changes what gets optimized:
+    For each component k, minimize the negative weighted log-likelihood via
+    `_solve_ordered_params`. This is the one place shape actually changes what
+    gets optimized:
     a trapezoid has 4 free parameters (independent [b,c] plateau); a triangle
     has 3 (the plateau is a single apex, optimized directly rather than fit
     as two independent shoulders and averaged afterwards). Either way the
@@ -362,7 +401,7 @@ def _em_m_step_params(
     for k in range(n_components):
         a_k, b_k, c_k, d_k = params_list[k]
         # Per-bin coefficient c_i = responsibility * count, precomputed once so the
-        # SLSQP objective (called many times per iteration) is a single vectorized pass.
+        # objective (called many times per iteration) is a single vectorized pass.
         coeff_k = responsibilities[:, k] * bin_counts
 
         if shape == "triangle":
@@ -371,30 +410,10 @@ def _em_m_step_params(
                 pdf_vals = np.maximum(trapz_pdf(bin_centers, a, apex, apex, d), 1e-10)
                 return -np.dot(_coeff, np.log(pdf_vals))
 
-            # Constraints: a <= apex <= d (with analytic linear Jacobians)
-            constraints = [
-                {'type': 'ineq', 'fun': lambda p: p[1] - p[0],
-                 'jac': lambda p: np.array([-1.0, 1.0, 0.0])},  # apex >= a
-                {'type': 'ineq', 'fun': lambda p: p[2] - p[1],
-                 'jac': lambda p: np.array([0.0, -1.0, 1.0])},  # d >= apex
-            ]
-
-            bounds = [(data_min, data_max)] * 3
-            x0 = [a_k, b_k, d_k]  # b_k == c_k already, one apex value
-
-            result = minimize(
-                objective,
-                x0,
-                method='SLSQP',
-                bounds=bounds,
-                constraints=constraints,
-                options={'ftol': 1e-9, 'maxiter': 100}
-            )
-
-            if result.success and result.x is not None:
-                a_new, apex_new, d_new = result.x
-            else:
-                a_new, apex_new, d_new = x0
+            x0 = np.array([a_k, b_k, d_k])  # b_k == c_k already, one apex value
+            init_obj = objective(x0)
+            solved, solved_obj = _solve_ordered_params(objective, x0, data_min, data_max)
+            a_new, apex_new, d_new = solved if solved_obj <= init_obj else x0
 
             new_params.append((a_new, apex_new, apex_new, d_new))
             continue
@@ -404,36 +423,16 @@ def _em_m_step_params(
             pdf_vals = np.maximum(trapz_pdf(bin_centers, a, b, c, d), 1e-10)
             return -np.dot(_coeff, np.log(pdf_vals))
 
-        # Constraints: a <= b <= c <= d (with analytic linear Jacobians)
-        constraints = [
-            {'type': 'ineq', 'fun': lambda p: p[1] - p[0],
-             'jac': lambda p: np.array([-1.0, 1.0, 0.0, 0.0])},  # b >= a
-            {'type': 'ineq', 'fun': lambda p: p[2] - p[1],
-             'jac': lambda p: np.array([0.0, -1.0, 1.0, 0.0])},  # c >= b
-            {'type': 'ineq', 'fun': lambda p: p[3] - p[2],
-             'jac': lambda p: np.array([0.0, 0.0, -1.0, 1.0])},  # d >= c
-        ]
-
-        # Bounds: all parameters within data range
-        bounds = [(data_min, data_max)] * 4
-
         # Initial guess
-        x0 = [a_k, b_k, c_k, d_k]
+        x0 = np.array([a_k, b_k, c_k, d_k])
 
-        # Optimize
-        result = minimize(
-            objective,
-            x0,
-            method='SLSQP',
-            bounds=bounds,
-            constraints=constraints,
-            options={'ftol': 1e-9, 'maxiter': 100}
-        )
-
-        if result.success and result.x is not None:
-            a_new, b_new, c_new, d_new = result.x
-        else:
-            a_new, b_new, c_new, d_new = x0
+        # Optimize: a <= b <= c <= d is enforced by `_solve_ordered_params`'s
+        # gap reparametrization rather than explicit inequality constraints
+        # (see that function's docstring -- this used to be
+        # scipy.optimize.minimize(method="SLSQP", constraints=[...])).
+        init_obj = objective(x0)
+        solved, solved_obj = _solve_ordered_params(objective, x0, data_min, data_max)
+        a_new, b_new, c_new, d_new = solved if solved_obj <= init_obj else x0
 
         new_params.append((a_new, b_new, c_new, d_new))
 
