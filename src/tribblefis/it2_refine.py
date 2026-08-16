@@ -40,28 +40,75 @@ import pandas as pd
 from scipy.optimize import minimize
 
 from .gauss_data import (
-    IT2GaussianMixtureModel, IT2FeatureModel, IT2LabelModel,
+    IT2GaussianMixtureModel, IT2FeatureModel, IT2LabelModel, IT2GaussianMembership,
     GaussianMembership, NormPair,
 )
 from .it2_kernel import it2_firing_strengths
 
 
 def _iter_it2_gaussian_slots(model: IT2GaussianMixtureModel):
-    """Yield ``(feature_name, label, mf_index, is_upper, GaussianMembership)``
-    for every Gaussian sub-membership -- both halves of every IT2 membership --
-    in a deterministic order.
+    """Yield ``(feature_name, label, mf_index, IT2GaussianMembership)`` for
+    every IT2 Gaussian membership (both the upper and lower half together) in
+    a deterministic order.
 
     Non-Gaussian IT2 memberships (trapezoid, triangular) are skipped: this
     module refines only Gaussian antecedents, matching `IT2_GUIDE.md`'s
     documented scope ("Gaussian memberships only" in v1).
+
+    **Why one slot per membership, not one per half.** An earlier version of
+    this module optimized `upper_mf` and `lower_mf` as fully independent
+    two-parameter slots. Nothing then stopped the search from moving them
+    past each other -- e.g. widening `lower_mf` past `upper_mf` -- which
+    breaks the one invariant every caller of this module's output relies on:
+    `firing_lower <= firing_upper` pointwise (asserted by
+    `it2_kernel.it2_firing_strengths`'s callers and, concretely, required by
+    `karnik_mendel_tsk`, which can return `y_l > y_r` -- observed on a real
+    fit -- if fed a firing interval that's inverted). The fix keeps `mu`
+    *shared* between the two halves and searches
+    `(mu, sigma_lower, sigma_upper)` together per membership with
+    `sigma_upper >= sigma_lower` enforced by construction (see
+    `_apply_slot_params`) -- for two Gaussians sharing a peak, the wider one
+    dominates the narrower one at every point, which is exactly the
+    "footprint of uncertainty" shape `it2_classifier`/`it2_regressor`'s own
+    conversion already builds new memberships in (same `mu`, upper sigma
+    wider) at `fit()` time.
     """
     for fname, fmodel in model.feature_models.items():
         for label, lmodel in fmodel.label_models.items():
             for idx, it2_mf in enumerate(lmodel.memberships):
-                if isinstance(it2_mf.upper_mf, GaussianMembership):
-                    yield fname, label, idx, True, it2_mf.upper_mf
-                if isinstance(it2_mf.lower_mf, GaussianMembership):
-                    yield fname, label, idx, False, it2_mf.lower_mf
+                if isinstance(it2_mf.upper_mf, GaussianMembership) and isinstance(it2_mf.lower_mf, GaussianMembership):
+                    yield fname, label, idx, it2_mf
+
+
+def _slot_x0_and_bounds(it2_mf, lo: float, hi: float, rng: float, sigma_min_frac: float):
+    """Initial `(mu, sigma_lower, sigma_upper)` and box bounds for one slot.
+
+    `mu` starts at the upper half's center (the two halves share one `mu` at
+    conversion time; if a caller ever hands in a model where they've
+    diverged, the upper half's is kept as the anchor since it is the one that
+    determines the footprint's outer edge).
+    """
+    mu0 = it2_mf.upper_mf.mu
+    sigma_lower0 = min(it2_mf.lower_mf.sigma, it2_mf.upper_mf.sigma)
+    sigma_upper0 = max(it2_mf.lower_mf.sigma, it2_mf.upper_mf.sigma)
+    x0 = np.array([mu0, sigma_lower0, sigma_upper0])
+    sigma_lo = sigma_min_frac * rng
+    bounds = [(lo, hi), (sigma_lo, rng), (sigma_lo, 2.0 * rng)]
+    return x0, bounds
+
+
+def _apply_slot_params(v: np.ndarray, upper_id, lower_id) -> IT2GaussianMembership:
+    """Build a fresh `IT2GaussianMembership` from `(mu, sigma_lower, sigma_upper)`,
+    clamping `sigma_upper >= sigma_lower` so the invariant `_iter_it2_gaussian_slots`
+    documents cannot be violated regardless of what the optimizer proposes.
+    """
+    mu = float(v[0])
+    sigma_lower = max(float(v[1]), 1e-6)
+    sigma_upper = max(float(v[2]), sigma_lower)
+    return IT2GaussianMembership(
+        upper_mf=GaussianMembership(mu=mu, sigma=sigma_upper, id=upper_id),
+        lower_mf=GaussianMembership(mu=mu, sigma=sigma_lower, id=lower_id),
+    )
 
 
 def _replace_slot(
@@ -69,10 +116,9 @@ def _replace_slot(
     fname: str,
     label: int,
     idx: int,
-    is_upper: bool,
-    new_mf: GaussianMembership,
+    new_it2_mf: IT2GaussianMembership,
 ) -> IT2GaussianMixtureModel:
-    """Return a copy of `model` with one Gaussian sub-membership replaced.
+    """Return a copy of `model` with one IT2 Gaussian membership replaced.
 
     Every container here (`IT2GaussianMixtureModel`, `IT2FeatureModel`,
     `IT2LabelModel`, `IT2GaussianMembership`) is an immutable `NamedTuple`, so
@@ -84,8 +130,7 @@ def _replace_slot(
     fmodel = model.feature_models[fname]
     lmodel = fmodel.label_models[label]
     memberships = list(lmodel.memberships)
-    old_mf = memberships[idx]
-    memberships[idx] = old_mf._replace(upper_mf=new_mf) if is_upper else old_mf._replace(lower_mf=new_mf)
+    memberships[idx] = new_it2_mf
 
     new_label_models = dict(fmodel.label_models)
     new_label_models[label] = IT2LabelModel(memberships)
@@ -190,7 +235,8 @@ def refine_it2_antecedents(
         The best model found, which is never worse (on training cross-entropy)
         than `it2_model` itself -- a sweep's candidate is adopted only on a
         strict improvement, so an unlucky search simply returns the input
-        model unchanged.
+        model unchanged. `firing_lower <= firing_upper` is preserved by
+        construction (see `_iter_it2_gaussian_slots`).
     """
     if method in (None, "none"):
         return it2_model
@@ -205,7 +251,7 @@ def refine_it2_antecedents(
         return it2_model
 
     # Per-feature (mu, sigma) box bounds from the observed data range, shared by
-    # every Gaussian half on that feature -- mirrors `refine.py`'s
+    # every IT2 membership on that feature -- mirrors `refine.py`'s
     # `build_param_bounds`.
     feature_bounds: dict[str, tuple[float, float, float]] = {}
     for fname in {s[0] for s in slots}:
@@ -221,32 +267,28 @@ def refine_it2_antecedents(
 
     if verbose:
         print(f"\nIT2 coordinate-descent antecedent refinement: {len(slots)} Gaussian "
-              f"halves, init loss={init_loss:.4f}")
+              f"memberships, init loss={init_loss:.4f}")
 
     for sweep in range(n_sweeps):
         sweep_start_loss = best_loss
-        for fname, label, idx, is_upper, mf in _iter_it2_gaussian_slots(current):
+        for fname, label, idx, it2_mf in _iter_it2_gaussian_slots(current):
             lo, hi, rng = feature_bounds[fname]
-            sigma_lo, sigma_hi = sigma_min_frac * rng, rng
-            anchor_mu, anchor_sigma = mf.mu, mf.sigma
-            mf_id = mf.id
+            x0, bounds = _slot_x0_and_bounds(it2_mf, lo, hi, rng, sigma_min_frac)
+            upper_id, lower_id = it2_mf.upper_mf.id, it2_mf.lower_mf.id
 
-            def fitness(v, fname=fname, label=label, idx=idx, is_upper=is_upper, mf_id=mf_id,
-                        anchor_mu=anchor_mu, anchor_sigma=anchor_sigma):
-                new_mf = GaussianMembership(mu=float(v[0]), sigma=max(float(v[1]), 1e-6), id=mf_id)
-                trial = _replace_slot(current, fname, label, idx, is_upper, new_mf)
+            def fitness(v, fname=fname, label=label, idx=idx, upper_id=upper_id, lower_id=lower_id, x0=x0):
+                new_it2_mf = _apply_slot_params(v, upper_id, lower_id)
+                trial = _replace_slot(current, fname, label, idx, new_it2_mf)
                 loss = _cross_entropy_loss(trial, X, y_idx, norms, km_iterations)
-                penalty = l2_shrink * ((v[0] - anchor_mu) ** 2 + (v[1] - anchor_sigma) ** 2)
+                penalty = l2_shrink * float(np.sum((v - x0) ** 2))
                 return loss + penalty
 
             res = minimize(
-                fitness, np.array([anchor_mu, anchor_sigma]), method="L-BFGS-B",
-                bounds=[(lo, hi), (sigma_lo, sigma_hi)],
+                fitness, x0, method="L-BFGS-B", bounds=bounds,
                 options={"maxfun": sub_maxfun, "maxiter": sub_maxfun},
             )
 
-            new_mf = GaussianMembership(mu=float(res.x[0]), sigma=max(float(res.x[1]), 1e-6), id=mf_id)
-            candidate = _replace_slot(current, fname, label, idx, is_upper, new_mf)
+            candidate = _replace_slot(current, fname, label, idx, _apply_slot_params(res.x, upper_id, lower_id))
             candidate_loss = _cross_entropy_loss(candidate, X, y_idx, norms, km_iterations)
             if candidate_loss < best_loss - 1e-12:
                 current = candidate

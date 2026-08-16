@@ -13,6 +13,7 @@ import pytest
 from sklearn.datasets import make_classification
 
 from tribblefis.it2_classifier import T2TribbleClassifier
+from tribblefis.it2_kernel import it2_firing_strengths
 from tribblefis.it2_refine import (
     _cross_entropy_loss,
     _iter_it2_gaussian_slots,
@@ -61,11 +62,39 @@ def test_refine_it2_antecedents_actually_changes_parameters(synthetic_classifica
         X, y_idx, clf.model_, norms, n_sweeps=3, sub_maxfun=15, km_iterations=10, verbose=False,
     )
 
-    before = np.array([mf.mu for *_, mf in _iter_it2_gaussian_slots(clf.model_)]
-                       + [mf.sigma for *_, mf in _iter_it2_gaussian_slots(clf.model_)])
-    after = np.array([mf.mu for *_, mf in _iter_it2_gaussian_slots(refined)]
-                      + [mf.sigma for *_, mf in _iter_it2_gaussian_slots(refined)])
+    def _flat_params(model):
+        params = []
+        for *_, it2_mf in _iter_it2_gaussian_slots(model):
+            params.extend([it2_mf.upper_mf.mu, it2_mf.upper_mf.sigma,
+                           it2_mf.lower_mf.mu, it2_mf.lower_mf.sigma])
+        return np.array(params)
+
+    before = _flat_params(clf.model_)
+    after = _flat_params(refined)
     assert not np.allclose(before, after), "refinement left every antecedent parameter unchanged"
+
+
+def test_refine_it2_antecedents_preserves_lower_le_upper_invariant(synthetic_classification_data):
+    """A prior version of this refiner optimized each IT2 membership's upper
+    and lower Gaussian halves as fully independent parameters, which let the
+    search push the lower (nominally narrower/more restrictive) half past the
+    upper (nominally wider) half at some points -- breaking the invariant
+    every downstream consumer of `firing_upper`/`firing_lower` relies on, and
+    concretely producing an inverted (`y_l > y_r`) Karnik-Mendel output on a
+    real regression fit. `mu` is now shared and `sigma_upper >= sigma_lower`
+    is enforced by construction (see `it2_refine._iter_it2_gaussian_slots`)."""
+    X, y = synthetic_classification_data
+    clf = T2TribbleClassifier(top_n=3, uncertainty_width=0.5, km_iterations=10, random_state=0)
+    clf.fit(X, y)
+    norms = clf.norms_
+    y_idx = np.searchsorted(clf.classes_, y)
+
+    refined = refine_it2_antecedents(
+        X, y_idx, clf.model_, norms, n_sweeps=3, sub_maxfun=15, km_iterations=10, verbose=False,
+    )
+
+    firing_upper, firing_lower, _, _ = it2_firing_strengths(X, refined, norms, km_iterations=None)
+    assert np.all(firing_lower <= firing_upper + 1e-9)
 
 
 def test_refine_it2_antecedents_method_none_is_identity(synthetic_classification_data):
