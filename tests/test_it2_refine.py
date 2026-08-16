@@ -4,7 +4,7 @@ Previously `it2_refine.refine_it2_antecedents` was unreachable dead code: its
 gradient computation was a stub that always returned `0.001` regardless of
 input (see the module's git history), so no parameter it touched could ever
 move. These tests exercise the real coordinate-descent replacement and the
-`T2TribbleClassifier.refine_it2` option that now wires it in.
+`IT2TribbleClassifier.refine_it2` option that now wires it in.
 """
 
 import numpy as np
@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 from sklearn.datasets import make_classification
 
-from tribblefis.it2_classifier import T2TribbleClassifier
+from tribblefis.it2_classifier import IT2TribbleClassifier
 from tribblefis.it2_kernel import it2_firing_strengths
 from tribblefis.it2_refine import (
     _cross_entropy_loss,
@@ -34,7 +34,7 @@ def synthetic_classification_data():
 
 def test_refine_it2_antecedents_never_increases_training_loss(synthetic_classification_data):
     X, y = synthetic_classification_data
-    clf = T2TribbleClassifier(top_n=3, uncertainty_width=0.5, km_iterations=10, random_state=0)
+    clf = IT2TribbleClassifier(top_n=3, uncertainty_width=0.5, km_iterations=10, random_state=0)
     clf.fit(X, y)
 
     norms = clf.norms_
@@ -53,7 +53,7 @@ def test_refine_it2_antecedents_actually_changes_parameters(synthetic_classifica
     """Guards against a silent no-op regression: the whole point of fixing the
     stubbed gradient is that refinement can move parameters at all."""
     X, y = synthetic_classification_data
-    clf = T2TribbleClassifier(top_n=3, uncertainty_width=0.5, km_iterations=10, random_state=0)
+    clf = IT2TribbleClassifier(top_n=3, uncertainty_width=0.5, km_iterations=10, random_state=0)
     clf.fit(X, y)
     norms = clf.norms_
     y_idx = np.searchsorted(clf.classes_, y)
@@ -84,7 +84,7 @@ def test_refine_it2_antecedents_preserves_lower_le_upper_invariant(synthetic_cla
     real regression fit. `mu` is now shared and `sigma_upper >= sigma_lower`
     is enforced by construction (see `it2_refine._iter_it2_gaussian_slots`)."""
     X, y = synthetic_classification_data
-    clf = T2TribbleClassifier(top_n=3, uncertainty_width=0.5, km_iterations=10, random_state=0)
+    clf = IT2TribbleClassifier(top_n=3, uncertainty_width=0.5, km_iterations=10, random_state=0)
     clf.fit(X, y)
     norms = clf.norms_
     y_idx = np.searchsorted(clf.classes_, y)
@@ -99,7 +99,7 @@ def test_refine_it2_antecedents_preserves_lower_le_upper_invariant(synthetic_cla
 
 def test_refine_it2_antecedents_method_none_is_identity(synthetic_classification_data):
     X, y = synthetic_classification_data
-    clf = T2TribbleClassifier(top_n=3, random_state=0)
+    clf = IT2TribbleClassifier(top_n=3, random_state=0)
     clf.fit(X, y)
     y_idx = np.searchsorted(clf.classes_, y)
 
@@ -109,7 +109,7 @@ def test_refine_it2_antecedents_method_none_is_identity(synthetic_classification
 
 def test_refine_it2_antecedents_rejects_unknown_method(synthetic_classification_data):
     X, y = synthetic_classification_data
-    clf = T2TribbleClassifier(top_n=3, random_state=0)
+    clf = IT2TribbleClassifier(top_n=3, random_state=0)
     clf.fit(X, y)
     y_idx = np.searchsorted(clf.classes_, y)
 
@@ -119,7 +119,7 @@ def test_refine_it2_antecedents_rejects_unknown_method(synthetic_classification_
 
 def test_classifier_refine_it2_option_fits_and_predicts(synthetic_classification_data):
     X, y = synthetic_classification_data
-    clf = T2TribbleClassifier(
+    clf = IT2TribbleClassifier(
         top_n=3, uncertainty_width=0.5, km_iterations=10, random_state=0,
         refine_it2=True, refine_it2_n_sweeps=2,
     )
@@ -135,13 +135,13 @@ def test_classifier_refine_it2_does_not_worsen_training_accuracy_much(synthetic_
     make the model dramatically worse either."""
     X, y = synthetic_classification_data
 
-    baseline = T2TribbleClassifier(
+    baseline = IT2TribbleClassifier(
         top_n=3, uncertainty_width=0.5, km_iterations=10, random_state=0, refine_it2=False,
     )
     baseline.fit(X, y)
     baseline_acc = np.mean(baseline.predict(X) == y)
 
-    refined_clf = T2TribbleClassifier(
+    refined_clf = IT2TribbleClassifier(
         top_n=3, uncertainty_width=0.5, km_iterations=10, random_state=0,
         refine_it2=True, refine_it2_n_sweeps=3,
     )

@@ -1,5 +1,10 @@
 # Should this library extend to general type-2 (GT2) fuzzy inference?
 
+> **Status: implemented.** This spike's phased plan has been carried out --
+> see `GT2_GUIDE.md` for the resulting `GT2TribbleClassifier`/
+> `GT2TribbleRegressor`, `gt2_kernel.py`, and `gt2_refine.py`. The analysis
+> below is kept as the design record; it is no longer speculative.
+
 **Answer: go, as an opt-in extension of the existing IT2 architecture, not a
 parallel system.** The standard alpha-plane decomposition (Mendel, Liu 2008)
 reuses `it2_kernel.karnik_mendel_tsk` and `it2_firing_strengths` completely

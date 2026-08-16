@@ -30,7 +30,7 @@ import time
 import numpy as np
 
 from tribblefis.gauss_data import resolve_norm_pair
-from tribblefis.it2_classifier import T2TribbleClassifier
+from tribblefis.it2_classifier import IT2TribbleClassifier
 from tribblefis.it2_kernel import it2_firing_strengths, karnik_mendel_tsk
 
 from .workloads import make_dataset, make_model
@@ -53,7 +53,7 @@ def _forward_pass_multiplier(n_samples: int, n_features: int, n_labels: int,
     alpha-plane, on the same shape as the `forward-large` benchmark workload."""
     X, _ = make_dataset(n_samples, n_features, n_labels, seed=0)
     model = make_model(n_features, n_labels, n_mf, seed=0)
-    it2_model = T2TribbleClassifier()._convert_to_it2(model)
+    it2_model = IT2TribbleClassifier()._convert_to_it2(model)
     norms = resolve_norm_pair("min/max")
 
     def one_plane():

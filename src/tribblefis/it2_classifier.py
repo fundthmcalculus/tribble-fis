@@ -20,7 +20,7 @@ from .it2_kernel import it2_firing_strengths
 from .it2_refine import refine_it2_antecedents
 
 
-class T2TribbleClassifier(BaseEstimator, ClassifierMixin):
+class IT2TribbleClassifier(BaseEstimator, ClassifierMixin):
     """Interval Type-2 Fuzzy classifier with automatic uncertainty quantification.
 
     Converts a Type-1 TSK classifier to IT2 by creating upper and lower bound
@@ -148,7 +148,7 @@ class T2TribbleClassifier(BaseEstimator, ClassifierMixin):
 
         Returns
         -------
-        self : T2TribbleClassifier
+        self : IT2TribbleClassifier
             Fitted estimator.
         """
         X, y = check_X_y(X, y, accept_sparse=False, dtype=None)
