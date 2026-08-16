@@ -9,7 +9,7 @@ The IT2-FIS implementation provides a production-ready interval type-2 fuzzy inf
 ### Classification
 
 ```python
-from tribblefis.it2_classifier import IntervalType2FuzzyClassifier
+from tribblefis.it2_classifier import T2TribbleClassifier
 import pandas as pd
 import numpy as np
 
@@ -18,7 +18,7 @@ X_train = pd.DataFrame({'feature1': [...], 'feature2': [...]})
 y_train = np.array([0, 1, 2, ...])
 
 # Create and fit classifier
-clf = IntervalType2FuzzyClassifier(
+clf = T2TribbleClassifier(
     top_n=3,                       # Use top 3 features
     member_function="gaussian",     # "gaussian", "trap", or "triangular"
     uncertainty_width=0.5,          # Expand bounds by 0.5 * sigma
@@ -66,7 +66,7 @@ y_lower, y_upper = reg.predict_intervals(X_test)
 The IT2-FIS supports Gaussian membership functions. This is the standard and recommended choice for most applications.
 
 ```python
-clf = IntervalType2FuzzyClassifier(uncertainty_width=0.5)
+clf = T2TribbleClassifier(uncertainty_width=0.5)
 ```
 
 **Uncertainty expansion**: For a learned Gaussian (μ, σ), the IT2-FIS creates upper and lower bounds:
@@ -293,7 +293,7 @@ Post-fit IT2 antecedent refinement (`refine_it2_antecedents`, `refine_it2`):
 - Refinement actually moves antecedent parameters (guards against the previous
   always-`0.001`-gradient stub silently doing nothing)
 - `method="none"` is an identity no-op; an unknown method raises
-- The `IntervalType2FuzzyClassifier(refine_it2=True)` option fits, predicts, and
+- The `T2TribbleClassifier(refine_it2=True)` option fits, predicts, and
   doesn't materially hurt training accuracy
 
 ## Advanced Usage Examples
