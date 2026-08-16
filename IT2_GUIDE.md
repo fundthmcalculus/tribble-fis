@@ -372,17 +372,25 @@ print(f"Average interval width: {interval_width.mean():.3f}")
 
 ### 🔮 Future Extensions
 
-1. **Norm Families**: Add all 5 families (probability is currently only option)
-2. **GPU Acceleration**: PyTorch backend for large-scale models
-3. **Hierarchical IT2**: IT2 fuzzy trees (leverage `tribble-tree`)
-4. **`optimizers`-based sub-problem solves**: replace the `scipy.optimize.minimize`
-   (L-BFGS-B) calls in `it2_refine.py`'s (and `refine.py`'s) coordinate descent with the
-   project's own `optimizers` package, to drop the `scipy` dependency (tracked upstream)
-5. **Large-Scale Optimization**: Evolutionary algorithms for IT2 learning
-6. **EIASC and other KM variants**: `karnik_mendel_tsk` implements the classic
+1. **GPU Acceleration**: PyTorch backend for large-scale models. Not just an
+   IT2 gap -- IT2/GT2 call the plain-numpy `tsk_firing_strengths`, not the
+   GPU-capable `kernel.firing_strengths` path `TribbleClassifier`/
+   `TribbleRegressor` already use. See issue #146.
+2. **Hierarchical IT2**: IT2 fuzzy trees (leverage `tribble-tree`).
+   `tribble-tree` is Type-1 only today; this needs a design pass on how an
+   IT2 footprint attaches to a tree leaf/gate before any implementation.
+   See issue #147.
+3. **Large-Scale Optimization**: Evolutionary algorithms for IT2 learning
+4. **EIASC and other KM variants**: `karnik_mendel_tsk` implements the classic
    Karnik-Mendel switch-point search; faster variants (EIASC, Wu-Mendel closed forms)
    remain a possible follow-up, though with the small rule counts typical here (a
    handful of output buckets) the classic search already converges in a few iterations
+
+Done, despite once being listed here: all 5 norm families (`min/max`,
+`probability`, `luk`, `hamacher`, `einstein`) already work -- IT2/GT2 route
+through the shared Type-1 kernel path, which has always supported them. The
+`scipy.optimize` → `optimizers` package swap is also done (#119/#134/#136);
+no `src/tribblefis` module imports `scipy.optimize` directly anymore.
 
 ## Performance Notes
 
