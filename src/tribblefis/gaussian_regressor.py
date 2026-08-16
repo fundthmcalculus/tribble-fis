@@ -45,6 +45,8 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         t_norm=None,
         t_conorm=None,
         allow_mixed_norms=False,
+        member_function="gaussian",
+        trapz_method="fast",
         random_state=42,
         max_samples=None,
         detect_interactions=False,
@@ -90,6 +92,11 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                 De Morgan-consistent.
             allow_mixed_norms: Advanced. Required to opt in to a t-norm and t-conorm
                 from different families, which are not De Morgan duals.
+            member_function: "gaussian" (default), "trap" (EM or histogram-fit
+                trapezoid), or "triangular" (special case of trap) -- same
+                semantics as `TribbleClassifier`'s parameter of the same name.
+            trapz_method: "fast" (histogram-based) or "em" (EM algorithm).
+                Ignored for "triangular" and "gaussian".
             random_state: Seed for reproducibility.
             max_samples: Cap on the rows used per (feature, label-bucket) when
                 fitting Gaussian memberships. ``None`` -- the default -- uses
@@ -151,6 +158,8 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self.t_norm = t_norm
         self.t_conorm = t_conorm
         self.allow_mixed_norms = allow_mixed_norms
+        self.member_function = member_function
+        self.trapz_method = trapz_method
         self.random_state = random_state
         self.max_samples = max_samples
         self.detect_interactions = detect_interactions
@@ -260,11 +269,35 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                     stacklevel=2,
                 )
 
-        # Create Gaussian membership model
-        self.model_ = create_gaussian_membership_dict(
-            X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians,
-            max_samples=self.max_samples, random_state=self.random_state,
-        )
+        # Create membership model (Gaussian, trapezoid, or triangular)
+        if self.member_function == "gaussian":
+            self.model_ = create_gaussian_membership_dict(
+                X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians,
+                max_samples=self.max_samples, random_state=self.random_state,
+            )
+        elif self.member_function == "trap":
+            if self.trapz_method == "fast":
+                from .trapz_math_fast import create_trapz_membership_dict_fast
+                self.model_ = create_trapz_membership_dict_fast(
+                    X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_
+                )
+            elif self.trapz_method == "em":
+                from .trapz_math import create_trapz_membership_dict
+                self.model_ = create_trapz_membership_dict(
+                    X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_, n_trapezoids=self.n_gaussians,
+                    max_samples=self.max_samples, random_state=self.random_state,
+                )
+            else:
+                raise ValueError(f"Unknown trapz_method: {self.trapz_method}")
+        elif self.member_function == "triangular":
+            # Triangle is degenerate trapezoid; reuse EM code with shape="triangle".
+            from .trapz_math import create_trapz_membership_dict
+            self.model_ = create_trapz_membership_dict(
+                X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_, n_trapezoids=self.n_gaussians,
+                max_samples=self.max_samples, random_state=self.random_state, shape="triangle",
+            )
+        else:
+            raise ValueError(f"Unknown member_function: {self.member_function}")
 
         self.n_rules_ = self.model_.n_rules
 
