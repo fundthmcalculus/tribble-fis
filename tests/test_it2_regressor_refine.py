@@ -17,7 +17,7 @@ import pytest
 
 from tribblefis.it2_kernel import it2_firing_strengths
 from tribblefis.it2_refine import refine_it2_regressor_antecedents
-from tribblefis.it2_regressor import IntervalType2FuzzyRegressor
+from tribblefis.it2_regressor import T2TribbleRegressor
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def synthetic_regression_data():
     rng = np.random.default_rng(42)
     x = np.linspace(-2, 2, 150)
     y = np.sin(3 * x) + 0.05 * rng.standard_normal(len(x))
-    # Column name "x0" matches what `IntervalType2FuzzyRegressor.fit` renames a
+    # Column name "x0" matches what `T2TribbleRegressor.fit` renames a
     # single-feature input to internally (`check_X_y` drops the original "x"),
     # so `reg._base_regressor.top_features_` lines up with `X`'s own columns
     # when tests call `refine_it2_regressor_antecedents` directly.
@@ -33,7 +33,7 @@ def synthetic_regression_data():
 
 
 def _fitted_it2_regressor(X, y, **kwargs):
-    reg = IntervalType2FuzzyRegressor(
+    reg = T2TribbleRegressor(
         top_n=1, n_gaussians=2, n_output_buckets=3, uncertainty_width=0.5,
         km_iterations=10, random_state=42, **kwargs,
     )
@@ -102,7 +102,7 @@ def test_refine_it2_regressor_antecedents_rejects_unknown_method(synthetic_regre
 
 
 def test_regressor_refine_it2_option_fits_and_predicts_with_containment(synthetic_regression_data):
-    """End-to-end: `IntervalType2FuzzyRegressor(refine_it2=True)` fits, and
+    """End-to-end: `T2TribbleRegressor(refine_it2=True)` fits, and
     `predict()`'s point estimate stays inside `predict_intervals()`'s bounds
     -- the property that a real fit violated before the invariant fix, because
     an inverted firing interval flows straight into `karnik_mendel_tsk` as

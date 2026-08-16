@@ -156,7 +156,7 @@ Type-1 classifier). A candidate replaces the running best only on a strict
 training-loss improvement, so refinement never returns a model worse than its
 starting point.
 
-**Regressor** (`IntervalType2FuzzyRegressor.refine_it2`,
+**Regressor** (`T2TribbleRegressor.refine_it2`,
 `it2_refine.refine_it2_regressor_antecedents`): the same coordinate descent,
 but a regressor's antecedents are only ever meaningful alongside consequents
 solved *for* them, so every candidate evaluated during the search re-solves
@@ -320,7 +320,7 @@ re-solving (`refine_it2_regressor_antecedents`, `refine_it2`):
 - Refinement preserves `firing_lower <= firing_upper`
 - `method="none"` still re-solves consequents for the (unchanged) antecedents
   rather than returning stale ones; an unknown method raises
-- The `IntervalType2FuzzyRegressor(refine_it2=True)` option fits and predicts
+- The `T2TribbleRegressor(refine_it2=True)` option fits and predicts
   with the containment guarantee (`y_lower <= predict() <= y_upper`) intact,
   and doesn't drastically worsen RMSE
 
