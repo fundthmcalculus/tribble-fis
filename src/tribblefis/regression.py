@@ -7,12 +7,12 @@ import pandas as pd
 from itertools import combinations
 from matplotlib import pyplot as plt
 from numpy import ndarray
-from scipy.optimize import minimize
 
 from tribblefis.gauss_data import GaussianMixtureModel
 from tribblefis.gauss_data import NormPair
 from tribblefis.gauss_data import ZERO_FIRING_THRESHOLD
 from tribblefis.gauss_math import tsk_firing_strengths
+from tribblefis.optimizer_utils import optimizers_sub_solve
 
 
 def plot_tsk_order_comparison(
@@ -443,13 +443,21 @@ def optimize_tsk_coefficients(
         )
         return _mse(y_train["y_value"].values, y_pred) + _correction_penalty(coeffs_flat)
 
-    # Optimize using L-BFGS-B
+    # Optimize via the in-house `optimizers` package instead of
+    # `scipy.optimize.minimize(method="L-BFGS-B")`. That scipy call ran
+    # unbounded (no `bounds` kwarg); `optimizers_sub_solve` needs a finite box,
+    # so use a generously wide one centered on 0 and scaled to the initial
+    # least-squares guess -- wide enough that the search is never the binding
+    # constraint on a well-conditioned problem, while still being finite.
     initial_obj = objective(initial_coeffs_flat)
-    result = minimize(objective, initial_coeffs_flat, method="L-BFGS-B", options={"maxiter": 1000})
+    coeff_scale = max(1.0, float(np.max(np.abs(initial_coeffs_flat))))
+    bound_width = 50.0 * coeff_scale
+    bounds = [(-bound_width, bound_width)] * len(initial_coeffs_flat)
+    result = optimizers_sub_solve(objective, initial_coeffs_flat, bounds)
 
     # Ill-conditioned problems (e.g. high-order trapezoid rules with sparse firing
-    # strengths) can leave L-BFGS-B at a point worse than where it started. Never
-    # return coefficients worse than the initial least-squares guess.
+    # strengths) can leave the optimizer at a point worse than where it started.
+    # Never return coefficients worse than the initial least-squares guess.
     if result.fun <= initial_obj:
         best_flat, best_obj = result.x, result.fun
     else:

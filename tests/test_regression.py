@@ -555,6 +555,18 @@ class TestAntecedentRefinement(unittest.TestCase):
         # Safeguard: never return worse than the heuristic start on the CV fitness.
         self.assertLessEqual(info["val_mse"], info["init_val_mse"] + 1e-9)
 
+    def test_de_refine_never_worsens_val(self):
+        """`refine_antecedents_de` now runs a GA via the in-house `optimizers`
+        package instead of `scipy.optimize.differential_evolution` -- still
+        must never return worse than the heuristic start on the CV fitness."""
+        from tribblefis.refine import refine_antecedents_de
+        X, y_part, model = self._make_model_and_data()
+        _, info = refine_antecedents_de(
+            model, X, y_part, self.TOP, n_output_buckets=self.N_BUCKETS,
+            order="2nd", l2_reg=1e-3, basis="raw", n_folds=3, maxiter=5, popsize=8,
+        )
+        self.assertLessEqual(info["val_mse"], info["init_val_mse"] + 1e-9)
+
     def test_coordinate_refine_never_worsens_val(self):
         from tribblefis.refine import refine_antecedents_coordinate
         X, y_part, model = self._make_model_and_data()
