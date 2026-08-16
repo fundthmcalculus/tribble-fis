@@ -28,16 +28,25 @@ knob that moved either metric by a meaningful amount was post-fit refinement
 
 ## Results
 
-Full sweep (42 fits) in `results/t1-it2-gt2-tradeoff.json`. The Pareto-optimal
-points (not dominated by any faster *and* more accurate point) per task:
+Full sweep (42 fits) in `results/t1-it2-gt2-tradeoff.json`. Best point per
+family per task (✓ = Pareto-optimal, i.e. not dominated by any faster *and*
+more accurate point across all four families):
 
-| task | family | config | fit time | performance |
-|---|---|---|---|---|
-| classification | GT2 | n_gaussians=1, K=5 | 26 ms | 0.907 acc |
-| classification | IT2 | n_gaussians=2 | 41 ms | 0.926 acc |
-| classification | IT2+refine | n_gaussians=2 | 3.38 s | 0.981 acc |
-| regression | T1 | n_gaussians=1 | 15 ms | 0.787 R² |
-| regression | IT2+refine | n_gaussians=2 | 35.3 s | 0.880 R² |
+| task | family | best config | fit time | performance | pareto |
+|---|---|---|---|---|---|
+| classification | T1 | n_gaussians=2 | 44 ms | 0.926 acc | |
+| classification | IT2 | n_gaussians=2 | 41 ms | 0.926 acc | ✓ |
+| classification | IT2+refine | n_gaussians=2 | 3.38 s | 0.981 acc | ✓ |
+| classification | GT2 | n_gaussians=2, K=5 | 43 ms | 0.926 acc | |
+| regression | T1 | n_gaussians=1 | 15 ms | 0.787 R² | ✓ |
+| regression | IT2 | n_gaussians=5 | 40 ms | 0.712 R² | |
+| regression | IT2+refine | n_gaussians=2 | 35.3 s | 0.880 R² | ✓ |
+| regression | GT2 | n_gaussians=2, K=5 | 22 ms | 0.768 R² | |
+
+T1 lands on the classification frontier's plateau but not the frontier
+itself: IT2 matches its accuracy 3 ms faster. On regression T1's
+`n_gaussians=1` point is Pareto-optimal outright -- the fastest fit in the
+entire sweep, and nothing untrained beats its R² for less time.
 
 Three findings:
 
