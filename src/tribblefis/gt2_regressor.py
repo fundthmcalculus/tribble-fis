@@ -7,13 +7,13 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils.validation import check_X_y, check_is_fitted
 
 from .gauss_data import (
-    GT2GaussianMembership,
     GT2FeatureModel,
     GT2LabelModel,
     GT2GaussianMixtureModel,
-    GaussianMembership,
     DefaultNormCornorm,
     resolve_norm_pair,
+    widen_membership,
+    to_gt2_membership,
 )
 from .gaussian_regressor import TribbleRegressor
 from .gt2_kernel import gt2_rule_firing, gt2_karnik_mendel_tsk, alpha_weighted_average
@@ -41,9 +41,9 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
 
     Parameters
     ----------
-    top_n, top_p, n_gaussians, n_output_buckets, norm_conorm, random_state,
-    max_samples : as in `IT2TribbleRegressor` -- the Type-1 base model this
-        converts is fit identically.
+    top_n, top_p, n_gaussians, n_output_buckets, norm_conorm, member_function,
+    trapz_method, random_state, max_samples : as in `IT2TribbleRegressor` --
+        the Type-1 base model this converts is fit identically.
 
     uncertainty_width : float, default=0.5
         Controls the footprint of uncertainty, exactly as in
@@ -116,6 +116,8 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
         n_alpha_planes=5,
         km_iterations=10,
         norm_conorm=DefaultNormCornorm,
+        member_function="gaussian",
+        trapz_method="fast",
         refine_gt2=False,
         refine_gt2_n_sweeps=3,
         refine_gt2_km_iterations=None,
@@ -134,6 +136,8 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
         self.n_alpha_planes = n_alpha_planes
         self.km_iterations = km_iterations
         self.norm_conorm = norm_conorm
+        self.member_function = member_function
+        self.trapz_method = trapz_method
         self.refine_gt2 = refine_gt2
         self.refine_gt2_n_sweeps = refine_gt2_n_sweeps
         self.refine_gt2_km_iterations = refine_gt2_km_iterations
@@ -204,6 +208,8 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
             n_gaussians=self.n_gaussians,
             n_output_buckets=self.n_output_buckets,
             norm_conorm=self.norm_conorm,
+            member_function=self.member_function,
+            trapz_method=self.trapz_method,
             random_state=self.random_state,
             max_samples=self.max_samples,
         )
@@ -340,7 +346,6 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
         """Convert a Type-1 model to GT2 -- identical to
         `GT2TribbleClassifier._convert_to_gt2` (see that method's docstring)."""
         feature_models = {}
-        min_sigma = 1e-4
 
         for feature_name, type1_feature_model in type1_model.feature_models.items():
             label_models = {}
@@ -348,31 +353,9 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
             for label, type1_label_model in type1_feature_model.label_models.items():
                 gt2_mfs = []
 
-                for gauss_mf in type1_label_model.memberships:
-                    base_sigma = max(gauss_mf.sigma, min_sigma)
-
-                    upper_mf = GaussianMembership(
-                        mu=gauss_mf.mu,
-                        sigma=base_sigma * (1.0 + self.uncertainty_width),
-                        id=gauss_mf.id,
-                    )
-                    lower_mf = GaussianMembership(
-                        mu=gauss_mf.mu,
-                        sigma=base_sigma * max(0.1, 1.0 - self.uncertainty_width),
-                        id=gauss_mf.id,
-                    )
-                    principal_mf = GaussianMembership(
-                        mu=gauss_mf.mu,
-                        sigma=base_sigma,
-                        id=gauss_mf.id,
-                    )
-
-                    gt2_mf = GT2GaussianMembership(
-                        upper_mf=upper_mf,
-                        lower_mf=lower_mf,
-                        principal_mf=principal_mf,
-                    )
-                    gt2_mfs.append(gt2_mf)
+                for mf in type1_label_model.memberships:
+                    upper_mf, lower_mf = widen_membership(mf, self.uncertainty_width)
+                    gt2_mfs.append(to_gt2_membership(upper_mf, lower_mf, principal_mf=mf))
 
                 label_models[label] = GT2LabelModel(gt2_mfs)
 

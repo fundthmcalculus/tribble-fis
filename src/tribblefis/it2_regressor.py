@@ -7,14 +7,14 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils.validation import check_X_y, check_is_fitted
 
 from .gauss_data import (
-    IT2GaussianMembership,
     IT2FeatureModel,
     IT2LabelModel,
     IT2GaussianMixtureModel,
-    GaussianMembership,
     DefaultNormCornorm,
     DefaultMemberFunction,
     resolve_norm_pair,
+    widen_membership,
+    to_it2_membership,
 )
 from .gaussian_regressor import TribbleRegressor
 from .it2_kernel import it2_firing_strengths, karnik_mendel_tsk
@@ -59,6 +59,15 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
 
     norm_conorm : str, default="probability"
         Fuzzy operator family: "min/max", "probability", "luk", "hamacher", "einstein".
+
+    member_function : str, default="gaussian"
+        Type-1 base membership shape: "gaussian", "trap", or "triangular" --
+        passed straight through to `TribbleRegressor`. IT2 conversion widens
+        whichever shape the base model was fit with (`gauss_data.widen_membership`).
+
+    trapz_method : str, default="fast"
+        "fast" (histogram-based) or "em" (EM algorithm). Ignored unless
+        `member_function="trap"`.
 
     refine_it2 : bool, default=False
         If True, refines the IT2 upper/lower Gaussian antecedents after
@@ -146,6 +155,8 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
         uncertainty_width=0.5,
         km_iterations=10,
         norm_conorm=DefaultNormCornorm,
+        member_function="gaussian",
+        trapz_method="fast",
         refine_it2=False,
         refine_it2_n_sweeps=3,
         refine_it2_km_iterations=None,
@@ -163,6 +174,8 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
         self.uncertainty_width = uncertainty_width
         self.km_iterations = km_iterations
         self.norm_conorm = norm_conorm
+        self.member_function = member_function
+        self.trapz_method = trapz_method
         self.refine_it2 = refine_it2
         self.refine_it2_n_sweeps = refine_it2_n_sweeps
         self.refine_it2_km_iterations = refine_it2_km_iterations
@@ -234,6 +247,8 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
             n_gaussians=self.n_gaussians,
             n_output_buckets=self.n_output_buckets,
             norm_conorm=self.norm_conorm,
+            member_function=self.member_function,
+            trapz_method=self.trapz_method,
             random_state=self.random_state,
             max_samples=self.max_samples,
         )
@@ -381,16 +396,11 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
         return y_lower, y_upper
 
     def _convert_to_it2(self, type1_model) -> IT2GaussianMixtureModel:
-        """Convert a Type-1 model to IT2.
-
-        For each Gaussian membership (mu, sigma), creates:
-            upper_mf: mu, sigma * (1 + uncertainty_width)  [wider, more permissive]
-            lower_mf: mu, sigma * (1 - uncertainty_width/2)  [narrower, more restrictive]
-
-        Ensures all sigmas are at least 1e-4 to avoid degenerate memberships.
-        """
+        """Convert a Type-1 model to IT2 by widening each membership's spread
+        into an upper/lower footprint of uncertainty (`gauss_data.widen_membership`),
+        holding its peak fixed -- works for any of the three membership types
+        `TribbleRegressor` can produce (Gaussian, trapezoid, triangular)."""
         feature_models = {}
-        min_sigma = 1e-4
 
         for feature_name, type1_feature_model in type1_model.feature_models.items():
             label_models = {}
@@ -398,29 +408,9 @@ class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
             for label, type1_label_model in type1_feature_model.label_models.items():
                 it2_mfs = []
 
-                for gauss_mf in type1_label_model.memberships:
-                    # Ensure base sigma is not zero or negligible
-                    base_sigma = max(gauss_mf.sigma, min_sigma)
-
-                    # Create upper and lower bounds by expanding/shrinking sigma
-                    # Upper: wider sigma (more permissive, fires more readily)
-                    # Lower: narrower sigma (more restrictive, fires less readily)
-                    upper_mf = GaussianMembership(
-                        mu=gauss_mf.mu,
-                        sigma=base_sigma * (1.0 + self.uncertainty_width),
-                        id=gauss_mf.id,
-                    )
-                    lower_mf = GaussianMembership(
-                        mu=gauss_mf.mu,
-                        sigma=base_sigma * max(0.1, 1.0 - self.uncertainty_width),
-                        id=gauss_mf.id,
-                    )
-
-                    it2_mf = IT2GaussianMembership(
-                        upper_mf=upper_mf,
-                        lower_mf=lower_mf,
-                    )
-                    it2_mfs.append(it2_mf)
+                for mf in type1_label_model.memberships:
+                    upper_mf, lower_mf = widen_membership(mf, self.uncertainty_width)
+                    it2_mfs.append(to_it2_membership(upper_mf, lower_mf))
 
                 label_models[label] = IT2LabelModel(it2_mfs)
 
