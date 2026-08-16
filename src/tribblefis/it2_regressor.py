@@ -16,11 +16,11 @@ from .gauss_data import (
     resolve_norm_pair,
 )
 from .gaussian_regressor import TribbleRegressor
-from .it2_kernel import it2_firing_strengths
-from .regression import apply_tsk_consequents
+from .it2_kernel import it2_firing_strengths, karnik_mendel_tsk
+from .regression import rule_consequent_values, _normalize_firing_strengths
 
 
-class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
+class T2TribbleRegressor(BaseEstimator, RegressorMixin):
     """Interval Type-2 Fuzzy regressor with uncertainty quantification.
 
     Converts a Type-1 TSK regressor to IT2 by creating upper and lower bound
@@ -118,7 +118,7 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
 
         Returns
         -------
-        self : IntervalType2FuzzyRegressor
+        self : T2TribbleRegressor
             Fitted estimator.
         """
         X, y = check_X_y(X, y, accept_sparse=False, dtype=None, multi_output=False)
@@ -156,10 +156,24 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
 
         return self
 
-    def predict(self, X):
-        """Predict target values using IT2 firing strengths with type reduction.
+    def _rule_bounds_and_values(self, X):
+        """Shared setup for `predict`/`predict_intervals`: each rule's raw firing
+        bounds (from the IT2 antecedents) and its own crisp consequent output
+        (from the base Type-1 regressor's fitted consequents), both keyed on the
+        same rule ordering."""
+        firing_upper, firing_lower, _, labels = it2_firing_strengths(
+            X, self.model_, self.norms_, km_iterations=None
+        )
+        base = self._base_regressor
+        rule_values = rule_consequent_values(
+            X, base.top_features_, labels, base.y_bucket_mean_, base.corr_terms_,
+            order=base.tsk_order, basis=base.consequent_basis, cross_pairs=base.cross_pairs_,
+        )
+        return firing_upper, firing_lower, rule_values
 
-        Returns crisp point estimates via Karnik-Mendel type reduction.
+    def predict(self, X):
+        """Predict target values via Karnik-Mendel type reduction of the type-2
+        TSK output.
 
         Parameters
         ----------
@@ -179,42 +193,49 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
             # Ensure DataFrame has correct column names
             X = pd.DataFrame(X.values, columns=self.feature_names_in_)
 
-        _, _, firing_crisp, labels = it2_firing_strengths(
-            X, self.model_, self.norms_, km_iterations=self.km_iterations
-        )
+        y_lower, y_upper = self._predict_interval_arrays(X)
+        return 0.5 * (y_lower + y_upper)
 
-        # Type-reduced firing strengths feed the *same* TSK consequent
-        # evaluation the type-1 regressor uses.
-        #
-        # This previously read
-        #     y_normalized = np.mean(firing_crisp, axis=1)
-        #     y_pred = y_min_ + y_normalized * (y_max_ - y_min_)
-        # which discards the learned consequents entirely and never normalizes
-        # by the total firing strength, so the output was driven by the raw
-        # *magnitude* of the firing strengths rather than by their distribution
-        # across output buckets. Three symptoms followed, all observed:
-        # predictions collapsed toward y_min (mean 0.91 against a true 2.03);
-        # the bias shrank monotonically as `uncertainty_width` grew, because a
-        # wider footprint raises the lower membership's firing strengths; and
-        # the estimator did not converge to the type-1 model as the footprint
-        # vanished, which is the invariant that should have caught it.
-        base = self._base_regressor
-        return apply_tsk_consequents(
-            X,
-            base.top_features_,
-            firing_crisp,
-            labels,
-            base.y_bucket_mean_,
-            base.corr_terms_,
-            order=base.tsk_order,
-            basis=base.consequent_basis,
-            cross_pairs=base.cross_pairs_,
+    def _predict_interval_arrays(self, X):
+        """(y_l, y_r): the Karnik-Mendel output interval, computed by combining
+        every rule's own consequent value under its interval firing-strength
+        weight (`it2_kernel.karnik_mendel_tsk`) -- rather than, as previously,
+        type-reducing each rule's firing strength to a crisp weight *first* and
+        only then running it through the same weighted-consequent evaluation
+        Type-1 uses. That earlier two-stage pipeline never gave the switch-point
+        search the one thing it needs to do anything: each rule's own consequent
+        value (see `it2_kernel`'s module docstring). It also could not guarantee
+        `predict`'s output landed inside `predict_intervals`'s bounds -- each of
+        the three stood on its own row-normalization, so at the boundary between
+        `predict`'s crisp weights and `predict_intervals`'s raw upper/lower
+        bounds, roughly 3% of rows on a `make_regression` target fell outside
+        the interval, needing the min/max-of-three workaround this replaces.
+        Karnik-Mendel structurally cannot fail that check: it directly searches
+        `y_l` and `y_r` as the minimum and maximum of the same weighted average
+        `predict`'s midpoint is drawn from.
+
+        `km_iterations=None`/`0` skips the switch-point search for a faster,
+        approximate interval: each bound is the plain weighted average using
+        that bound's own raw firing strengths as weights (no cross-rule
+        optimization), which is not guaranteed to bracket the crisp midpoint.
+        """
+        firing_upper, firing_lower, rule_values = self._rule_bounds_and_values(X)
+
+        if self.km_iterations is None or self.km_iterations == 0:
+            y_upper = np.sum(_normalize_firing_strengths(firing_upper) * rule_values, axis=1)
+            y_lower = np.sum(_normalize_firing_strengths(firing_lower) * rule_values, axis=1)
+            return np.minimum(y_lower, y_upper), np.maximum(y_lower, y_upper)
+
+        return karnik_mendel_tsk(
+            rule_values, firing_lower, firing_upper, max_iterations=self.km_iterations
         )
 
     def predict_intervals(self, X):
         """Predict confidence intervals for target values.
 
-        Returns the upper and lower bound predictions without type reduction.
+        Returns the Karnik-Mendel type-reduced output interval -- guaranteed by
+        construction to contain `predict`'s point estimate, which is this
+        interval's midpoint.
 
         Parameters
         ----------
@@ -237,42 +258,7 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
             # Ensure DataFrame has correct column names
             X = pd.DataFrame(X.values, columns=self.feature_names_in_)
 
-        # One pass yields both footprint bounds *and* the type-reduced strengths
-        # `predict` uses, so the interval is built from exactly the quantity the
-        # point estimate is built from. `km_iterations` only affects the crisp
-        # column; the upper/lower bounds are unchanged by it.
-        firing_upper, firing_lower, firing_crisp, labels = it2_firing_strengths(
-            X, self.model_, self.norms_, km_iterations=self.km_iterations
-        )
-
-        # Same consequent evaluation as `predict`, run once against each bound
-        # of the footprint. Carrying the old `np.mean(firing)` scaling here
-        # while `predict` used the TSK consequents would put the point estimate
-        # and its interval on two different scales.
-        base = self._base_regressor
-        bounds = [
-            apply_tsk_consequents(
-                X, base.top_features_, f, labels,
-                base.y_bucket_mean_, base.corr_terms_,
-                order=base.tsk_order, basis=base.consequent_basis,
-                cross_pairs=base.cross_pairs_,
-            )
-            for f in (firing_upper, firing_lower, firing_crisp)
-        ]
-
-        # After firing-strength normalization the wider membership does not
-        # necessarily produce the larger prediction -- both are weighted
-        # averages over the same consequents, so either can come out on top.
-        # The type-reduced estimate is *not* a convex blend of the two either:
-        # each of the three is normalized by its own row sum, and that division
-        # is nonlinear, so `predict` can and does land outside the two bound
-        # predictions (measured at 3% of rows on a `make_regression` target).
-        # An interval that fails to contain its own point estimate is not an
-        # interval, so the reduction spans all three.
-        y_lower = np.minimum.reduce(bounds)
-        y_upper = np.maximum.reduce(bounds)
-
-        return y_lower, y_upper
+        return self._predict_interval_arrays(X)
 
     def _convert_to_it2(self, type1_model) -> IT2GaussianMixtureModel:
         """Convert a Type-1 model to IT2.

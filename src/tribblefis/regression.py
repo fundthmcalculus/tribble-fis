@@ -807,6 +807,47 @@ def predict_tsk(
     )
 
 
+def rule_consequent_values(
+    X: pd.DataFrame,
+    top_n_todo: list[typing.Any],
+    labels: list[typing.Any],
+    y_bucket_mean: ndarray,
+    corr_terms: ndarray,
+    order: str = "2nd",
+    basis: str = "raw",
+    cross_pairs: list[tuple[int, int]] | None = None,
+    feature_arrays: dict[str, np.ndarray] | None = None,
+    rbf_centers: ndarray | None = None,
+    rbf_gamma: float = 1.0,
+    rbf_radius: float | None = None,
+) -> ndarray:
+    """Per-rule TSK consequent output, *before* any firing-strength weighting.
+
+    Returns an ``(n_samples, n_rules)`` array: column ``ij`` is rule ``labels[ij]``'s
+    own crisp output (``y_bucket_mean[ij] + feats @ corr_terms[ij, :]``) for every
+    row, independent of how strongly that rule fires.
+
+    Factored out of `apply_tsk_consequents` so that callers who need to combine
+    rules themselves -- interval type-2 Karnik-Mendel type reduction weights and
+    sums these same per-rule values under its own switch-point search rather than
+    a plain firing-strength weighted mean -- reuse the exact consequent
+    evaluation instead of re-deriving it (see `it2_kernel.karnik_mendel_tsk`).
+    """
+    n_rules = len(labels)
+    if order == "0th":
+        return np.broadcast_to(np.asarray(y_bucket_mean, dtype=float), (len(X), n_rules)).copy()
+
+    if feature_arrays is not None:
+        X_rule = np.column_stack([feature_arrays[c] for c in top_n_todo]) if top_n_todo \
+            else np.empty((len(X), 0))
+    else:
+        X_rule = X[top_n_todo].to_numpy()
+    feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs,
+                                      rbf_centers=rbf_centers, rbf_gamma=rbf_gamma,
+                                      rbf_radius=rbf_radius)
+    return np.asarray(y_bucket_mean, dtype=float)[np.newaxis, :] + feats @ corr_terms.T
+
+
 def apply_tsk_consequents(
     X: pd.DataFrame,
     top_n_todo: list[typing.Any],
@@ -832,22 +873,12 @@ def apply_tsk_consequents(
     had its own `predict`, and it silently diverged (see `it2_regressor`).
     """
     norm_fs = _normalize_firing_strengths(firing_strengths)
-
-    if order == "0th":
-        return norm_fs @ np.asarray(y_bucket_mean)
-
-    if feature_arrays is not None:
-        X_rule = np.column_stack([feature_arrays[c] for c in top_n_todo]) if top_n_todo \
-            else np.empty((len(X), 0))
-    else:
-        X_rule = X[top_n_todo].to_numpy()
-    feats = build_consequent_features(X_rule, order, basis=basis, cross_pairs=cross_pairs,
-                                      rbf_centers=rbf_centers, rbf_gamma=rbf_gamma,
-                                      rbf_radius=rbf_radius)
-    y_pred = np.zeros(len(X))
-    for ij, _rule_id in enumerate(labels):
-        y_pred += (y_bucket_mean[ij] + feats @ corr_terms[ij, :]) * norm_fs[:, ij]
-    return y_pred
+    rule_vals = rule_consequent_values(
+        X, top_n_todo, labels, y_bucket_mean, corr_terms, order=order, basis=basis,
+        cross_pairs=cross_pairs, feature_arrays=feature_arrays,
+        rbf_centers=rbf_centers, rbf_gamma=rbf_gamma, rbf_radius=rbf_radius,
+    )
+    return np.sum(norm_fs * rule_vals, axis=1)
 
 
 def compute_rbf_centers(X: ndarray, n_centers: int = 5) -> ndarray:
