@@ -25,6 +25,21 @@ DefaultMemberFunction: MemberFunction = "gaussian"
 DEFAULT_DEDUP_RTOL = 1e-2
 DEFAULT_DEDUP_ATOL = 1e-3
 
+# Below this total firing strength, a row is treated as "no rule meaningfully
+# covers this point" and predictions fall back to a fixed default (0) rather
+# than trusting a firing-weighted average of near-noise-level weights (see
+# `regression._normalize_firing_strengths`'s docstring for the extrapolation
+# rationale). Every zero-firing gate in the package -- Type-1's own
+# normalization, the TSK consequent solver, and IT2/GT2's Karnik-Mendel search
+# -- must share this single value: two different thresholds for "no rule
+# fires" is what silently broke the "IT2/GT2 converges to Type-1 as the
+# footprint of uncertainty vanishes" invariant: `karnik_mendel_tsk` used to
+# gate at 1e-9 of its own, three decades stricter than this one, so a row deep
+# in that gap got a real Karnik-Mendel answer while Type-1 returned its 0
+# fallback for the exact same point (found while investigating a GT2 regressor
+# RMSE gap that turned out to reproduce on plain IT2 too).
+ZERO_FIRING_THRESHOLD = 1e-6
+
 NORM_FAMILIES: tuple[NormConorm, ...] = (
     "min/max", "probability", "luk", "hamacher", "einstein",
 )
@@ -719,6 +734,142 @@ class IT2GaussianMixtureModel(NamedTuple):
     @property
     def all_membership_fcns(self) -> list[IT2GaussianMembership]:
         """Get all IT2 membership functions across all features and labels."""
+        return [
+            mf
+            for feature_model in self.feature_models.values()
+            for label_model in feature_model.label_models.values()
+            for mf in label_model.memberships
+        ]
+
+    @property
+    def all_output_labels(self) -> list[int]:
+        return list(set([label for fm in self.feature_models.values() for label in fm.ordered_keys]))
+
+    @property
+    def n_classes(self) -> int:
+        if not self.feature_models:
+            return 0
+        return list(self.feature_models.values())[0].ordered_keys[-1] + 1
+
+
+# General Type-2 (GT2) FIS Data Structures -- alpha-plane representation
+# (Mendel, Liu 2008; see docs/gt2-evaluation.md for the survey this implements).
+class GT2GaussianMembership(NamedTuple):
+    """A general type-2 Gaussian membership function via the alpha-plane
+    representation.
+
+    Extends `IT2GaussianMembership`'s ``(upper_mf, lower_mf)`` footprint of
+    uncertainty with one more Gaussian, ``principal_mf``: the single
+    most-likely membership function within that footprint, whose ``sigma``
+    must lie in ``[lower_mf.sigma, upper_mf.sigma]``. The secondary
+    membership grade at each primary point is modeled as triangular over
+    sigma, apex at ``principal_mf.sigma``, base spanning ``[lower_mf.sigma,
+    upper_mf.sigma]`` -- the simplest closed-form secondary-membership shape
+    consistent with the KISS design philosophy in ``IT2_GUIDE.md``, and the
+    one ``alpha_cut`` assumes.
+
+    ``mu`` is shared across all three Gaussians, mirroring
+    `IT2GaussianMembership`'s own invariant (see
+    ``it2_refine._iter_it2_gaussian_slots``'s docstring for why a shared
+    peak matters): a secondary membership that also varied ``mu`` would need
+    a 2-D alpha-cut instead of the 1-D sigma interval this module's kernel
+    assumes.
+    """
+
+    upper_mf: GaussianMembership
+    lower_mf: GaussianMembership
+    principal_mf: GaussianMembership
+    id: Optional[uuid.UUID] = None
+
+    @staticmethod
+    def create(
+        upper_mu: float, upper_sigma: float,
+        lower_mu: float, lower_sigma: float,
+        principal_sigma: float | None = None,
+    ) -> "GT2GaussianMembership":
+        """``principal_sigma`` defaults to the midpoint of ``[lower_sigma,
+        upper_sigma]`` when omitted -- a neutral starting point equivalent to
+        assuming a *uniform* secondary grade, i.e. today's IT2 midpoint
+        reduction, until a real principal value is known."""
+        if principal_sigma is None:
+            principal_sigma = 0.5 * (lower_sigma + upper_sigma)
+        return GT2GaussianMembership(
+            upper_mf=GaussianMembership(mu=upper_mu, sigma=upper_sigma),
+            lower_mf=GaussianMembership(mu=lower_mu, sigma=lower_sigma),
+            principal_mf=GaussianMembership(mu=upper_mu, sigma=principal_sigma),
+            id=uuid.uuid4(),
+        )
+
+    def alpha_cut(self, alpha: float) -> IT2GaussianMembership:
+        """The IT2-shaped alpha-plane at level ``alpha`` in ``[0, 1]``.
+
+        Linear interpolation from each side of the footprint toward the
+        principal value -- the alpha-cut of a triangular secondary grade.
+        ``alpha=0`` returns exactly today's IT2 footprint (``[lower_mf.sigma,
+        upper_mf.sigma]``); ``alpha=1`` collapses both bounds onto
+        ``principal_mf.sigma`` (``upper_mf == lower_mf == principal_mf``).
+        """
+        sigma_lo = self.lower_mf.sigma + alpha * (self.principal_mf.sigma - self.lower_mf.sigma)
+        sigma_hi = self.upper_mf.sigma - alpha * (self.upper_mf.sigma - self.principal_mf.sigma)
+        mu = self.principal_mf.mu
+        return IT2GaussianMembership(
+            upper_mf=GaussianMembership(mu=mu, sigma=sigma_hi, id=self.upper_mf.id),
+            lower_mf=GaussianMembership(mu=mu, sigma=sigma_lo, id=self.lower_mf.id),
+            id=self.id,
+        )
+
+
+GT2AnyMembership = GT2GaussianMembership  # Gaussian-only in v1, mirroring IT2's own scope.
+
+
+class GT2LabelModel(NamedTuple):
+    """A collection of GT2 membership functions for a specific output class label."""
+
+    memberships: list[GT2AnyMembership]
+
+    def augment(self, other_label_model: "GT2LabelModel") -> "GT2LabelModel":
+        """Augment this GT2LabelModel with another, combining membership functions."""
+        new_memberships = self.memberships.copy()
+        new_memberships.extend(other_label_model.memberships)
+        return GT2LabelModel(new_memberships)
+
+
+class GT2FeatureModel(NamedTuple):
+    """A collection of GT2LabelModels for a specific feature."""
+
+    label_models: dict[int, GT2LabelModel]
+
+    @property
+    def ordered_keys(self) -> list[int]:
+        return list(sorted(self.label_models.keys()))
+
+    def augment(self, other_feature_model: "GT2FeatureModel") -> "GT2FeatureModel":
+        """Augment this GT2FeatureModel with another."""
+        new_label_models = self.label_models.copy()
+        for label, other_label_model in other_feature_model.label_models.items():
+            if label in new_label_models:
+                new_label_models[label] = new_label_models[label].augment(other_label_model)
+            else:
+                new_label_models[label] = other_label_model
+        return GT2FeatureModel(new_label_models)
+
+
+class GT2GaussianMixtureModel(NamedTuple):
+    """A general type-2 Gaussian mixture model, alpha-plane represented."""
+
+    feature_models: dict[str, GT2FeatureModel]
+
+    @property
+    def n_rules(self) -> int:
+        return len(list(self.feature_models.values())[0].label_models.keys())
+
+    @property
+    def n_features(self) -> int:
+        return len(self.feature_models)
+
+    @property
+    def all_membership_fcns(self) -> list[GT2GaussianMembership]:
+        """Get all GT2 membership functions across all features and labels."""
         return [
             mf
             for feature_model in self.feature_models.values()
