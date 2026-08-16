@@ -1,9 +1,10 @@
 """Post-fit antecedent refinement for Interval Type-2 FIS models.
 
 This is the IT2 counterpart of `refine.py`'s block coordinate descent for
-Type-1: cycle through one Gaussian sub-membership at a time -- upper or lower
-half of one IT2 membership -- and run a small bounded local solve on just its
-``(mu, sigma)`` with every other parameter in the model held fixed, repeating
+Type-1: cycle through one IT2 membership at a time (any of Gaussian,
+trapezoid, triangular -- see `_slot_x0_and_bounds`/`_apply_slot_params`) and
+run a small bounded local solve on just its shared peak plus two independent
+spread gaps, with every other parameter in the model held fixed, repeating
 for a few sweeps. `refine.py`'s classifier section explains why this applies
 unchanged here: *"A zeroth-order TSK classifier has no consequents... so
 refining the antecedents is the whole model"* -- exactly the IT2 classifier's
@@ -55,8 +56,9 @@ import numpy as np
 import pandas as pd
 
 from .gauss_data import (
-    IT2GaussianMixtureModel, IT2FeatureModel, IT2LabelModel, IT2GaussianMembership,
-    GaussianMembership, NormPair,
+    IT2GaussianMixtureModel, IT2FeatureModel, IT2LabelModel,
+    IT2GaussianMembership, IT2TrapezoidMembership, IT2TriangularMembership,
+    GaussianMembership, TrapezoidMembership, TriangularMembership, NormPair,
 )
 from .gauss_math import tsk_firing_strengths
 from .it2_kernel import it2_firing_strengths, karnik_mendel_tsk, _extract_upper_model, _extract_lower_model
@@ -65,48 +67,56 @@ from .refine import _make_folds, _prepare_folds
 from .regression import solve_tsk_consequents_from_firing, rule_consequent_values, _mse
 
 
-def _iter_it2_gaussian_slots(model: IT2GaussianMixtureModel):
-    """Yield ``(feature_name, label, mf_index, IT2GaussianMembership)`` for
-    every IT2 Gaussian membership (both the upper and lower half together) in
-    a deterministic order.
-
-    Non-Gaussian IT2 memberships (trapezoid, triangular) are skipped: this
-    module refines only Gaussian antecedents, matching `IT2_GUIDE.md`'s
-    documented scope ("Gaussian memberships only" in v1).
+def _iter_it2_slots(model: IT2GaussianMixtureModel):
+    """Yield ``(feature_name, label, mf_index, IT2AnyMembership)`` for every
+    IT2 membership (both the upper and lower half together, any of
+    Gaussian/trapezoid/triangular) in a deterministic order.
 
     **Why one slot per membership, not one per half.** An earlier version of
     this module optimized `upper_mf` and `lower_mf` as fully independent
-    two-parameter slots. Nothing then stopped the search from moving them
-    past each other -- e.g. widening `lower_mf` past `upper_mf` -- which
-    breaks the one invariant every caller of this module's output relies on:
+    parameter slots. Nothing then stopped the search from moving them past
+    each other -- e.g. widening `lower_mf` past `upper_mf` -- which breaks
+    the one invariant every caller of this module's output relies on:
     `firing_lower <= firing_upper` pointwise (asserted by
     `it2_kernel.it2_firing_strengths`'s callers and, concretely, required by
     `karnik_mendel_tsk`, which can return `y_l > y_r` -- observed on a real
-    fit -- if fed a firing interval that's inverted). The fix keeps `mu`
-    *shared* between the two halves and searches
-    `(mu, sigma_lower, sigma_upper)` together per membership with
-    `sigma_upper >= sigma_lower` enforced by construction (see
-    `_apply_slot_params`) -- for two Gaussians sharing a peak, the wider one
-    dominates the narrower one at every point, which is exactly the
-    "footprint of uncertainty" shape `it2_classifier`/`it2_regressor`'s own
-    conversion already builds new memberships in (same `mu`, upper sigma
-    wider) at `fit()` time.
+    fit -- if fed a firing interval that's inverted). The fix keeps each
+    membership's "peak" (Gaussian's `mu`, trapezoid's flat top `[b, c]`,
+    triangular's apex `b`) *shared* between the two halves and searches the
+    peak plus two independent non-negative "extra spread" gaps per slot (see
+    `_apply_slot_params`) -- for two memberships sharing a peak, the wider
+    one dominates the narrower one at every point by construction, which is
+    exactly the "footprint of uncertainty" shape `it2_classifier`/
+    `it2_regressor`'s own conversion already builds new memberships in
+    (`gauss_data.widen_membership`) at `fit()` time.
     """
     for fname, fmodel in model.feature_models.items():
         for label, lmodel in fmodel.label_models.items():
             for idx, it2_mf in enumerate(lmodel.memberships):
-                if isinstance(it2_mf.upper_mf, GaussianMembership) and isinstance(it2_mf.lower_mf, GaussianMembership):
-                    yield fname, label, idx, it2_mf
+                yield fname, label, idx, it2_mf
 
 
 def _slot_x0_and_bounds(it2_mf, lo: float, hi: float, rng: float, sigma_min_frac: float):
-    """Initial `(mu, sigma_lower, sigma_upper)` and box bounds for one slot.
+    """Initial parameter vector and box bounds for one slot, dispatched by
+    `it2_mf`'s membership type. Every type's vector starts with its shared
+    peak parameter(s), followed by non-negative "extra spread" gaps on each
+    side so the optimizer's box bounds alone enforce
+    `firing_lower <= firing_upper` (see `_apply_slot_params`)."""
+    if isinstance(it2_mf, IT2GaussianMembership):
+        return _gaussian_slot_x0_and_bounds(it2_mf, lo, hi, rng, sigma_min_frac)
+    if isinstance(it2_mf, IT2TrapezoidMembership):
+        return _trapezoid_slot_x0_and_bounds(it2_mf, lo, hi, rng, sigma_min_frac)
+    if isinstance(it2_mf, IT2TriangularMembership):
+        return _triangular_slot_x0_and_bounds(it2_mf, lo, hi, rng, sigma_min_frac)
+    raise TypeError(f"Unsupported IT2 membership type for refinement: {type(it2_mf)!r}")
 
-    `mu` starts at the upper half's center (the two halves share one `mu` at
-    conversion time; if a caller ever hands in a model where they've
-    diverged, the upper half's is kept as the anchor since it is the one that
-    determines the footprint's outer edge).
-    """
+
+def _gaussian_slot_x0_and_bounds(it2_mf, lo, hi, rng, sigma_min_frac):
+    """`(mu, sigma_lower, sigma_upper)`. `mu` starts at the upper half's
+    center (the two halves share one `mu` at conversion time; if a caller
+    ever hands in a model where they've diverged, the upper half's is kept
+    as the anchor since it is the one that determines the footprint's outer
+    edge)."""
     mu0 = it2_mf.upper_mf.mu
     sigma_lower0 = min(it2_mf.lower_mf.sigma, it2_mf.upper_mf.sigma)
     sigma_upper0 = max(it2_mf.lower_mf.sigma, it2_mf.upper_mf.sigma)
@@ -116,9 +126,70 @@ def _slot_x0_and_bounds(it2_mf, lo: float, hi: float, rng: float, sigma_min_frac
     return x0, bounds
 
 
-def _apply_slot_params(v: np.ndarray, upper_id, lower_id) -> IT2GaussianMembership:
+def _side_widths(peak: float, lower_edge: float, upper_edge: float, min_width: float):
+    """``(lower_width, extra_width)`` for one side of one slot: the lower
+    half's own half-width from `peak`, and how much wider the upper half's
+    own half-width is beyond it (clamped to >= 0 -- if the input model
+    happens to have them inverted, the extra collapses to 0 rather than
+    going negative, mirroring `_gaussian_slot_x0_and_bounds`'s min/max
+    anchoring)."""
+    lower_width = max(abs(peak - lower_edge), min_width)
+    upper_width = max(abs(peak - upper_edge), min_width)
+    return lower_width, max(upper_width - lower_width, 0.0)
+
+
+def _trapezoid_slot_x0_and_bounds(it2_mf, lo, hi, rng, sigma_min_frac):
+    """`(b, gap_bc, left_lower, extra_left, right_lower, extra_right)`.
+
+    `b`/`c` (the flat top) start at the upper half's own values, mirroring
+    `_gaussian_slot_x0_and_bounds`'s `mu` anchoring. The four remaining
+    parameters are non-negative gaps (see `_apply_trapezoid_slot_params`):
+    reconstructing `a`/`d` from them makes `a_upper <= a_lower <= b <= c <=
+    d_lower <= d_upper` -- and therefore `firing_lower <= firing_upper` --
+    true for *any* point in these box bounds, not just the optimum found.
+    """
+    min_width = sigma_min_frac * rng
+    b0, c0 = it2_mf.upper_mf.b, it2_mf.upper_mf.c
+    left_lower0, extra_left0 = _side_widths(b0, it2_mf.lower_mf.a, it2_mf.upper_mf.a, min_width)
+    right_lower0, extra_right0 = _side_widths(c0, it2_mf.lower_mf.d, it2_mf.upper_mf.d, min_width)
+    x0 = np.array([b0, max(c0 - b0, 0.0), left_lower0, extra_left0, right_lower0, extra_right0])
+    bounds = [(lo, hi), (0.0, rng), (min_width, rng), (0.0, rng), (min_width, rng), (0.0, rng)]
+    return x0, bounds
+
+
+def _triangular_slot_x0_and_bounds(it2_mf, lo, hi, rng, sigma_min_frac):
+    """`(b, left_lower, extra_left, right_lower, extra_right)` -- the
+    triangular analogue of `_trapezoid_slot_x0_and_bounds`, one parameter
+    fewer since the apex `b` is a single point rather than an interval."""
+    min_width = sigma_min_frac * rng
+    b0 = it2_mf.upper_mf.b
+    left_lower0, extra_left0 = _side_widths(b0, it2_mf.lower_mf.a, it2_mf.upper_mf.a, min_width)
+    right_lower0, extra_right0 = _side_widths(b0, it2_mf.lower_mf.c, it2_mf.upper_mf.c, min_width)
+    x0 = np.array([b0, left_lower0, extra_left0, right_lower0, extra_right0])
+    bounds = [(lo, hi), (min_width, rng), (0.0, rng), (min_width, rng), (0.0, rng)]
+    return x0, bounds
+
+
+def _apply_slot_params(it2_mf, v: np.ndarray):
+    """Build a fresh IT2 membership of `it2_mf`'s own type from `v`, dispatched
+    by type. Every reconstruction enforces `firing_lower <= firing_upper` by
+    construction (see each type's own docstring), not just by clamping after
+    the fact -- the invariant `_iter_it2_slots` documents cannot be violated
+    regardless of what the optimizer proposes, since the box bounds passed to
+    it (`_slot_x0_and_bounds`) only ever contain valid points.
+    """
+    if isinstance(it2_mf, IT2GaussianMembership):
+        return _apply_gaussian_slot_params(v, it2_mf.upper_mf.id, it2_mf.lower_mf.id)
+    if isinstance(it2_mf, IT2TrapezoidMembership):
+        return _apply_trapezoid_slot_params(v, it2_mf.upper_mf.id, it2_mf.lower_mf.id)
+    if isinstance(it2_mf, IT2TriangularMembership):
+        return _apply_triangular_slot_params(v, it2_mf.upper_mf.id, it2_mf.lower_mf.id)
+    raise TypeError(f"Unsupported IT2 membership type for refinement: {type(it2_mf)!r}")
+
+
+def _apply_gaussian_slot_params(v: np.ndarray, upper_id, lower_id) -> IT2GaussianMembership:
     """Build a fresh `IT2GaussianMembership` from `(mu, sigma_lower, sigma_upper)`,
-    clamping `sigma_upper >= sigma_lower` so the invariant `_iter_it2_gaussian_slots`
+    clamping `sigma_upper >= sigma_lower` so the invariant `_iter_it2_slots`
     documents cannot be violated regardless of what the optimizer proposes.
     """
     mu = float(v[0])
@@ -130,17 +201,50 @@ def _apply_slot_params(v: np.ndarray, upper_id, lower_id) -> IT2GaussianMembersh
     )
 
 
+def _apply_trapezoid_slot_params(v: np.ndarray, upper_id, lower_id) -> IT2TrapezoidMembership:
+    """Build a fresh `IT2TrapezoidMembership` from `(b, gap_bc, left_lower,
+    extra_left, right_lower, extra_right)`. `gap_bc`/`extra_left`/
+    `extra_right` are clamped non-negative so `a_upper <= a_lower <= b <= c
+    <= d_lower <= d_upper` holds regardless of what the optimizer proposes.
+    """
+    b = float(v[0])
+    c = b + max(float(v[1]), 0.0)
+    left_lower = max(float(v[2]), 1e-6)
+    left_upper = left_lower + max(float(v[3]), 0.0)
+    right_lower = max(float(v[4]), 1e-6)
+    right_upper = right_lower + max(float(v[5]), 0.0)
+    return IT2TrapezoidMembership(
+        upper_mf=TrapezoidMembership(a=b - left_upper, b=b, c=c, d=c + right_upper, id=upper_id),
+        lower_mf=TrapezoidMembership(a=b - left_lower, b=b, c=c, d=c + right_lower, id=lower_id),
+    )
+
+
+def _apply_triangular_slot_params(v: np.ndarray, upper_id, lower_id) -> IT2TriangularMembership:
+    """Build a fresh `IT2TriangularMembership` from `(b, left_lower,
+    extra_left, right_lower, extra_right)` -- the triangular analogue of
+    `_apply_trapezoid_slot_params`, apex `b` shared instead of a flat top."""
+    b = float(v[0])
+    left_lower = max(float(v[1]), 1e-6)
+    left_upper = left_lower + max(float(v[2]), 0.0)
+    right_lower = max(float(v[3]), 1e-6)
+    right_upper = right_lower + max(float(v[4]), 0.0)
+    return IT2TriangularMembership(
+        upper_mf=TriangularMembership(a=b - left_upper, b=b, c=b + right_upper, id=upper_id),
+        lower_mf=TriangularMembership(a=b - left_lower, b=b, c=b + right_lower, id=lower_id),
+    )
+
+
 def _replace_slot(
     model: IT2GaussianMixtureModel,
     fname: str,
     label: int,
     idx: int,
-    new_it2_mf: IT2GaussianMembership,
+    new_it2_mf,
 ) -> IT2GaussianMixtureModel:
-    """Return a copy of `model` with one IT2 Gaussian membership replaced.
+    """Return a copy of `model` with one IT2 membership replaced.
 
     Every container here (`IT2GaussianMixtureModel`, `IT2FeatureModel`,
-    `IT2LabelModel`, `IT2GaussianMembership`) is an immutable `NamedTuple`, so
+    `IT2LabelModel`, and any `IT2AnyMembership`) is an immutable `NamedTuple`, so
     a one-slot update rebuilds every level on the path to it -- this is the
     same reconstruction cost `refine.py`'s Type-1 `apply_gaussian_params` pays
     per candidate, just for a single slot instead of the whole flattened
@@ -257,7 +361,7 @@ def refine_it2_antecedents(
         than `it2_model` itself -- a sweep's candidate is adopted only on a
         strict improvement, so an unlucky search simply returns the input
         model unchanged. `firing_lower <= firing_upper` is preserved by
-        construction (see `_iter_it2_gaussian_slots`).
+        construction (see `_iter_it2_slots`).
     """
     if method in (None, "none"):
         return it2_model
@@ -267,12 +371,12 @@ def refine_it2_antecedents(
     y_idx = np.asarray(y_labels, dtype=np.intp)
     n_classes = it2_model.n_classes
 
-    slots = list(_iter_it2_gaussian_slots(it2_model))
+    slots = list(_iter_it2_slots(it2_model))
     if not slots:
         return it2_model
 
-    # Per-feature (mu, sigma) box bounds from the observed data range, shared by
-    # every IT2 membership on that feature -- mirrors `refine.py`'s
+    # Per-feature (peak, spread) box bounds from the observed data range,
+    # shared by every IT2 membership on that feature -- mirrors `refine.py`'s
     # `build_param_bounds`.
     feature_bounds: dict[str, tuple[float, float, float]] = {}
     for fname in {s[0] for s in slots}:
@@ -287,18 +391,17 @@ def refine_it2_antecedents(
     init_loss = best_loss
 
     if verbose:
-        print(f"\nIT2 classifier coordinate-descent antecedent refinement: {len(slots)} Gaussian "
+        print(f"\nIT2 classifier coordinate-descent antecedent refinement: {len(slots)} "
               f"memberships, init loss={init_loss:.4f}")
 
     for sweep in range(n_sweeps):
         sweep_start_loss = best_loss
-        for fname, label, idx, it2_mf in _iter_it2_gaussian_slots(current):
+        for fname, label, idx, it2_mf in _iter_it2_slots(current):
             lo, hi, rng = feature_bounds[fname]
             x0, bounds = _slot_x0_and_bounds(it2_mf, lo, hi, rng, sigma_min_frac)
-            upper_id, lower_id = it2_mf.upper_mf.id, it2_mf.lower_mf.id
 
-            def fitness(v, fname=fname, label=label, idx=idx, upper_id=upper_id, lower_id=lower_id, x0=x0):
-                new_it2_mf = _apply_slot_params(v, upper_id, lower_id)
+            def fitness(v, fname=fname, label=label, idx=idx, it2_mf=it2_mf, x0=x0):
+                new_it2_mf = _apply_slot_params(it2_mf, v)
                 trial = _replace_slot(current, fname, label, idx, new_it2_mf)
                 loss = _cross_entropy_loss(trial, X, y_idx, norms, km_iterations)
                 penalty = l2_shrink * float(np.sum((v - x0) ** 2))
@@ -306,7 +409,7 @@ def refine_it2_antecedents(
 
             res = _optimizers_sub_solve(fitness, x0, bounds)
 
-            candidate = _replace_slot(current, fname, label, idx, _apply_slot_params(res.x, upper_id, lower_id))
+            candidate = _replace_slot(current, fname, label, idx, _apply_slot_params(it2_mf, res.x))
             candidate_loss = _cross_entropy_loss(candidate, X, y_idx, norms, km_iterations)
             if candidate_loss < best_loss - 1e-12:
                 current = candidate
@@ -512,7 +615,7 @@ def refine_it2_regressor_antecedents(
         )
         return it2_model, corr_terms, y_bucket_mean, {"init_val_mse": None, "val_mse": None}
 
-    slots = list(_iter_it2_gaussian_slots(it2_model))
+    slots = list(_iter_it2_slots(it2_model))
     if not slots:
         corr_terms, y_bucket_mean, _ = _solve_it2_consequents(
             it2_model, X, y_df, top_n_todo, norms, order, l2_reg, basis, cross_pairs,
@@ -541,23 +644,22 @@ def refine_it2_regressor_antecedents(
 
     if verbose:
         print(f"\nIT2 regressor coordinate-descent antecedent refinement: {len(slots)} "
-              f"Gaussian memberships, {n_folds}-fold init val MSE={init_loss:.5f}")
+              f"memberships, {n_folds}-fold init val MSE={init_loss:.5f}")
 
     for sweep in range(n_sweeps):
         sweep_start_loss = best_loss
-        for fname, label, idx, it2_mf in _iter_it2_gaussian_slots(current):
+        for fname, label, idx, it2_mf in _iter_it2_slots(current):
             lo, hi, rng = feature_bounds[fname]
             x0, bounds = _slot_x0_and_bounds(it2_mf, lo, hi, rng, sigma_min_frac)
-            upper_id, lower_id = it2_mf.upper_mf.id, it2_mf.lower_mf.id
 
-            def fitness(v, fname=fname, label=label, idx=idx, upper_id=upper_id, lower_id=lower_id):
-                new_it2_mf = _apply_slot_params(v, upper_id, lower_id)
+            def fitness(v, fname=fname, label=label, idx=idx, it2_mf=it2_mf):
+                new_it2_mf = _apply_slot_params(it2_mf, v)
                 trial = _replace_slot(current, fname, label, idx, new_it2_mf)
                 return cv_fitness(trial)
 
             res = _optimizers_sub_solve(fitness, x0, bounds)
 
-            candidate = _replace_slot(current, fname, label, idx, _apply_slot_params(res.x, upper_id, lower_id))
+            candidate = _replace_slot(current, fname, label, idx, _apply_slot_params(it2_mf, res.x))
             candidate_loss = cv_fitness(candidate)
             if candidate_loss < best_loss - 1e-12:
                 current = candidate
