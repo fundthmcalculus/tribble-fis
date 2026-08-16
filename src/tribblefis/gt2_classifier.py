@@ -216,10 +216,15 @@ class GT2TribbleClassifier(BaseEstimator, ClassifierMixin):
         return self.classes_[class_indices]
 
     def predict_intervals(self, X):
-        """Predict confidence intervals for each class -- the widest
+        """Predict per-class firing-strength intervals -- the widest
         (alpha=0) footprint of uncertainty, exactly `IT2TribbleClassifier`'s
         own `predict_intervals` bounds, since alpha=0 is precisely today's
         IT2 conversion of the same Type-1 base.
+
+        This is antecedent-boundary ambiguity, not a calibrated confidence
+        score -- see `IT2TribbleClassifier.predict_intervals`'s docstring and
+        issue #149 (`docs/t1-it2-gt2-tradeoff.md`) for why width does not
+        track correctness monotonically.
 
         Parameters
         ----------
