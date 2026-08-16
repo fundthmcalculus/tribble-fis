@@ -62,6 +62,18 @@ def default_alpha_levels(n_alpha_planes: int) -> np.ndarray:
     return np.linspace(1.0 / n_alpha_planes, 1.0, n_alpha_planes)
 
 
+def alpha_weighted_average(alphas: np.ndarray, values: list[np.ndarray]) -> np.ndarray:
+    """``sum(alpha_k * values_k) / sum(alphas)`` -- the Mendel/Liu alpha-plane
+    combination rule, shared by every combiner in this module (and by
+    `gt2_regressor.py`'s fast-average fallback and `gt2_refine.py`'s
+    consequent re-solve, which need the same weighting over their own
+    per-plane arrays)."""
+    total = None
+    for alpha, v in zip(alphas, values):
+        total = alpha * v if total is None else total + alpha * v
+    return total / np.sum(alphas)
+
+
 def extract_alpha_plane_model(
     model: GT2GaussianMixtureModel, alpha: float
 ) -> IT2GaussianMixtureModel:
@@ -112,16 +124,15 @@ def gt2_firing_strengths(
             (``sorted(model.all_output_labels)``).
     """
     alphas = default_alpha_levels(n_alpha_planes)
-    weighted_sum = None
+    per_plane: list[np.ndarray] = []
     labels: list[int] = []
     for alpha in alphas:
         it2_model = extract_alpha_plane_model(model, float(alpha))
         _, _, firing_crisp, labels = it2_firing_strengths(
             X, it2_model, norms, km_iterations=km_iterations
         )
-        contribution = alpha * firing_crisp
-        weighted_sum = contribution if weighted_sum is None else weighted_sum + contribution
-    return weighted_sum / np.sum(alphas), labels
+        per_plane.append(firing_crisp)
+    return alpha_weighted_average(alphas, per_plane), labels
 
 
 def gt2_rule_firing(
@@ -198,11 +209,9 @@ def gt2_karnik_mendel_tsk(
     Returns:
         (y_l, y_r): (n_samples,) arrays, the alpha-combined output interval.
     """
-    total_alpha = float(np.sum(alphas))
-    y_l_sum = None
-    y_r_sum = None
-    for alpha, fu, fl in zip(alphas, firing_uppers, firing_lowers):
+    y_ls, y_rs = [], []
+    for fu, fl in zip(firing_uppers, firing_lowers):
         y_l, y_r = karnik_mendel_tsk(rule_values, fl, fu, max_iterations=max_iterations)
-        y_l_sum = alpha * y_l if y_l_sum is None else y_l_sum + alpha * y_l
-        y_r_sum = alpha * y_r if y_r_sum is None else y_r_sum + alpha * y_r
-    return y_l_sum / total_alpha, y_r_sum / total_alpha
+        y_ls.append(y_l)
+        y_rs.append(y_r)
+    return alpha_weighted_average(alphas, y_ls), alpha_weighted_average(alphas, y_rs)
