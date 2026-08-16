@@ -15,6 +15,11 @@ Also covers what the first pass (#141) left open:
   `predict_intervals()` returns per-class firing bounds, not a label
   interval), so it gets mean predicted-class interval width split by
   correct vs. incorrect -- a calibrated model should be wider on its errors.
+- **member_function** (#144): T1/IT2/GT2 repeated with `member_function` in
+  {gaussian, trap, triangular} on the flagship datasets. Trapezoid's flat
+  top means the #149 hump-shaped-width mechanism (upper == lower == 1 at a
+  single point for Gaussian) becomes upper == lower == 1 across a whole
+  *interval* -- a stronger version of the same effect, not a different one.
 
 `refine_it2`/`refine_gt2` only run on wine/friedman1 (the datasets #141
 already measured refinement's ~80-1500x cost on) -- not repeated per new
@@ -55,6 +60,8 @@ N_GAUSSIANS = (1, 2, 3, 4, 5)
 N_ALPHA_PLANES = (1, 2, 3, 5, 8, 10)
 GT2_FIXED_N_GAUSSIANS = 3
 SEED_ROBUSTNESS_N_GAUSSIANS = 2
+MEMBER_FUNCTIONS = ("gaussian", "trap", "triangular")
+MEMBER_FUNCTION_N_GAUSSIANS = 2
 
 # name -> (loader() -> (X, y), top_n)
 CLASSIFICATION_DATASETS = {
@@ -231,6 +238,58 @@ def run_seed_robustness(records):
                      fit_time=t, performance=r2)
 
 
+def run_member_function_sweep(records):
+    """T1/IT2/GT2 across member_function shapes, flagship datasets only.
+
+    Tests whether a different antecedent shape changes either story: the
+    accuracy one (#144) or the calibration one (#149) -- trapezoid's flat top
+    means both IT2 bounds equal exactly 1 across a whole interval, not just
+    a single point like Gaussian, the more pronounced version of the
+    hump-shaped-width mechanism #149 found.
+    """
+    clf_loader, clf_top_n = CLASSIFICATION_DATASETS["wine"]
+    reg_loader, reg_top_n = REGRESSION_DATASETS["friedman1"]
+
+    X, y = clf_loader()
+    X_train, X_test, y_train, y_test = _split(X, y, DEFAULT_SEED)
+    for member_function in MEMBER_FUNCTIONS:
+        for family, model in (
+            ("T1", TribbleClassifier(n_gaussians=MEMBER_FUNCTION_N_GAUSSIANS, top_n=clf_top_n,
+                                      member_function=member_function, random_state=DEFAULT_SEED)),
+            ("IT2", IT2TribbleClassifier(n_gaussians=MEMBER_FUNCTION_N_GAUSSIANS, top_n=clf_top_n,
+                                          member_function=member_function, uncertainty_width=0.5,
+                                          random_state=DEFAULT_SEED)),
+            ("GT2", GT2TribbleClassifier(n_gaussians=MEMBER_FUNCTION_N_GAUSSIANS, top_n=clf_top_n,
+                                          member_function=member_function, uncertainty_width=0.5,
+                                          n_alpha_planes=5, random_state=DEFAULT_SEED)),
+        ):
+            t, acc, y_pred = _fit_time_and_score(model, X_train, y_train, X_test, y_test, accuracy_score)
+            calib = _classification_calibration(model, X_test, y_test, y_pred)
+            _record(records, task="member_function_classification", dataset="wine", family=family,
+                     config=f"member_function={member_function}", member_function=member_function,
+                     fit_time=t, performance=acc, calibration=calib)
+
+    X, y = reg_loader()
+    X_train, X_test, y_train, y_test = _split(X, y, DEFAULT_SEED)
+    for member_function in MEMBER_FUNCTIONS:
+        for family, model in (
+            ("T1", TribbleRegressor(n_gaussians=MEMBER_FUNCTION_N_GAUSSIANS, top_n=reg_top_n,
+                                     member_function=member_function, tsk_order="1st",
+                                     random_state=DEFAULT_SEED)),
+            ("IT2", IT2TribbleRegressor(n_gaussians=MEMBER_FUNCTION_N_GAUSSIANS, top_n=reg_top_n,
+                                         member_function=member_function, uncertainty_width=0.5,
+                                         km_iterations=10, random_state=DEFAULT_SEED)),
+            ("GT2", GT2TribbleRegressor(n_gaussians=MEMBER_FUNCTION_N_GAUSSIANS, top_n=reg_top_n,
+                                         member_function=member_function, uncertainty_width=0.5,
+                                         n_alpha_planes=5, km_iterations=10, random_state=DEFAULT_SEED)),
+        ):
+            t, r2, y_pred = _fit_time_and_score(model, X_train, y_train, X_test, y_test, r2_score)
+            calib = _regression_calibration(model, X_test, y_test)
+            _record(records, task="member_function_regression", dataset="friedman1", family=family,
+                     config=f"member_function={member_function}", member_function=member_function,
+                     fit_time=t, performance=r2, calibration=calib)
+
+
 def _flag_pareto(records):
     """Mark non-dominated points (min fit_time, max performance) within each (task, dataset)."""
     groups = {(r["task"], r.get("dataset")) for r in records}
@@ -263,6 +322,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.output:
                 args.output.write_text(json.dumps(records, indent=2))
         run_seed_robustness(records)
+        if args.output:
+            args.output.write_text(json.dumps(records, indent=2))
+        run_member_function_sweep(records)
     _flag_pareto(records)
 
     for r in sorted(records, key=lambda r: (r["task"], r.get("dataset", ""), r["fit_time"])):
