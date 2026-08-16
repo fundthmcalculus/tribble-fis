@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from tribblefis.it2_kernel import karnik_mendel_tsk
-from tribblefis.it2_regressor import T2TribbleRegressor
+from tribblefis.it2_regressor import IT2TribbleRegressor
 
 
 def _brute_force_km(y, f_lower, f_upper, n_grid=20):
@@ -105,7 +105,7 @@ def test_regressor_predict_is_exact_midpoint_of_predict_intervals(synthetic_regr
     KM search path and the fast averaging path."""
     X, y = synthetic_regression_data
     for km_iterations in (None, 10):
-        reg = T2TribbleRegressor(
+        reg = IT2TribbleRegressor(
             top_n=1, n_gaussians=2, n_output_buckets=3,
             uncertainty_width=0.5, km_iterations=km_iterations, random_state=42,
         )
@@ -120,7 +120,7 @@ def test_regressor_km_path_guarantees_containment(synthetic_regression_data):
     `predict`'s point estimate -- unlike the old two-stage pipeline, which
     measurably violated this on ~3% of rows (see `it2_regressor.py`)."""
     X, y = synthetic_regression_data
-    reg = T2TribbleRegressor(
+    reg = IT2TribbleRegressor(
         top_n=1, n_gaussians=3, n_output_buckets=4,
         uncertainty_width=0.6, km_iterations=15, random_state=1,
     )

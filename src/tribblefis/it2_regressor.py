@@ -21,7 +21,7 @@ from .it2_refine import refine_it2_regressor_antecedents
 from .regression import rule_consequent_values, _normalize_firing_strengths
 
 
-class T2TribbleRegressor(BaseEstimator, RegressorMixin):
+class IT2TribbleRegressor(BaseEstimator, RegressorMixin):
     """Interval Type-2 Fuzzy regressor with uncertainty quantification.
 
     Converts a Type-1 TSK regressor to IT2 by creating upper and lower bound
@@ -160,7 +160,7 @@ class T2TribbleRegressor(BaseEstimator, RegressorMixin):
 
         Returns
         -------
-        self : T2TribbleRegressor
+        self : IT2TribbleRegressor
             Fitted estimator.
         """
         X, y = check_X_y(X, y, accept_sparse=False, dtype=None, multi_output=False)

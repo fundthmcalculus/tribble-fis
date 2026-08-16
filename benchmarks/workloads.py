@@ -609,7 +609,7 @@ def _predict_workload(
 # ---------------------------------------------------------------------------
 # Type-1 vs Type-2 (interval type-2) comparative workloads.
 #
-# `T2TribbleClassifier`/`T2TribbleRegressor` are never independent of their
+# `IT2TribbleClassifier`/`IT2TribbleRegressor` are never independent of their
 # Type-1 counterpart: `fit` fits a `TribbleClassifier`/`TribbleRegressor`
 # first, then converts its Gaussian antecedents into an upper/lower footprint
 # of uncertainty (`it2_classifier._convert_to_it2` et al.) and, at inference
@@ -650,7 +650,7 @@ def _forward_t2_workload(
     norm: str, repeats: int,
 ) -> Workload:
     """IT2 counterpart of `_forward_workload`: the same synthetic model,
-    converted to an IT2 footprint of uncertainty the way `T2TribbleClassifier`
+    converted to an IT2 footprint of uncertainty the way `IT2TribbleClassifier`
     itself does (`_convert_to_it2`, `uncertainty_width=0.5` default), so this
     row and its `forward-*` twin measure the same shape of problem through the
     Type-1 and Type-2 kernels respectively -- read the two side by side rather
@@ -664,12 +664,12 @@ def _forward_t2_workload(
     docstring's project-tracked-work note.
     """
     def setup():
-        from tribblefis.it2_classifier import T2TribbleClassifier
+        from tribblefis.it2_classifier import IT2TribbleClassifier
         from tribblefis.gauss_data import resolve_norm_pair
 
         X, _ = make_dataset(n_samples, n_features, n_labels, seed=0)
         model = make_model(n_features, n_labels, n_mf, seed=0)
-        it2_model = T2TribbleClassifier()._convert_to_it2(model)
+        it2_model = IT2TribbleClassifier()._convert_to_it2(model)
         return X, it2_model, resolve_norm_pair(norm)
 
     def run(state):
@@ -702,7 +702,7 @@ def _clf_fit_workload(
     """End-to-end `.fit` + `.predict` for one classifier family, on the same
     synthetic dataset and `random_state` as its `type2` counterpart.
 
-    `T2TribbleClassifier.fit` always fits a `TribbleClassifier` internally
+    `IT2TribbleClassifier.fit` always fits a `TribbleClassifier` internally
     before converting to IT2 (see `it2_classifier.py`), so its `t2-*` row is a
     strict superset of the matching `t1-*` row's cost plus conversion and the
     doubled (upper/lower) forward pass `predict` runs -- putting them at
@@ -717,8 +717,8 @@ def _clf_fit_workload(
     def run(state):
         X, y = state
         if type2:
-            from tribblefis.it2_classifier import T2TribbleClassifier
-            clf = T2TribbleClassifier(random_state=0)
+            from tribblefis.it2_classifier import IT2TribbleClassifier
+            clf = IT2TribbleClassifier(random_state=0)
         else:
             from tribblefis.gaussian_classifier import TribbleClassifier
             clf = TribbleClassifier(random_state=0)
@@ -731,7 +731,7 @@ def _clf_fit_workload(
         # from, so this is order-sensitive without needing a probability array.
         return _array_checksum(np.asarray(result, dtype=float))
 
-    kind = "T2TribbleClassifier" if type2 else "TribbleClassifier"
+    kind = "IT2TribbleClassifier" if type2 else "TribbleClassifier"
     return Workload(
         name=name,
         description=f"{kind}.fit + .predict: {n_samples}x{n_features}, {n_labels} labels",
@@ -757,8 +757,8 @@ def _reg_fit_workload(
     def run(state):
         X, y = state
         if type2:
-            from tribblefis.it2_regressor import T2TribbleRegressor
-            reg = T2TribbleRegressor(random_state=0)
+            from tribblefis.it2_regressor import IT2TribbleRegressor
+            reg = IT2TribbleRegressor(random_state=0)
         else:
             from tribblefis.gaussian_regressor import TribbleRegressor
             reg = TribbleRegressor(random_state=0)
@@ -766,7 +766,7 @@ def _reg_fit_workload(
             reg.fit(X, y)
         return reg.predict(X)
 
-    kind = "T2TribbleRegressor" if type2 else "TribbleRegressor"
+    kind = "IT2TribbleRegressor" if type2 else "TribbleRegressor"
     return Workload(
         name=name,
         description=f"{kind}.fit + .predict: {n_samples}x{n_features}",
@@ -782,7 +782,7 @@ def _reg_fit_workload(
 def _clf_divergence_workload(
     name: str, n_samples: int, n_features: int, n_labels: int, repeats: int,
 ) -> Workload:
-    """Checksum-as-metric: fit `TribbleClassifier` and `T2TribbleClassifier` on
+    """Checksum-as-metric: fit `TribbleClassifier` and `IT2TribbleClassifier` on
     the identical data, and report their prediction *agreement rate* as the
     checksum. Both models start from the same heuristic antecedent fit
     (`random_state=0`, `refine`/`refine_it2` both off), so the only source of
@@ -797,11 +797,11 @@ def _clf_divergence_workload(
 
     def run(state):
         from tribblefis.gaussian_classifier import TribbleClassifier
-        from tribblefis.it2_classifier import T2TribbleClassifier
+        from tribblefis.it2_classifier import IT2TribbleClassifier
 
         X, y = state
         t1 = TribbleClassifier(random_state=0)
-        t2 = T2TribbleClassifier(random_state=0)
+        t2 = IT2TribbleClassifier(random_state=0)
         with _quiet():
             t1.fit(X, y)
             t2.fit(X, y)
@@ -812,7 +812,7 @@ def _clf_divergence_workload(
     return Workload(
         name=name,
         description=(
-            f"TribbleClassifier vs T2TribbleClassifier prediction agreement rate "
+            f"TribbleClassifier vs IT2TribbleClassifier prediction agreement rate "
             f"(checksum IS the metric): {n_samples}x{n_features}, {n_labels} labels"
         ),
         setup=setup,
@@ -828,7 +828,7 @@ def _reg_divergence_workload(
     name: str, n_samples: int, n_features: int, repeats: int,
 ) -> Workload:
     """`_clf_divergence_workload`'s regressor counterpart: the checksum is the
-    mean absolute difference between `TribbleRegressor` and `T2TribbleRegressor`
+    mean absolute difference between `TribbleRegressor` and `IT2TribbleRegressor`
     predictions, normalized by the target's training range so the number is
     comparable across datasets."""
     def setup():
@@ -837,11 +837,11 @@ def _reg_divergence_workload(
 
     def run(state):
         from tribblefis.gaussian_regressor import TribbleRegressor
-        from tribblefis.it2_regressor import T2TribbleRegressor
+        from tribblefis.it2_regressor import IT2TribbleRegressor
 
         X, y = state
         t1 = TribbleRegressor(random_state=0)
-        t2 = T2TribbleRegressor(random_state=0)
+        t2 = IT2TribbleRegressor(random_state=0)
         with _quiet():
             t1.fit(X, y)
             t2.fit(X, y)
@@ -853,7 +853,7 @@ def _reg_divergence_workload(
     return Workload(
         name=name,
         description=(
-            f"TribbleRegressor vs T2TribbleRegressor mean |prediction diff| / "
+            f"TribbleRegressor vs IT2TribbleRegressor mean |prediction diff| / "
             f"target range (checksum IS the metric): {n_samples}x{n_features}"
         ),
         setup=setup,

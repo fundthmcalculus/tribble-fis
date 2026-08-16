@@ -44,14 +44,14 @@ TRIBBLEFIS_NUM_THREADS=1 python -m benchmarks.bench -k forward   # compiled, one
 | `forward-huge-cpu` / `-gpu64` / `-gpu32` | 1M-sample forward pass, data resident, CPU vs Torch |
 | `batch-candidates-cpu` / `-gpu` / `-gpu-seq` | 64 candidate parameter vectors, the shape a population search evaluates |
 | `forward-t2-small` / `-wide` / `-large` | `it2_firing_strengths` on the IT2 conversion of the matching `forward-*` model/dataset |
-| `t1-clf-fit-small` / `t2-clf-fit-small` (also `-medium`) | `TribbleClassifier` vs `T2TribbleClassifier` end-to-end `.fit` + `.predict` |
-| `t1-reg-fit-small` / `t2-reg-fit-small` (also `-medium`) | `TribbleRegressor` vs `T2TribbleRegressor` end-to-end `.fit` + `.predict` |
+| `t1-clf-fit-small` / `t2-clf-fit-small` (also `-medium`) | `TribbleClassifier` vs `IT2TribbleClassifier` end-to-end `.fit` + `.predict` |
+| `t1-reg-fit-small` / `t2-reg-fit-small` (also `-medium`) | `TribbleRegressor` vs `IT2TribbleRegressor` end-to-end `.fit` + `.predict` |
 | `t1-vs-t2-clf-divergence` | checksum-as-metric: prediction agreement rate between the two classifiers on identical data |
 | `t1-vs-t2-reg-divergence` | checksum-as-metric: mean \|prediction diff\| / target range between the two regressors |
 
 ### Type-1 vs Type-2 comparison
 
-`T2TribbleClassifier`/`T2TribbleRegressor` are never independent of their
+`IT2TribbleClassifier`/`IT2TribbleRegressor` are never independent of their
 Type-1 counterpart — `fit` fits a `TribbleClassifier`/`TribbleRegressor`
 first, then converts its Gaussian antecedents into an upper/lower footprint
 of uncertainty and, at inference time, doubles the forward pass (upper model,

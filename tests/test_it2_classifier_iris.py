@@ -5,7 +5,7 @@ import pytest
 from sklearn.datasets import load_iris
 from sklearn.model_selection import train_test_split
 
-from tribblefis.it2_classifier import T2TribbleClassifier
+from tribblefis.it2_classifier import IT2TribbleClassifier
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def test_it2_iris_fit_predict(iris_data):
     """Test IT2 classifier fit and predict on iris dataset."""
     X_train, X_test, y_train, y_test = iris_data
 
-    clf = T2TribbleClassifier(
+    clf = IT2TribbleClassifier(
         top_n=3,
         uncertainty_width=0.5,
         km_iterations=10,
@@ -55,7 +55,7 @@ def test_it2_iris_uncertainty_width_effect(iris_data):
     """Test that uncertainty width controls interval size."""
     X_train, X_test, y_train, y_test = iris_data
 
-    clf_narrow = T2TribbleClassifier(
+    clf_narrow = IT2TribbleClassifier(
         top_n=3,
         uncertainty_width=0.2,  # Narrow uncertainty
         km_iterations=None,  # Use averaging
@@ -63,7 +63,7 @@ def test_it2_iris_uncertainty_width_effect(iris_data):
     )
     clf_narrow.fit(X_train, y_train)
 
-    clf_wide = T2TribbleClassifier(
+    clf_wide = IT2TribbleClassifier(
         top_n=3,
         uncertainty_width=1.0,  # Wide uncertainty
         km_iterations=None,  # Use averaging
@@ -86,7 +86,7 @@ def test_it2_iris_intervals_validity(iris_data):
     """Test that firing strength intervals are valid (lower <= upper)."""
     X_train, X_test, y_train, y_test = iris_data
 
-    clf = T2TribbleClassifier(
+    clf = IT2TribbleClassifier(
         top_n=3,
         uncertainty_width=0.5,
         km_iterations=10,
@@ -108,7 +108,7 @@ def test_it2_iris_km_vs_averaging(iris_data):
     """Test that KM type reduction produces different results than averaging."""
     X_train, X_test, y_train, y_test = iris_data
 
-    clf_km = T2TribbleClassifier(
+    clf_km = IT2TribbleClassifier(
         top_n=3,
         uncertainty_width=0.5,
         km_iterations=10,
@@ -116,7 +116,7 @@ def test_it2_iris_km_vs_averaging(iris_data):
     )
     clf_km.fit(X_train, y_train)
 
-    clf_avg = T2TribbleClassifier(
+    clf_avg = IT2TribbleClassifier(
         top_n=3,
         uncertainty_width=0.5,
         km_iterations=None,  # Use averaging

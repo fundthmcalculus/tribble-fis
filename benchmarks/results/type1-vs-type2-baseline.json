@@ -63,7 +63,7 @@
     },
     {
       "name": "t2-clf-fit-small",
-      "description": "T2TribbleClassifier.fit + .predict: 1000x8, 3 labels",
+      "description": "IT2TribbleClassifier.fit + .predict: 1000x8, 3 labels",
       "tags": [
         "train",
         "type2",
@@ -91,7 +91,7 @@
     },
     {
       "name": "t2-clf-fit-medium",
-      "description": "T2TribbleClassifier.fit + .predict: 4000x20, 6 labels",
+      "description": "IT2TribbleClassifier.fit + .predict: 4000x20, 6 labels",
       "tags": [
         "train",
         "type2",
@@ -119,7 +119,7 @@
     },
     {
       "name": "t2-reg-fit-small",
-      "description": "T2TribbleRegressor.fit + .predict: 1000x8",
+      "description": "IT2TribbleRegressor.fit + .predict: 1000x8",
       "tags": [
         "train",
         "type2",
@@ -147,7 +147,7 @@
     },
     {
       "name": "t2-reg-fit-medium",
-      "description": "T2TribbleRegressor.fit + .predict: 4000x20",
+      "description": "IT2TribbleRegressor.fit + .predict: 4000x20",
       "tags": [
         "train",
         "type2",
@@ -161,7 +161,7 @@
     },
     {
       "name": "t1-vs-t2-clf-divergence",
-      "description": "TribbleClassifier vs T2TribbleClassifier prediction agreement rate (checksum IS the metric): 2000x15, 4 labels",
+      "description": "TribbleClassifier vs IT2TribbleClassifier prediction agreement rate (checksum IS the metric): 2000x15, 4 labels",
       "tags": [
         "divergence",
         "classifier"
@@ -174,7 +174,7 @@
     },
     {
       "name": "t1-vs-t2-reg-divergence",
-      "description": "TribbleRegressor vs T2TribbleRegressor mean |prediction diff| / target range (checksum IS the metric): 2000x15",
+      "description": "TribbleRegressor vs IT2TribbleRegressor mean |prediction diff| / target range (checksum IS the metric): 2000x15",
       "tags": [
         "divergence",
         "regressor"

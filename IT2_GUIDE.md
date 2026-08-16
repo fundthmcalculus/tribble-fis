@@ -9,7 +9,7 @@ The IT2-FIS implementation provides a production-ready interval type-2 fuzzy inf
 ### Classification
 
 ```python
-from tribblefis.it2_classifier import T2TribbleClassifier
+from tribblefis.it2_classifier import IT2TribbleClassifier
 import pandas as pd
 import numpy as np
 
@@ -18,7 +18,7 @@ X_train = pd.DataFrame({'feature1': [...], 'feature2': [...]})
 y_train = np.array([0, 1, 2, ...])
 
 # Create and fit classifier
-clf = T2TribbleClassifier(
+clf = IT2TribbleClassifier(
     top_n=3,                       # Use top 3 features
     member_function="gaussian",     # "gaussian", "trap", or "triangular"
     uncertainty_width=0.5,          # Expand bounds by 0.5 * sigma
@@ -40,10 +40,10 @@ upper, lower = clf.predict_intervals(X_test)
 ### Regression
 
 ```python
-from tribblefis.it2_regressor import T2TribbleRegressor
+from tribblefis.it2_regressor import IT2TribbleRegressor
 
 # Create and fit regressor
-reg = T2TribbleRegressor(
+reg = IT2TribbleRegressor(
     top_n=3,
     n_gaussians=2,
     uncertainty_width=0.5,
@@ -66,7 +66,7 @@ y_lower, y_upper = reg.predict_intervals(X_test)
 The IT2-FIS supports Gaussian membership functions. This is the standard and recommended choice for most applications.
 
 ```python
-clf = T2TribbleClassifier(uncertainty_width=0.5)
+clf = IT2TribbleClassifier(uncertainty_width=0.5)
 ```
 
 **Uncertainty expansion**: For a learned Gaussian (μ, σ), the IT2-FIS creates upper and lower bounds:
@@ -142,7 +142,7 @@ IT2 upper/lower Gaussian antecedents (`it2_refine`), distinct from `refine`
 above (which only ever touches the pre-conversion Type-1 model and never sees
 the footprint of uncertainty it becomes).
 
-**Classifier** (`T2TribbleClassifier.refine_it2`,
+**Classifier** (`IT2TribbleClassifier.refine_it2`,
 `it2_refine.refine_it2_antecedents`): cycles through one IT2 Gaussian
 membership at a time and runs a small bounded local solve on its
 `(mu, sigma_lower, sigma_upper)` -- `mu` shared between the upper and lower
@@ -156,7 +156,7 @@ Type-1 classifier). A candidate replaces the running best only on a strict
 training-loss improvement, so refinement never returns a model worse than its
 starting point.
 
-**Regressor** (`T2TribbleRegressor.refine_it2`,
+**Regressor** (`IT2TribbleRegressor.refine_it2`,
 `it2_refine.refine_it2_regressor_antecedents`): the same coordinate descent,
 but a regressor's antecedents are only ever meaningful alongside consequents
 solved *for* them, so every candidate evaluated during the search re-solves
@@ -309,7 +309,7 @@ Post-fit IT2 classifier antecedent refinement (`refine_it2_antecedents`, `refine
 - Refinement preserves `firing_lower <= firing_upper` (guards against the
   independent-halves bug described above)
 - `method="none"` is an identity no-op; an unknown method raises
-- The `T2TribbleClassifier(refine_it2=True)` option fits, predicts, and
+- The `IT2TribbleClassifier(refine_it2=True)` option fits, predicts, and
   doesn't materially hurt training accuracy
 
 ### 6. `test_it2_regressor_refine.py`
@@ -320,7 +320,7 @@ re-solving (`refine_it2_regressor_antecedents`, `refine_it2`):
 - Refinement preserves `firing_lower <= firing_upper`
 - `method="none"` still re-solves consequents for the (unchanged) antecedents
   rather than returning stale ones; an unknown method raises
-- The `T2TribbleRegressor(refine_it2=True)` option fits and predicts
+- The `IT2TribbleRegressor(refine_it2=True)` option fits and predicts
   with the containment guarantee (`y_lower <= predict() <= y_upper`) intact,
   and doesn't drastically worsen RMSE
 
@@ -329,9 +329,9 @@ re-solving (`refine_it2_regressor_antecedents`, `refine_it2`):
 ### Regression with Uncertainty Quantification
 
 ```python
-from tribblefis.it2_regressor import T2TribbleRegressor
+from tribblefis.it2_regressor import IT2TribbleRegressor
 
-reg = T2TribbleRegressor(
+reg = IT2TribbleRegressor(
     top_n=4,
     n_gaussians=3,
     n_output_buckets=5,
