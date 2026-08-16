@@ -1122,7 +1122,7 @@ dev = [
 requires-dist = [
     { name = "matplotlib" },
     { name = "numba" },
-    { name = "numpy" },
+    { name = "numpy", specifier = ">=2.4.6" },
     { name = "optimizers", git = "https://github.com/fundthmcalculus/optimizers.git" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
