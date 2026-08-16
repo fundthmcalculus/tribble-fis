@@ -1,422 +1,2042 @@
 [
   {
     "task": "classification",
+    "dataset": "wine",
     "family": "T1",
     "config": "n_gaussians=1",
     "n_gaussians": 1,
     "extra": null,
-    "fit_time": 0.03825835799989363,
+    "fit_time": 0.04574417599997105,
     "performance": 0.9074074074074074,
+    "calibration": null,
     "pareto": false
   },
   {
     "task": "classification",
-    "family": "T1",
-    "config": "n_gaussians=2",
-    "n_gaussians": 2,
-    "extra": null,
-    "fit_time": 0.04381798200006415,
-    "performance": 0.9259259259259259,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "T1",
-    "config": "n_gaussians=3",
-    "n_gaussians": 3,
-    "extra": null,
-    "fit_time": 0.040560170999924594,
-    "performance": 0.8888888888888888,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "T1",
-    "config": "n_gaussians=4",
-    "n_gaussians": 4,
-    "extra": null,
-    "fit_time": 0.04510979000019688,
-    "performance": 0.9259259259259259,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "T1",
-    "config": "n_gaussians=5",
-    "n_gaussians": 5,
-    "extra": null,
-    "fit_time": 0.051879282000072635,
-    "performance": 0.8148148148148148,
-    "pareto": false
-  },
-  {
-    "task": "classification",
+    "dataset": "wine",
     "family": "IT2",
     "config": "n_gaussians=1",
     "n_gaussians": 1,
     "extra": null,
-    "fit_time": 0.027496057999996992,
+    "fit_time": 0.027889163000054396,
     "performance": 0.9074074074074074,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "IT2",
-    "config": "n_gaussians=2",
-    "n_gaussians": 2,
-    "extra": null,
-    "fit_time": 0.040970511000068655,
-    "performance": 0.9259259259259259,
+    "calibration": {
+      "mean_width_correct": 0.23240620228823977,
+      "mean_width_incorrect": 0.169929265793836
+    },
     "pareto": true
   },
   {
     "task": "classification",
-    "family": "IT2",
-    "config": "n_gaussians=3",
-    "n_gaussians": 3,
-    "extra": null,
-    "fit_time": 0.04413206399999581,
-    "performance": 0.9259259259259259,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "IT2",
-    "config": "n_gaussians=4",
-    "n_gaussians": 4,
-    "extra": null,
-    "fit_time": 0.04847073599989926,
-    "performance": 0.9259259259259259,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "IT2",
-    "config": "n_gaussians=5",
-    "n_gaussians": 5,
-    "extra": null,
-    "fit_time": 0.04903230400009306,
-    "performance": 0.8333333333333334,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "IT2+refine",
-    "config": "n_gaussians=2",
-    "n_gaussians": 2,
-    "extra": null,
-    "fit_time": 3.379775387999871,
-    "performance": 0.9814814814814815,
-    "pareto": true
-  },
-  {
-    "task": "classification",
+    "dataset": "wine",
     "family": "GT2",
     "config": "n_gaussians=1,K=5",
     "n_gaussians": 1,
     "extra": 5,
-    "fit_time": 0.026177245999861043,
+    "fit_time": 0.030767167000249174,
     "performance": 0.9074074074074074,
-    "pareto": true
+    "calibration": {
+      "mean_width_correct": 0.23240620228823977,
+      "mean_width_incorrect": 0.169929265793836
+    },
+    "pareto": false
   },
   {
     "task": "classification",
+    "dataset": "wine",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.0439921760003017,
+    "performance": 0.9259259259259259,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "wine",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.0446204840000064,
+    "performance": 0.9259259259259259,
+    "calibration": {
+      "mean_width_correct": 0.2740435068027563,
+      "mean_width_incorrect": 0.24143562508226088
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "wine",
     "family": "GT2",
     "config": "n_gaussians=2,K=5",
     "n_gaussians": 2,
     "extra": 5,
-    "fit_time": 0.043010694000031435,
+    "fit_time": 0.04267847800019808,
     "performance": 0.9259259259259259,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "GT2",
-    "config": "n_gaussians=3,K=5",
-    "n_gaussians": 3,
-    "extra": 5,
-    "fit_time": 0.05075050999994346,
-    "performance": 0.8888888888888888,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "GT2",
-    "config": "n_gaussians=4,K=5",
-    "n_gaussians": 4,
-    "extra": 5,
-    "fit_time": 0.04314473999988877,
-    "performance": 0.9259259259259259,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "GT2",
-    "config": "n_gaussians=5,K=5",
-    "n_gaussians": 5,
-    "extra": 5,
-    "fit_time": 0.050333841000110624,
-    "performance": 0.8148148148148148,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "GT2",
-    "config": "n_gaussians=3,K=1",
-    "n_gaussians": 3,
-    "extra": 1,
-    "fit_time": 0.04854836100003013,
-    "performance": 0.8888888888888888,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "GT2",
-    "config": "n_gaussians=3,K=2",
-    "n_gaussians": 3,
-    "extra": 2,
-    "fit_time": 0.05065044299999499,
-    "performance": 0.8888888888888888,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "GT2",
-    "config": "n_gaussians=3,K=3",
-    "n_gaussians": 3,
-    "extra": 3,
-    "fit_time": 0.044689222999977574,
-    "performance": 0.8888888888888888,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "GT2",
-    "config": "n_gaussians=3,K=8",
-    "n_gaussians": 3,
-    "extra": 8,
-    "fit_time": 0.04504515300004641,
-    "performance": 0.8888888888888888,
-    "pareto": false
-  },
-  {
-    "task": "classification",
-    "family": "GT2",
-    "config": "n_gaussians=3,K=10",
-    "n_gaussians": 3,
-    "extra": 10,
-    "fit_time": 0.03976153000007798,
-    "performance": 0.8888888888888888,
-    "pareto": false
-  },
-  {
-    "task": "regression",
-    "family": "T1",
-    "config": "n_gaussians=1",
-    "n_gaussians": 1,
-    "extra": null,
-    "fit_time": 0.015288760999965234,
-    "performance": 0.7874131842493017,
+    "calibration": {
+      "mean_width_correct": 0.2740435068027563,
+      "mean_width_incorrect": 0.24143562508226088
+    },
     "pareto": true
   },
   {
-    "task": "regression",
-    "family": "T1",
-    "config": "n_gaussians=2",
-    "n_gaussians": 2,
-    "extra": null,
-    "fit_time": 0.024959083000112514,
-    "performance": 0.7853757997276549,
-    "pareto": false
-  },
-  {
-    "task": "regression",
+    "task": "classification",
+    "dataset": "wine",
     "family": "T1",
     "config": "n_gaussians=3",
     "n_gaussians": 3,
     "extra": null,
-    "fit_time": 0.0310130160000881,
-    "performance": 0.7270843283768961,
+    "fit_time": 0.04602900400004728,
+    "performance": 0.8888888888888888,
+    "calibration": null,
     "pareto": false
   },
   {
-    "task": "regression",
+    "task": "classification",
+    "dataset": "wine",
+    "family": "IT2",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 0.05097584299983282,
+    "performance": 0.9259259259259259,
+    "calibration": {
+      "mean_width_correct": 0.25687323842335724,
+      "mean_width_incorrect": 0.25889142247155905
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "wine",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=5",
+    "n_gaussians": 3,
+    "extra": 5,
+    "fit_time": 0.05392397700006768,
+    "performance": 0.8888888888888888,
+    "calibration": {
+      "mean_width_correct": 0.2584637530758938,
+      "mean_width_incorrect": 0.23823929518418155
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "wine",
     "family": "T1",
     "config": "n_gaussians=4",
     "n_gaussians": 4,
     "extra": null,
-    "fit_time": 0.028219101000104274,
-    "performance": 0.7399269183548414,
+    "fit_time": 0.05240676199991867,
+    "performance": 0.9259259259259259,
+    "calibration": null,
     "pareto": false
   },
   {
-    "task": "regression",
+    "task": "classification",
+    "dataset": "wine",
+    "family": "IT2",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 0.05165094299991324,
+    "performance": 0.9259259259259259,
+    "calibration": {
+      "mean_width_correct": 0.23031382664458852,
+      "mean_width_incorrect": 0.10277403375904534
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "wine",
+    "family": "GT2",
+    "config": "n_gaussians=4,K=5",
+    "n_gaussians": 4,
+    "extra": 5,
+    "fit_time": 0.05988760199988974,
+    "performance": 0.9259259259259259,
+    "calibration": {
+      "mean_width_correct": 0.23031382664458852,
+      "mean_width_incorrect": 0.10277403375904534
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "wine",
     "family": "T1",
     "config": "n_gaussians=5",
     "n_gaussians": 5,
     "extra": null,
-    "fit_time": 0.035943807999956334,
-    "performance": 0.7303539561162917,
+    "fit_time": 0.062056194999968284,
+    "performance": 0.8148148148148148,
+    "calibration": null,
     "pareto": false
   },
   {
-    "task": "regression",
+    "task": "classification",
+    "dataset": "wine",
+    "family": "IT2",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 0.05184231600014755,
+    "performance": 0.8333333333333334,
+    "calibration": {
+      "mean_width_correct": 0.20763316505458207,
+      "mean_width_incorrect": 0.21923596178890184
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "wine",
+    "family": "GT2",
+    "config": "n_gaussians=5,K=5",
+    "n_gaussians": 5,
+    "extra": 5,
+    "fit_time": 0.0521797249998599,
+    "performance": 0.8148148148148148,
+    "calibration": {
+      "mean_width_correct": 0.20858335628651378,
+      "mean_width_incorrect": 0.21327397552150754
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "wine",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=1",
+    "n_gaussians": 3,
+    "extra": 1,
+    "fit_time": 0.047489260000020295,
+    "performance": 0.8888888888888888,
+    "calibration": {
+      "mean_width_correct": 0.2584637530758938,
+      "mean_width_incorrect": 0.23823929518418155
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "wine",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=2",
+    "n_gaussians": 3,
+    "extra": 2,
+    "fit_time": 0.04424249300018346,
+    "performance": 0.8888888888888888,
+    "calibration": {
+      "mean_width_correct": 0.2584637530758938,
+      "mean_width_incorrect": 0.23823929518418155
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "wine",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=3",
+    "n_gaussians": 3,
+    "extra": 3,
+    "fit_time": 0.04770982300033211,
+    "performance": 0.8888888888888888,
+    "calibration": {
+      "mean_width_correct": 0.2584637530758938,
+      "mean_width_incorrect": 0.23823929518418155
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "wine",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=8",
+    "n_gaussians": 3,
+    "extra": 8,
+    "fit_time": 0.048179842999616085,
+    "performance": 0.8888888888888888,
+    "calibration": {
+      "mean_width_correct": 0.2584637530758938,
+      "mean_width_incorrect": 0.23823929518418155
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "wine",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=10",
+    "n_gaussians": 3,
+    "extra": 10,
+    "fit_time": 0.049408168000354635,
+    "performance": 0.8888888888888888,
+    "calibration": {
+      "mean_width_correct": 0.2584637530758938,
+      "mean_width_incorrect": 0.23823929518418155
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "wine",
+    "family": "IT2+refine",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 3.789218425999934,
+    "performance": 0.9814814814814815,
+    "calibration": {
+      "mean_width_correct": 0.12368059851078657,
+      "mean_width_incorrect": 0.0034888821555305494
+    },
+    "pareto": true
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "T1",
+    "config": "n_gaussians=1",
+    "n_gaussians": 1,
+    "extra": null,
+    "fit_time": 0.03345242000023063,
+    "performance": 0.8362573099415205,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
     "family": "IT2",
     "config": "n_gaussians=1",
     "n_gaussians": 1,
     "extra": null,
-    "fit_time": 0.01685378800016224,
-    "performance": -0.266362387999838,
+    "fit_time": 0.03323446700005661,
+    "performance": 0.8362573099415205,
+    "calibration": {
+      "mean_width_correct": 0.339150917517029,
+      "mean_width_incorrect": 0.1925589041206181
+    },
     "pareto": false
   },
   {
-    "task": "regression",
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "GT2",
+    "config": "n_gaussians=1,K=5",
+    "n_gaussians": 1,
+    "extra": 5,
+    "fit_time": 0.032752657999935764,
+    "performance": 0.8362573099415205,
+    "calibration": {
+      "mean_width_correct": 0.339150917517029,
+      "mean_width_incorrect": 0.1925589041206181
+    },
+    "pareto": true
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.050631307999992714,
+    "performance": 0.8713450292397661,
+    "calibration": null,
+    "pareto": true
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
     "family": "IT2",
     "config": "n_gaussians=2",
     "n_gaussians": 2,
     "extra": null,
-    "fit_time": 0.02418501399984052,
+    "fit_time": 0.05071751500008759,
+    "performance": 0.8654970760233918,
+    "calibration": {
+      "mean_width_correct": 0.4370720282568934,
+      "mean_width_incorrect": 0.37090247835726864
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "GT2",
+    "config": "n_gaussians=2,K=5",
+    "n_gaussians": 2,
+    "extra": 5,
+    "fit_time": 0.052322585999718285,
+    "performance": 0.8713450292397661,
+    "calibration": {
+      "mean_width_correct": 0.43560230520417903,
+      "mean_width_incorrect": 0.3774817771061311
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "T1",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 0.06620624700008193,
+    "performance": 0.8421052631578947,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "IT2",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 0.0594907909999165,
+    "performance": 0.8421052631578947,
+    "calibration": {
+      "mean_width_correct": 0.42558062695256166,
+      "mean_width_incorrect": 0.406496760108367
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=5",
+    "n_gaussians": 3,
+    "extra": 5,
+    "fit_time": 0.05986945700033175,
+    "performance": 0.8362573099415205,
+    "calibration": {
+      "mean_width_correct": 0.42572735822053687,
+      "mean_width_incorrect": 0.40566477649285976
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "T1",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 0.06466978599974027,
+    "performance": 0.8304093567251462,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "IT2",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 0.05903020699997796,
+    "performance": 0.8421052631578947,
+    "calibration": {
+      "mean_width_correct": 0.3582392314228908,
+      "mean_width_incorrect": 0.37550264278175266
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "GT2",
+    "config": "n_gaussians=4,K=5",
+    "n_gaussians": 4,
+    "extra": 5,
+    "fit_time": 0.07208066800012602,
+    "performance": 0.8421052631578947,
+    "calibration": {
+      "mean_width_correct": 0.3574727577316436,
+      "mean_width_incorrect": 0.3774484293878413
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "T1",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 0.06944054399991728,
+    "performance": 0.7719298245614035,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "IT2",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 0.07356479100008073,
+    "performance": 0.8128654970760234,
+    "calibration": {
+      "mean_width_correct": 0.3417793114130276,
+      "mean_width_incorrect": 0.3701197145764673
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "GT2",
+    "config": "n_gaussians=5,K=5",
+    "n_gaussians": 5,
+    "extra": 5,
+    "fit_time": 0.07416090700007771,
+    "performance": 0.7894736842105263,
+    "calibration": {
+      "mean_width_correct": 0.34225794456410497,
+      "mean_width_incorrect": 0.36174250146883785
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=1",
+    "n_gaussians": 3,
+    "extra": 1,
+    "fit_time": 0.06620569000006071,
+    "performance": 0.8421052631578947,
+    "calibration": {
+      "mean_width_correct": 0.4249521838395788,
+      "mean_width_incorrect": 0.40823215798157286
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=2",
+    "n_gaussians": 3,
+    "extra": 2,
+    "fit_time": 0.0653146760000709,
+    "performance": 0.8362573099415205,
+    "calibration": {
+      "mean_width_correct": 0.42572735822053687,
+      "mean_width_incorrect": 0.40566477649285976
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=3",
+    "n_gaussians": 3,
+    "extra": 3,
+    "fit_time": 0.06500956700028837,
+    "performance": 0.8362573099415205,
+    "calibration": {
+      "mean_width_correct": 0.42572735822053687,
+      "mean_width_incorrect": 0.40566477649285976
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=8",
+    "n_gaussians": 3,
+    "extra": 8,
+    "fit_time": 0.07122316100003445,
+    "performance": 0.8362573099415205,
+    "calibration": {
+      "mean_width_correct": 0.42572735822053687,
+      "mean_width_incorrect": 0.40566477649285976
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "breast_cancer",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=10",
+    "n_gaussians": 3,
+    "extra": 10,
+    "fit_time": 0.07075507100034883,
+    "performance": 0.8362573099415205,
+    "calibration": {
+      "mean_width_correct": 0.42572735822053687,
+      "mean_width_incorrect": 0.40566477649285976
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "T1",
+    "config": "n_gaussians=1",
+    "n_gaussians": 1,
+    "extra": null,
+    "fit_time": 1.0973062840002967,
+    "performance": 0.8055555555555556,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "IT2",
+    "config": "n_gaussians=1",
+    "n_gaussians": 1,
+    "extra": null,
+    "fit_time": 0.9680730940003741,
+    "performance": 0.8055555555555556,
+    "calibration": {
+      "mean_width_correct": 0.2212648978429447,
+      "mean_width_incorrect": 0.15414658595913378
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "GT2",
+    "config": "n_gaussians=1,K=5",
+    "n_gaussians": 1,
+    "extra": 5,
+    "fit_time": 0.8943320600001243,
+    "performance": 0.8055555555555556,
+    "calibration": {
+      "mean_width_correct": 0.2212648978429447,
+      "mean_width_incorrect": 0.15414658595913378
+    },
+    "pareto": true
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.8932765549998294,
+    "performance": 0.6462962962962963,
+    "calibration": null,
+    "pareto": true
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.9310890489996382,
+    "performance": 0.6833333333333333,
+    "calibration": {
+      "mean_width_correct": 0.29507119589862035,
+      "mean_width_incorrect": 0.25043824886510807
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "GT2",
+    "config": "n_gaussians=2,K=5",
+    "n_gaussians": 2,
+    "extra": 5,
+    "fit_time": 0.9755064229998425,
+    "performance": 0.6592592592592592,
+    "calibration": {
+      "mean_width_correct": 0.3008010765975406,
+      "mean_width_incorrect": 0.241372434021168
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "T1",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 1.026830961000087,
+    "performance": 0.5888888888888889,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "IT2",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 1.0054547330000787,
+    "performance": 0.6333333333333333,
+    "calibration": {
+      "mean_width_correct": 0.33086382050490754,
+      "mean_width_incorrect": 0.3187539887905184
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=5",
+    "n_gaussians": 3,
+    "extra": 5,
+    "fit_time": 0.9759072459996787,
+    "performance": 0.6037037037037037,
+    "calibration": {
+      "mean_width_correct": 0.33419072924269794,
+      "mean_width_incorrect": 0.3113829258254478
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "T1",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 1.0227331380001488,
+    "performance": 0.562962962962963,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "IT2",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 1.0428323149999414,
+    "performance": 0.5962962962962963,
+    "calibration": {
+      "mean_width_correct": 0.3595152751456016,
+      "mean_width_incorrect": 0.3329326896549745
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "GT2",
+    "config": "n_gaussians=4,K=5",
+    "n_gaussians": 4,
+    "extra": 5,
+    "fit_time": 0.9601132780003354,
+    "performance": 0.5685185185185185,
+    "calibration": {
+      "mean_width_correct": 0.35884270466676327,
+      "mean_width_incorrect": 0.33325060659980515
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "T1",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 1.0508835770001497,
+    "performance": 0.5944444444444444,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "IT2",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 0.9225042160001067,
+    "performance": 0.6407407407407407,
+    "calibration": {
+      "mean_width_correct": 0.384046448413265,
+      "mean_width_incorrect": 0.37735272820762633
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "GT2",
+    "config": "n_gaussians=5,K=5",
+    "n_gaussians": 5,
+    "extra": 5,
+    "fit_time": 0.9731229290000556,
+    "performance": 0.6111111111111112,
+    "calibration": {
+      "mean_width_correct": 0.38502838781998366,
+      "mean_width_incorrect": 0.3730516675625458
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=1",
+    "n_gaussians": 3,
+    "extra": 1,
+    "fit_time": 0.7219290250000086,
+    "performance": 0.5888888888888889,
+    "calibration": {
+      "mean_width_correct": 0.33712293702854546,
+      "mean_width_incorrect": 0.3057292637510679
+    },
+    "pareto": true
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=2",
+    "n_gaussians": 3,
+    "extra": 2,
+    "fit_time": 0.9504209070000798,
+    "performance": 0.5981481481481481,
+    "calibration": {
+      "mean_width_correct": 0.3348282746686077,
+      "mean_width_incorrect": 0.3100766562090896
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=3",
+    "n_gaussians": 3,
+    "extra": 3,
+    "fit_time": 0.9504325789998802,
+    "performance": 0.6037037037037037,
+    "calibration": {
+      "mean_width_correct": 0.33419072924269794,
+      "mean_width_incorrect": 0.3113829258254478
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=8",
+    "n_gaussians": 3,
+    "extra": 8,
+    "fit_time": 0.9811471969997001,
+    "performance": 0.6055555555555555,
+    "calibration": {
+      "mean_width_correct": 0.33422739838038734,
+      "mean_width_incorrect": 0.3114573041520659
+    },
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "dataset": "digits",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=10",
+    "n_gaussians": 3,
+    "extra": 10,
+    "fit_time": 0.9935128390002319,
+    "performance": 0.6055555555555555,
+    "calibration": {
+      "mean_width_correct": 0.33422739838038734,
+      "mean_width_incorrect": 0.3114573041520659
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "T1",
+    "config": "n_gaussians=1",
+    "n_gaussians": 1,
+    "extra": null,
+    "fit_time": 0.0233322659996702,
+    "performance": 0.7874131842493017,
+    "calibration": null,
+    "pareto": true
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "IT2",
+    "config": "n_gaussians=1",
+    "n_gaussians": 1,
+    "extra": null,
+    "fit_time": 0.021573844999693392,
+    "performance": -0.266362387999838,
+    "calibration": {
+      "coverage": 0.86,
+      "mean_relative_width": 0.630289026240897
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "GT2",
+    "config": "n_gaussians=1,K=5",
+    "n_gaussians": 1,
+    "extra": 5,
+    "fit_time": 0.019960043999617483,
+    "performance": 0.7053243443127232,
+    "calibration": {
+      "coverage": 0.74,
+      "mean_relative_width": 0.259134334932815
+    },
+    "pareto": true
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.02397220800003197,
+    "performance": 0.7853757997276549,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.02554635500018776,
+    "performance": 0.6391691825189505,
+    "calibration": {
+      "coverage": 0.7,
+      "mean_relative_width": 0.26075709889119325
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "GT2",
+    "config": "n_gaussians=2,K=5",
+    "n_gaussians": 2,
+    "extra": 5,
+    "fit_time": 0.02328955600023619,
+    "performance": 0.76820294498583,
+    "calibration": {
+      "coverage": 0.3933333333333333,
+      "mean_relative_width": 0.10738642595889415
+    },
+    "pareto": true
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "T1",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 0.03195888100026423,
+    "performance": 0.7270843283768961,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "IT2",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 0.030747385999802646,
+    "performance": 0.6875969843001831,
+    "calibration": {
+      "coverage": 0.5,
+      "mean_relative_width": 0.16273022276367138
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=5",
+    "n_gaussians": 3,
+    "extra": 5,
+    "fit_time": 0.028953904999980296,
+    "performance": 0.724453782108796,
+    "calibration": {
+      "coverage": 0.2733333333333333,
+      "mean_relative_width": 0.0700484740551943
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "T1",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 0.031243322999671364,
+    "performance": 0.7399269183548414,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "IT2",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 0.031153423999967345,
+    "performance": 0.7096347490139507,
+    "calibration": {
+      "coverage": 0.44666666666666666,
+      "mean_relative_width": 0.12260810325938203
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "GT2",
+    "config": "n_gaussians=4,K=5",
+    "n_gaussians": 4,
+    "extra": 5,
+    "fit_time": 0.03070752799976617,
+    "performance": 0.7380533898253823,
+    "calibration": {
+      "coverage": 0.18666666666666668,
+      "mean_relative_width": 0.05200212152652057
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "T1",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 0.0350368439999329,
+    "performance": 0.7303539561162917,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "IT2",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 0.03573533700000553,
+    "performance": 0.7123561350905878,
+    "calibration": {
+      "coverage": 0.36,
+      "mean_relative_width": 0.10283601147662319
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "GT2",
+    "config": "n_gaussians=5,K=5",
+    "n_gaussians": 5,
+    "extra": 5,
+    "fit_time": 0.03604392200031725,
+    "performance": 0.7296898067247236,
+    "calibration": {
+      "coverage": 0.15333333333333332,
+      "mean_relative_width": 0.04415298149795081
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=1",
+    "n_gaussians": 3,
+    "extra": 1,
+    "fit_time": 0.03250080399993749,
+    "performance": 0.7270843283768961,
+    "calibration": {
+      "coverage": 0.0,
+      "mean_relative_width": 0.0
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=2",
+    "n_gaussians": 3,
+    "extra": 2,
+    "fit_time": 0.03001131999963036,
+    "performance": 0.727218183464774,
+    "calibration": {
+      "coverage": 0.16,
+      "mean_relative_width": 0.044092720380719194
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=3",
+    "n_gaussians": 3,
+    "extra": 3,
+    "fit_time": 0.03141229399989243,
+    "performance": 0.7257392227877058,
+    "calibration": {
+      "coverage": 0.24666666666666667,
+      "mean_relative_width": 0.05849987895686079
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=8",
+    "n_gaussians": 3,
+    "extra": 8,
+    "fit_time": 0.030870524999954796,
+    "performance": 0.7236777489790129,
+    "calibration": {
+      "coverage": 0.29333333333333333,
+      "mean_relative_width": 0.07654183646186188
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=10",
+    "n_gaussians": 3,
+    "extra": 10,
+    "fit_time": 0.029643231999671116,
+    "performance": 0.723384455002924,
+    "calibration": {
+      "coverage": 0.31333333333333335,
+      "mean_relative_width": 0.07871075089117674
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "friedman1",
+    "family": "IT2+refine",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 35.451689849000104,
+    "performance": 0.88034245082933,
+    "calibration": {
+      "coverage": 0.49333333333333335,
+      "mean_relative_width": 0.13449953901893816
+    },
+    "pareto": true
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "T1",
+    "config": "n_gaussians=1",
+    "n_gaussians": 1,
+    "extra": null,
+    "fit_time": 0.01800018900030409,
+    "performance": 0.5112612731257378,
+    "calibration": null,
+    "pareto": true
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "IT2",
+    "config": "n_gaussians=1",
+    "n_gaussians": 1,
+    "extra": null,
+    "fit_time": 0.015993410000191943,
+    "performance": 0.45623934052556203,
+    "calibration": {
+      "coverage": 0.18796992481203006,
+      "mean_relative_width": 0.08681258592316915
+    },
+    "pareto": true
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "GT2",
+    "config": "n_gaussians=1,K=5",
+    "n_gaussians": 1,
+    "extra": 5,
+    "fit_time": 0.018710009999722388,
+    "performance": 0.5028307155775957,
+    "calibration": {
+      "coverage": 0.07518796992481203,
+      "mean_relative_width": 0.024419421263962966
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.02469774100018185,
+    "performance": 0.4981604812720646,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.024935162000019773,
+    "performance": 0.4368293849654763,
+    "calibration": {
+      "coverage": 0.21804511278195488,
+      "mean_relative_width": 0.09787383476391753
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "GT2",
+    "config": "n_gaussians=2,K=5",
+    "n_gaussians": 2,
+    "extra": 5,
+    "fit_time": 0.02521969600002194,
+    "performance": 0.4918198033310204,
+    "calibration": {
+      "coverage": 0.03759398496240601,
+      "mean_relative_width": 0.025753739342344775
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "T1",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 0.02937996299988299,
+    "performance": 0.48309811743715536,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "IT2",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 0.02934236700002657,
+    "performance": 0.4369954217698927,
+    "calibration": {
+      "coverage": 0.21052631578947367,
+      "mean_relative_width": 0.09339450048634826
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=5",
+    "n_gaussians": 3,
+    "extra": 5,
+    "fit_time": 0.027627754000150162,
+    "performance": 0.4783676684974366,
+    "calibration": {
+      "coverage": 0.06766917293233082,
+      "mean_relative_width": 0.027460556394633868
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "T1",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 0.028526115999738977,
+    "performance": 0.4877978863099789,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "IT2",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 0.032636301000366075,
+    "performance": 0.4660556810915132,
+    "calibration": {
+      "coverage": 0.18796992481203006,
+      "mean_relative_width": 0.07823634199479299
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "GT2",
+    "config": "n_gaussians=4,K=5",
+    "n_gaussians": 4,
+    "extra": 5,
+    "fit_time": 0.032174133999888,
+    "performance": 0.48467121216498676,
+    "calibration": {
+      "coverage": 0.045112781954887216,
+      "mean_relative_width": 0.0264539163253752
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "T1",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 0.034368098999948415,
+    "performance": 0.45857140215487924,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "IT2",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 0.03589383299959081,
+    "performance": 0.47118417654845246,
+    "calibration": {
+      "coverage": 0.14285714285714285,
+      "mean_relative_width": 0.0813990675238276
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "GT2",
+    "config": "n_gaussians=5,K=5",
+    "n_gaussians": 5,
+    "extra": 5,
+    "fit_time": 0.03298520499993174,
+    "performance": 0.46387837110880636,
+    "calibration": {
+      "coverage": 0.06015037593984962,
+      "mean_relative_width": 0.03139016148013747
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=1",
+    "n_gaussians": 3,
+    "extra": 1,
+    "fit_time": 0.029508859000088705,
+    "performance": 0.48309811743715536,
+    "calibration": {
+      "coverage": 0.0,
+      "mean_relative_width": 0.0
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=2",
+    "n_gaussians": 3,
+    "extra": 2,
+    "fit_time": 0.029822377000073175,
+    "performance": 0.4800102996769873,
+    "calibration": {
+      "coverage": 0.05263157894736842,
+      "mean_relative_width": 0.016989344651121084
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=3",
+    "n_gaussians": 3,
+    "extra": 3,
+    "fit_time": 0.028376454999943235,
+    "performance": 0.4793946556446521,
+    "calibration": {
+      "coverage": 0.06015037593984962,
+      "mean_relative_width": 0.02294643066052965
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=8",
+    "n_gaussians": 3,
+    "extra": 8,
+    "fit_time": 0.02720369100006792,
+    "performance": 0.47791647645922286,
+    "calibration": {
+      "coverage": 0.06766917293233082,
+      "mean_relative_width": 0.03008022796658528
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "diabetes",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=10",
+    "n_gaussians": 3,
+    "extra": 10,
+    "fit_time": 0.028492760000062844,
+    "performance": 0.477738675867899,
+    "calibration": {
+      "coverage": 0.06766917293233082,
+      "mean_relative_width": 0.03093455098006846
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "T1",
+    "config": "n_gaussians=1",
+    "n_gaussians": 1,
+    "extra": null,
+    "fit_time": 0.016904430999602482,
+    "performance": 0.9758186214722921,
+    "calibration": null,
+    "pareto": true
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "IT2",
+    "config": "n_gaussians=1",
+    "n_gaussians": 1,
+    "extra": null,
+    "fit_time": 0.01771693199998481,
+    "performance": 0.9762284357892379,
+    "calibration": {
+      "coverage": 0.15333333333333332,
+      "mean_relative_width": 0.010091634384586608
+    },
+    "pareto": true
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "GT2",
+    "config": "n_gaussians=1,K=5",
+    "n_gaussians": 1,
+    "extra": 5,
+    "fit_time": 0.01711783100017783,
+    "performance": 0.9760947948588493,
+    "calibration": {
+      "coverage": 0.06,
+      "mean_relative_width": 0.004222473912224233
+    },
+    "pareto": true
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.025239505000172358,
+    "performance": 0.9754622642897066,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.02510428100003992,
+    "performance": 0.9762635011722841,
+    "calibration": {
+      "coverage": 0.12666666666666668,
+      "mean_relative_width": 0.008872966183947784
+    },
+    "pareto": true
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "GT2",
+    "config": "n_gaussians=2,K=5",
+    "n_gaussians": 2,
+    "extra": 5,
+    "fit_time": 0.02322798800014425,
+    "performance": 0.9758092944677988,
+    "calibration": {
+      "coverage": 0.05333333333333334,
+      "mean_relative_width": 0.003142847393580479
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "T1",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 0.02867621599989434,
+    "performance": 0.9756754791561644,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "IT2",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 0.029748715000096126,
+    "performance": 0.9762272995257293,
+    "calibration": {
+      "coverage": 0.1,
+      "mean_relative_width": 0.006888760006755474
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=5",
+    "n_gaussians": 3,
+    "extra": 5,
+    "fit_time": 0.029243839000173466,
+    "performance": 0.9759368720689129,
+    "calibration": {
+      "coverage": 0.04,
+      "mean_relative_width": 0.0022452128316630365
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "T1",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 0.03222947699987344,
+    "performance": 0.9754902052855831,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "IT2",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 0.03097719800007326,
+    "performance": 0.9759582284409308,
+    "calibration": {
+      "coverage": 0.14,
+      "mean_relative_width": 0.012184454463587475
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "GT2",
+    "config": "n_gaussians=4,K=5",
+    "n_gaussians": 4,
+    "extra": 5,
+    "fit_time": 0.027208396999867546,
+    "performance": 0.9758226772159236,
+    "calibration": {
+      "coverage": 0.06666666666666667,
+      "mean_relative_width": 0.004374072265345178
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "T1",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 0.034455369999705,
+    "performance": 0.9760817002183095,
+    "calibration": null,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "IT2",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 0.029165419000037218,
+    "performance": 0.9761455308834208,
+    "calibration": {
+      "coverage": 0.14666666666666667,
+      "mean_relative_width": 0.010887817299230888
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "GT2",
+    "config": "n_gaussians=5,K=5",
+    "n_gaussians": 5,
+    "extra": 5,
+    "fit_time": 0.03621806699993613,
+    "performance": 0.9761440116511296,
+    "calibration": {
+      "coverage": 0.06,
+      "mean_relative_width": 0.004214215559110213
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=1",
+    "n_gaussians": 3,
+    "extra": 1,
+    "fit_time": 0.030747171999792045,
+    "performance": 0.9756754791561644,
+    "calibration": {
+      "coverage": 0.0,
+      "mean_relative_width": 0.0
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=2",
+    "n_gaussians": 3,
+    "extra": 2,
+    "fit_time": 0.02898187400023744,
+    "performance": 0.9758588202602555,
+    "calibration": {
+      "coverage": 0.02666666666666667,
+      "mean_relative_width": 0.0014083285987225938
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=3",
+    "n_gaussians": 3,
+    "extra": 3,
+    "fit_time": 0.02839562899998782,
+    "performance": 0.9759159118365774,
+    "calibration": {
+      "coverage": 0.03333333333333333,
+      "mean_relative_width": 0.0018836718936191762
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=8",
+    "n_gaussians": 3,
+    "extra": 8,
+    "fit_time": 0.0296197369998481,
+    "performance": 0.9759558593007555,
+    "calibration": {
+      "coverage": 0.04,
+      "mean_relative_width": 0.002451239471261788
+    },
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "dataset": "make_regression",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=10",
+    "n_gaussians": 3,
+    "extra": 10,
+    "fit_time": 0.028048744999978226,
+    "performance": 0.9759622844806553,
+    "calibration": {
+      "coverage": 0.04,
+      "mean_relative_width": 0.002520622657483562
+    },
+    "pareto": false
+  },
+  {
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "seed": 42,
+    "fit_time": 0.04476322500022434,
+    "performance": 0.9259259259259259,
+    "pareto": false
+  },
+  {
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "seed": 42,
+    "fit_time": 0.042393497000375646,
+    "performance": 0.9259259259259259,
+    "pareto": true
+  },
+  {
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
+    "family": "GT2",
+    "config": "n_gaussians=2",
+    "seed": 42,
+    "fit_time": 0.044192328000008274,
+    "performance": 0.9259259259259259,
+    "pareto": false
+  },
+  {
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "seed": 42,
+    "fit_time": 0.023433730999840918,
+    "performance": 0.7853757997276549,
+    "pareto": true
+  },
+  {
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "seed": 42,
+    "fit_time": 0.0241735399999925,
     "performance": 0.6391691825189505,
     "pareto": false
   },
   {
-    "task": "regression",
-    "family": "IT2",
-    "config": "n_gaussians=3",
-    "n_gaussians": 3,
-    "extra": null,
-    "fit_time": 0.030845941000052335,
-    "performance": 0.6875969843001831,
-    "pareto": false
-  },
-  {
-    "task": "regression",
-    "family": "IT2",
-    "config": "n_gaussians=4",
-    "n_gaussians": 4,
-    "extra": null,
-    "fit_time": 0.030933062000030986,
-    "performance": 0.7096347490139507,
-    "pareto": false
-  },
-  {
-    "task": "regression",
-    "family": "IT2",
-    "config": "n_gaussians=5",
-    "n_gaussians": 5,
-    "extra": null,
-    "fit_time": 0.03980492499999855,
-    "performance": 0.7123561350905878,
-    "pareto": false
-  },
-  {
-    "task": "regression",
-    "family": "IT2+refine",
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
+    "family": "GT2",
     "config": "n_gaussians=2",
-    "n_gaussians": 2,
-    "extra": null,
-    "fit_time": 35.31439929600015,
-    "performance": 0.88034245082933,
+    "seed": 42,
+    "fit_time": 0.019799671999862767,
+    "performance": 0.76820294498583,
     "pareto": true
   },
   {
-    "task": "regression",
-    "family": "GT2",
-    "config": "n_gaussians=1,K=5",
-    "n_gaussians": 1,
-    "extra": 5,
-    "fit_time": 0.016684769999983473,
-    "performance": 0.7053243443127232,
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "seed": 7,
+    "fit_time": 0.037071873000058986,
+    "performance": 0.7592592592592593,
     "pareto": false
   },
   {
-    "task": "regression",
-    "family": "GT2",
-    "config": "n_gaussians=2,K=5",
-    "n_gaussians": 2,
-    "extra": 5,
-    "fit_time": 0.02247698499991202,
-    "performance": 0.76820294498583,
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "seed": 7,
+    "fit_time": 0.04137202499987325,
+    "performance": 0.7592592592592593,
     "pareto": false
   },
   {
-    "task": "regression",
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
     "family": "GT2",
-    "config": "n_gaussians=3,K=5",
-    "n_gaussians": 3,
-    "extra": 5,
-    "fit_time": 0.036201478000066345,
-    "performance": 0.724453782108796,
+    "config": "n_gaussians=2",
+    "seed": 7,
+    "fit_time": 0.043460317000153736,
+    "performance": 0.7592592592592593,
     "pareto": false
   },
   {
-    "task": "regression",
-    "family": "GT2",
-    "config": "n_gaussians=4,K=5",
-    "n_gaussians": 4,
-    "extra": 5,
-    "fit_time": 0.03565524800001185,
-    "performance": 0.7380533898253823,
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "seed": 7,
+    "fit_time": 0.02264768599980016,
+    "performance": 0.7804270534434675,
+    "pareto": true
+  },
+  {
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "seed": 7,
+    "fit_time": 0.02285369500032175,
+    "performance": 0.6746583935031816,
     "pareto": false
   },
   {
-    "task": "regression",
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
     "family": "GT2",
-    "config": "n_gaussians=5,K=5",
-    "n_gaussians": 5,
-    "extra": 5,
-    "fit_time": 0.036362181000185956,
-    "performance": 0.7296898067247236,
+    "config": "n_gaussians=2",
+    "seed": 7,
+    "fit_time": 0.02592930399987381,
+    "performance": 0.7598912192266842,
     "pareto": false
   },
   {
-    "task": "regression",
-    "family": "GT2",
-    "config": "n_gaussians=3,K=1",
-    "n_gaussians": 3,
-    "extra": 1,
-    "fit_time": 0.02957798600004935,
-    "performance": 0.7270843283768961,
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "seed": 123,
+    "fit_time": 0.03732800599982511,
+    "performance": 0.8148148148148148,
     "pareto": false
   },
   {
-    "task": "regression",
-    "family": "GT2",
-    "config": "n_gaussians=3,K=2",
-    "n_gaussians": 3,
-    "extra": 2,
-    "fit_time": 0.02819735100001708,
-    "performance": 0.727218183464774,
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "seed": 123,
+    "fit_time": 0.04042975899983503,
+    "performance": 0.7962962962962963,
     "pareto": false
   },
   {
-    "task": "regression",
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
     "family": "GT2",
-    "config": "n_gaussians=3,K=3",
-    "n_gaussians": 3,
-    "extra": 3,
-    "fit_time": 0.03126553500010232,
-    "performance": 0.7257392227877058,
+    "config": "n_gaussians=2",
+    "seed": 123,
+    "fit_time": 0.03659160200004408,
+    "performance": 0.8148148148148148,
+    "pareto": true
+  },
+  {
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "seed": 123,
+    "fit_time": 0.023584427000059804,
+    "performance": 0.7859381949932678,
+    "pareto": true
+  },
+  {
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "seed": 123,
+    "fit_time": 0.02460382400022354,
+    "performance": 0.7003563960268034,
     "pareto": false
   },
   {
-    "task": "regression",
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
     "family": "GT2",
-    "config": "n_gaussians=3,K=8",
-    "n_gaussians": 3,
-    "extra": 8,
-    "fit_time": 0.02696657700016658,
-    "performance": 0.7236777489790129,
+    "config": "n_gaussians=2",
+    "seed": 123,
+    "fit_time": 0.02410146200008967,
+    "performance": 0.7763969110812168,
     "pareto": false
   },
   {
-    "task": "regression",
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "seed": 2024,
+    "fit_time": 0.04058127100006459,
+    "performance": 0.8518518518518519,
+    "pareto": true
+  },
+  {
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "seed": 2024,
+    "fit_time": 0.04778822699972807,
+    "performance": 0.8333333333333334,
+    "pareto": false
+  },
+  {
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
     "family": "GT2",
-    "config": "n_gaussians=3,K=10",
-    "n_gaussians": 3,
-    "extra": 10,
-    "fit_time": 0.028341942999986713,
-    "performance": 0.723384455002924,
+    "config": "n_gaussians=2",
+    "seed": 2024,
+    "fit_time": 0.044809538000208704,
+    "performance": 0.8518518518518519,
+    "pareto": false
+  },
+  {
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "seed": 2024,
+    "fit_time": 0.023377538999739045,
+    "performance": 0.7832026967221054,
+    "pareto": true
+  },
+  {
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "seed": 2024,
+    "fit_time": 0.026075441000102728,
+    "performance": 0.6956385435561236,
+    "pareto": false
+  },
+  {
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
+    "family": "GT2",
+    "config": "n_gaussians=2",
+    "seed": 2024,
+    "fit_time": 0.023139751000144315,
+    "performance": 0.7696483285081098,
+    "pareto": false
+  },
+  {
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "seed": 99,
+    "fit_time": 0.04058282200003305,
+    "performance": 0.8518518518518519,
+    "pareto": false
+  },
+  {
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "seed": 99,
+    "fit_time": 0.04409468499989089,
+    "performance": 0.8518518518518519,
+    "pareto": false
+  },
+  {
+    "task": "seed_robustness_classification",
+    "dataset": "wine",
+    "family": "GT2",
+    "config": "n_gaussians=2",
+    "seed": 99,
+    "fit_time": 0.04577294700038692,
+    "performance": 0.8518518518518519,
+    "pareto": false
+  },
+  {
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "seed": 99,
+    "fit_time": 0.024851515000136715,
+    "performance": 0.7850329883507723,
+    "pareto": false
+  },
+  {
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "seed": 99,
+    "fit_time": 0.025539837999986048,
+    "performance": 0.697906083950192,
+    "pareto": false
+  },
+  {
+    "task": "seed_robustness_regression",
+    "dataset": "friedman1",
+    "family": "GT2",
+    "config": "n_gaussians=2",
+    "seed": 99,
+    "fit_time": 0.02484278900010395,
+    "performance": 0.7795816946220431,
     "pareto": false
   }
 ]
