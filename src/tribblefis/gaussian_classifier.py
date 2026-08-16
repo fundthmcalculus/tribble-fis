@@ -31,55 +31,32 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
     def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, norm_conorm=DefaultNormCornorm, member_function="gaussian", trapz_method="fast", random_state=42,
                  refine=False, refine_method="coordinate", refine_l2_shrink=0.05,
                  t_norm=None, t_conorm=None, allow_mixed_norms=False, max_samples=None):
-        """
-        Initialize the TribbleClassifier.
+        """Initialize TribbleClassifier.
 
-        Args:
-            top_n: Number of top features to select based on differentiation score.
-                   If > 0, top_p is ignored.
-            top_p: Per-feature score threshold, not cumulative coverage: a feature
-                   is kept when its own normalized differentiation score is
-                   >= (1 - top_p). Ignored if top_n > 0.
-            n_gaussians: Number of Gaussians per feature per label (0 for automatic).
-                         Can also be a dictionary mapping feature names or labels to number of Gaussians.
-            member_function: Type of membership function ("gaussian", "trap", or "triangular").
-                "triangular" fits triangles directly via the same histogram-based EM engine as
-                "trap"/"em" (tribblefis.trapz_math, called with shape="triangle") -- a triangle
-                is exactly a trapezoid whose plateau has collapsed to a single apex point, so
-                there is only one EM implementation, not two; the triangle case simply optimizes
-                one fewer free parameter per component. There is no "fast" (non-EM) triangular
-                counterpart yet, unlike "trap" below.
-            trapz_method: Method for trapezoid fitting ("fast" for histogram-based default, "em" for
-                EM-based). Ignored when member_function="triangular".
-            norm_conorm: Fuzzy norm/conorm family -- one of "min/max",
-                    "probability" (the default), "luk", "hamacher", "einstein".
-                    The default is not the textbook min/max: measured across 18
-                    dataset x split combinations, min/max was the *worst* of the
-                    four De Morgan families for classification accuracy. See
-                    docs/norm-family-evaluation.md. Avoid "luk" for anything
-                    wide -- its bounded sum saturates and leaves most rows with
-                    no membership at all.
-            random_state: Seed for random number generator for reproducibility.
-            refine: If True (Gaussian memberships only), post-fit the Gaussian
-                    antecedent ``(mu, sigma)`` against a cross-entropy objective so
-                    the memberships become discriminative rather than merely
-                    marginal-fit. Measured over 108 cases it improves held-out
-                    accuracy by ~5 points on average, but *not* uniformly: it is
-                    worse than not refining about one time in nine, typically by
-                    ~2 points. Earlier versions of this docstring claimed a
-                    held-out check made it "never hurt"; that check existed but
-                    did not deliver it, and rejecting on it cost more accuracy
-                    than it saved -- see docs/refinement-guard-evaluation.md.
-            refine_method: ``"coordinate"`` (fast per-membership block coordinate
-                    descent, the default) or ``"optimizers"`` (population + local
-                    polish search from the `optimizers` package).
-            refine_l2_shrink: Ridge shrinkage pulling the tuned antecedents toward
-                    the heuristic start; the main overfitting control for refinement.
-            max_samples: Cap on the rows used per (feature, label) when fitting
-                    Gaussian or EM-trapezoid memberships. ``None`` -- the default
-                    -- uses every row; pass an int to bound fit time on large
-                    datasets. Ignored by ``trapz_method="fast"``, which was
-                    never subsampled.
+        Parameters
+        ----------
+        top_n : int
+            Number of top features by differentiation score (-1 means use top_p).
+        top_p : float
+            Per-feature score threshold (0-1); ignored if top_n > 0.
+        n_gaussians : int or dict
+            Gaussians per feature per label (0=auto, dict for per-label override).
+        member_function : str
+            "gaussian", "trap" (EM trapezoid), or "triangular" (special case of trap).
+        trapz_method : str
+            "fast" (histogram-based) or "em" (EM algorithm). Ignored for triangular.
+        norm_conorm : str
+            Fuzzy t-norm family: "min/max", "probability" (default), "luk", "hamacher", "einstein".
+        random_state : int
+            RNG seed for reproducibility.
+        refine : bool
+            Post-fit Gaussian antecedents on discriminative objective (improves ~5% accuracy).
+        refine_method : str
+            "coordinate" (default, fast) or "optimizers" (global search).
+        refine_l2_shrink : float
+            Ridge regularization for refinement antecedents.
+        max_samples : int or None
+            Max rows per (feature, label) for membership fitting. None=all.
         """
         self.is_fitted_: bool = False
         self.model_ = None
@@ -112,12 +89,19 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         self.refine_info_: dict | None = None
 
     def fit(self, X, y):
-        """
-        Fit the Gaussian Mixture model.
+        """Fit the Gaussian Mixture model.
 
-        Args:
-            X: Training data (n_samples, n_features)
-            y: Target values (n_samples,)
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Training data.
+        y : array-like, shape (n_samples,)
+            Target labels.
+
+        Returns
+        -------
+        self : TribbleClassifier
+            Fitted estimator.
         """
         # If X is a DataFrame, keep track of feature names
         if isinstance(X, pd.DataFrame):
@@ -167,9 +151,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             else:
                 raise ValueError(f"Unknown trapz_method: {self.trapz_method}")
         elif self.member_function == "triangular":
-            # Same engine as "trap"/"em" above (trapz_math.create_trapz_membership_dict) --
-            # a triangle is the degenerate trapezoid whose plateau has collapsed to a
-            # single apex point, so shape="triangle" reuses the identical EM code path.
+            # Triangle is degenerate trapezoid; reuse EM code with shape="triangle".
             from .trapz_math import create_trapz_membership_dict
             self.model_ = create_trapz_membership_dict(
                 X_df, y_series, top_n_var_names=self.top_features_, n_trapezoids=self.n_gaussians,
@@ -178,10 +160,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         else:
             raise ValueError(f"Unknown member_function: {self.member_function}")
 
-        # 4. Optionally refine the Gaussian antecedents against the classification
-        #    objective. A zeroth-order TSK classifier has no consequents, so the
-        #    (mu, sigma) *are* the whole model; the heuristic only fits each
-        #    feature/label marginal, never the discriminative loss.
+        # Optionally refine antecedents on discriminative objective (zeroth-order TSK).
         if self.refine and self.member_function == "gaussian":
             from .refine import refine_classifier_antecedents
             self.model_, self.refine_info_ = refine_classifier_antecedents(
@@ -190,10 +169,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
                 y_array,
                 method=self.refine_method,
                 l2_shrink=self.refine_l2_shrink,
-                # The operators this estimator predicts with. Without this the
-                # refinement optimised the antecedents against min/max firing
-                # strengths and then deployed them under whatever pair the user
-                # actually chose -- tuning one model and shipping another.
+                # Refine against user's chosen norms, not default.
                 norms=self.anomaly_params.norms(),
                 seed=self.random_state,
                 verbose=False,
@@ -203,11 +179,17 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         return self
 
     def predict(self, X):
-        """
-        Predict class labels for X.
+        """Predict class labels.
 
-        Args:
-            X: Input data (n_samples, n_features)
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Input data.
+
+        Returns
+        -------
+        y_pred : array, shape (n_samples,)
+            Class labels.
         """
         check_is_fitted(self)
 
@@ -219,11 +201,17 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         return tsk_predict(X_df, self.model_, self.anomaly_params)
 
     def predict_proba(self, X):
-        """
-        Predict class probabilities for X.
+        """Predict class probabilities.
 
-        Args:
-            X: Input data (n_samples, n_features)
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Input data.
+
+        Returns
+        -------
+        proba : array, shape (n_samples, n_classes)
+            Class probabilities (normalized firing strengths).
         """
         check_is_fitted(self)
 
@@ -234,18 +222,14 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
 
         firing_strengths, labels = tsk_firing_strengths(X_df, self.model_, self.anomaly_params)
 
-        # Normalize firing strengths to get probabilities
         row_sums = firing_strengths.sum(axis=1, keepdims=True)
-
-        # For rows where all firing strengths are zero, use uniform probability
         probabilities = np.zeros_like(firing_strengths)
         zero_rows = row_sums.flatten() == 0
         nonzero_rows = ~zero_rows
 
         probabilities[nonzero_rows] = firing_strengths[nonzero_rows] / row_sums[nonzero_rows]
-        probabilities[zero_rows] = 1.0 / len(labels)
+        probabilities[zero_rows] = 1.0 / len(labels)  # Uniform for zero firing strength.
 
-        # Ensure the columns match self.classes_ order
         label_to_idx = {label: i for i, label in enumerate(labels)}
 
         reordered_probs = np.zeros((len(X), len(self.classes_)))

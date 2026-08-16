@@ -1,24 +1,12 @@
-"""Phase 2: post-model refinement of the Gaussian antecedent parameters.
+"""Phase 2: post-model antecedent (mu, sigma) refinement via held-out validation.
 
-The heuristic membership fit (KMeans + `stats.norm.fit` per output bucket) sets
-every membership function's ``(mu, sigma)`` without ever looking at the
-regression objective. Those parameters determine the firing strengths, which are
-then frozen while the consequents are fit. This module closes that loop: it
-searches over the ``(mu, sigma)`` of every Gaussian membership function to
-minimize a held-out MSE, using the Phase 1 closed-form consequent solver
-(`solve_tsk_consequents`) as the fast, exact inner step. Because the consequents
-are solved in closed form for each candidate, the search dimension is just
-``2 * n_membership_functions`` -- the consequents are never themselves searched.
+Refines Gaussian membership parameters to minimize validation MSE. Consequents
+solved in closed form per candidate (2*n_params search dimension). Provides:
+- `refine_antecedents_de`: SciPy differential evolution (global)
+- `refine_antecedents_ga`: genetic algorithm (tournament + BLX-alpha + Gaussian mutation)
+- `refine_antecedents_local`: L-BFGS-B local descent
 
-Two optimizers are provided:
-- `refine_antecedents_de`  -- SciPy differential evolution (global, low-effort).
-- `refine_antecedents_ga`  -- a dependency-light real-coded genetic algorithm
-                              (tournament + BLX-alpha crossover + Gaussian
-                              mutation + elitism), seeded from the heuristic model.
-
-Both hold out an inner validation fold from the training data and select on that
-fold, never on the test set, and both guarantee they never return a model worse
-(on the validation fold) than the heuristic starting point.
+All guarantee monotonic improvement over heuristic start on validation fold.
 """
 
 import typing
@@ -41,10 +29,7 @@ from .regression import (
     build_consequent_features, _normalize_firing_strengths,
 )
 
-# The refinement fitness runs thousands of tiny (~O(100)-wide) linear solves. On a
-# multithreaded BLAS those small matrices thrash on thread-spawn overhead and
-# oversubscribe the machine -- pinning BLAS to a single thread roughly halves
-# wall-clock here. Wrap the search loops in `_single_threaded()`.
+# Thousands of tiny linear solves: single-thread BLAS to avoid spawn overhead.
 try:
     from threadpoolctl import threadpool_limits
 
@@ -151,15 +136,7 @@ def _make_kfold_fitness(
     model, X_train, y_train, folds, top_n_todo, n_output_buckets, order, l2_reg, basis, cross_pairs,
     pin_extremes=False, norms: NormPair | None = None, prepared=None,
 ):
-    """Cross-validated fitness: mean held-out MSE over `folds`.
-
-    A single validation fold is far too easy to overfit when the search has
-    O(100) free antecedent parameters -- the optimizer drives that one fold's MSE
-    down while test error rises. Averaging over k folds forces the antecedents to
-    generalize. Each fold pre-slices its train/val DataFrames (and pre-extracts
-    their feature arrays -- see `_prepare_folds`) once, outside the hot loop, so a
-    fitness call is just: apply params -> per-fold solve+predict.
-    """
+    """Cross-validated fitness: mean held-out MSE over k-folds to avoid overfitting."""
     if prepared is None:
         prepared = _prepare_folds(X_train, y_train, folds)
     y_bucket_mean_dummy = np.zeros(n_output_buckets)  # solver ignores this arg when pin_extremes=False
@@ -273,20 +250,7 @@ def refine_antecedents_local(
     maxfun: int = 15000,
     seed: int = 42,
 ) -> tuple[GaussianMixtureModel, dict]:
-    """Refine antecedents by L-BFGS-B *local* descent from the heuristic start.
-
-    Kept for comparison; `refine_antecedents_coordinate` is the recommended default
-    at this scale (this single high-dimensional L-BFGS-B solve spends one evaluation
-    per parameter on every finite-difference gradient). Empirically, aggressive
-    global search (DE without polish, or a long GA) drives the CV fitness down but
-    *overfits that CV estimate* -- test error rises. A local refinement stays in
-    the heuristic's basin and reliably improves test error. (The forward pass uses
-    the min/max t-norm, which is non-smooth, so L-BFGS-B works from a finite-
-    difference gradient; this is exactly the local step DE's `polish=True`
-    performs, but without the expensive and counter-productive global phase.)
-
-    Never returns a model worse than the heuristic start on the CV fitness.
-    """
+    """L-BFGS-B local descent from heuristic start (for comparison; use coordinate default)."""
     folds = _make_folds(len(X_train), n_folds, val_fraction, seed)
     fitness = _make_kfold_fitness(model, X_train, y_train, folds, top_n_todo,
                                   n_output_buckets, order, l2_reg, basis, cross_pairs)
@@ -311,17 +275,9 @@ def refine_antecedents_local(
 
 
 # ---------------------------------------------------------------------------
-# Analytic gradient of one coordinate-descent block's CV fitness (issue #43).
-#
-# `refine_antecedents_coordinate`'s sub-problem is always exactly one Gaussian's
-# (mu, sigma) when `block == 2` (the default), everything else in the model held
-# fixed. That is a *bilevel* derivative: the consequents `beta*` are re-solved
-# for every candidate theta, so the total derivative of the validation MSE picks
-# up a `dbeta*/dtheta` term as well as the direct `dPhi_val/dtheta` term (the
-# envelope theorem applies to the training objective beta* minimizes, not to the
-# validation loss being differentiated here). See the issue for the derivation;
-# restricted to "probability" norms, where the objective is smooth everywhere
-# (min/max is only piecewise smooth, and FD already finds its subgradient).
+# Analytic gradient for one Gaussian (mu, sigma) block: bilevel derivative
+# (consequents re-solved per candidate, envelope theorem applies).
+# Only supported with "probability" t-norms (smooth everywhere).
 # ---------------------------------------------------------------------------
 
 def _analytic_block_supported(norms: NormPair, pin_extremes: bool, block: int) -> bool:

@@ -1,86 +1,14 @@
-"""ANFIS: a grid-partitioned Sugeno network trained with Jang's (1993) hybrid rule.
+"""ANFIS: grid-partitioned Sugeno network with Jang's (1993) hybrid learning rule.
 
-Every other TSK model in this package (`gaussian_regressor.py`, `regression.py`)
-uses an *implicit* rule base: rules are never enumerated, because the mixture
-model has exactly one rule per output label/bucket. That sidesteps the
-classic ANFIS problem -- a rule for every *combination* of per-input terms,
-which grows combinatorially -- but it also means nothing in the package
-implements the textbook algorithm itself. `tribble-tree/HFIS_NOVELTY_REVIEW.md`
-names ANFIS (Jang 1993) as the standing point of comparison for this project's
-consequent-first design; this module is that comparison made literal and
-runnable, not just cited.
+Textbook ANFIS implementation for direct comparison with mixture-based models.
+Five-layer architecture: Gaussian membership → product t-norm → normalization →
+linear consequent → weighted sum. Uses full-batch vectorized descent (reshape
+firing strengths as `(n, K_0, ..., K_{F-1})` tensor for efficient gradient).
+Hybrid rule: alternate between LSE consequent solve (fixed premises) and
+gradient steps on Gaussian parameters (fixed consequents).
 
-**Architecture (Jang's five layers).** For `F` inputs, each partitioned into
-`K_f` Gaussian terms, a rule is one specific combination of one term per
-input -- the Cartesian product, `R = prod(K_f)` rules in total (`_build_rule_grid`).
-Layer 1 evaluates every term's Gaussian membership; Layer 2 takes the rule
-firing strength as the *product* t-norm across the chosen terms; Layer 3
-row-normalizes; Layer 4 evaluates each rule's (Sugeno/TSK) linear consequent;
-Layer 5 sums them, weighted by the Layer-3 weights.
-
-**Why product, and only product.** The rest of the package supports five
-De Morgan t-norm families and defaults to `"probability"` (`gauss_data.py`)
-specifically because it is the one family that is smooth everywhere, which is
-what makes an exact analytic gradient possible (`docs/norm-family-evaluation.md`,
-`kernel.IncrementalFIS.supports_gradient`). ANFIS was defined with the product
-t-norm (the "probability" family's T-half) from the start, and the batch
-gradient below additionally depends on the *grid* structure factoring as a
-literal product across features -- that is what lets the backward pass
-marginalize a reshaped tensor instead of walking rules one at a time (see
-`_premise_gradients`). Min/max or another family would break both properties,
-so unlike the rest of the package this module does not expose a norm choice.
-
-**Why the closed-form LSE solver is duplicated, not imported.**
-`regression.solve_tsk_consequents` takes a `GaussianMixtureModel` and calls
-`tsk_firing_strengths` on it internally; ANFIS's grid-Cartesian firing matrix
-has no such model to hand it. `solve_anfis_consequents` below is the same
-~20-line ridge normal-equations solve applied to a firing matrix the caller
-already has -- the same call `fuzzytree/solve.py` makes for the same reason
-(see that module's docstring). Everything else generic -- `build_consequent_features`
-for the polynomial/orthogonal consequent basis, `_normalize_firing_strengths`
-for the shared zero-firing convention, `_mse`/`_rsquared` for scoring -- is
-imported, not re-derived.
-
-**The hybrid rule, precisely.** Per epoch: (a) solve every rule's consequent
-in closed form for the *current* premises (`solve_anfis_consequents`) -- exact,
-because output is linear in the consequents for fixed firing strengths; then
-(b) with those consequents held fixed, take one gradient step on every
-premise parameter (`mu`, `sigma`) against the training MSE (`_premise_gradients`
-+ `_adam_step`). Holding the consequents fixed during (b) is not an
-approximation of the textbook rule, it *is* the textbook rule -- Jang's
-"hybrid" name refers to exactly this alternation, LSE then gradient, each
-half treating the other's parameters as constant. Contrast
-`refine.py`'s `_fold_mse_and_grad`, which re-solves the consequents inside its
-own gradient (because it is differentiating a *nested* optimum, envelope
-theorem and all) for a fundamentally different reason: this module's gradient
-never re-solves anything, so no such subtlety applies here.
-
-**Why full-batch, vectorized, rather than the package's block coordinate
-descent.** `refine.py`/`kernel.IncrementalFIS` move one membership function's
-`(mu, sigma)` at a time and cache per-cell folds to make that cheap -- a good
-fit for a *non-smooth* global search (GA/DE) over `min/max`, where nothing is
-differentiable and there's no reason to update every parameter in lock-step.
-ANFIS's premises are exactly the numbers a smooth loss can be differentiated
-through *simultaneously*: reshaping the raw firing strengths as a
-`(n, K_0, K_1, ..., K_{F-1})` tensor (valid precisely because they are a
-literal product across features) turns "gradient w.r.t. every term on every
-feature" into one reshape, one elementwise divide, and one sum-over-axes per
-feature -- no Python loop over rules or membership functions, and no
-per-parameter cache to maintain. That is the module's performance story: a
-handful of vectorized array ops per epoch, cost `O(n * R * F)` like the
-forward pass itself, not `O(n_epochs * n_premise_params)` fitness evaluations.
-
-**The inherent limit.** `R = prod(K_f)` is exactly why the rest of the
-package avoids grid partitioning. Past a handful of features this is the
-wrong tool -- `init_anfis_model` raises `RuleExplosionError` rather than
-silently building a slow, overfit model, and points at
-`gaussian_regressor.MixtureOfGaussiansFuzzyRegressor` for the many-feature
-case. Do not read this limit as "ANFIS is worse": per
-`tribble-tree/HFIS_NOVELTY_REVIEW.md`, the point of this module is literal
-correspondence with the textbook algorithm for interoperability and
-comparison, and a genuinely different training regime (simultaneous premise
-descent) worth having on its own terms -- not a claim that it beats the
-mixture model's consequent-first solver, which was never in question here.
+Grid partitioning R = prod(K_f) limits scalability to ~5 features; see
+`MixtureOfGaussiansFuzzyRegressor` for higher dimensions.
 """
 
 from __future__ import annotations
@@ -95,9 +23,7 @@ from sklearn.utils.validation import check_X_y, check_is_fitted
 
 from .regression import build_consequent_features, _normalize_firing_strengths, _mse, _rsquared
 
-# Rules grow as prod(K_f); past this, the grid is the wrong tool (see module
-# docstring). 5000 rules x a few thousand samples is already a multi-second
-# consequent solve -- comfortably past where a user meant to ask for this.
+# Grid partitioning limit: 5000 rules x thousands of samples → multi-second solve.
 _MAX_RULES = 5000
 
 TSKOrder = typing.Literal["0th", "1st", "2nd", "3rd", "full-2nd"]
@@ -155,13 +81,7 @@ class ANFISModel:
 
 
 def _build_rule_grid(n_terms: tuple[int, ...]) -> np.ndarray:
-    """Cartesian product of per-feature term indices, one row per rule.
-
-    Row order matches C-order `reshape(n, *n_terms)` of a flat `(n, R)` array
-    -- the last feature varies fastest -- which is what lets
-    `_premise_gradients` marginalize a reshaped tensor instead of grouping
-    rules by hand.
-    """
+    """Cartesian product of per-feature term indices; row order matches C-reshape."""
     if not n_terms:
         return np.zeros((0, 0), dtype=np.intp)
     grids = np.meshgrid(*[np.arange(k) for k in n_terms], indexing="ij")
@@ -358,14 +278,7 @@ def _adam_step(
     beta2: float = 0.999,
     eps: float = 1e-8,
 ) -> None:
-    """One in-place Adam update of every premise parameter, simultaneously.
-
-    Adam rather than Jang's original fixed/heuristic step-size rule: it needs
-    no hand-tuned decay schedule to converge reliably, and every other
-    "pragmatic default over textbook convention" choice in this package
-    (the `probability` norm, the closed-form consequent solve itself) is
-    justified the same way -- robustness over literal fidelity to 1993.
-    """
+    """In-place Adam update of premise parameters (no hand-tuned schedule needed)."""
     state.t += 1
     bias1 = 1 - beta1 ** state.t
     bias2 = 1 - beta2 ** state.t
