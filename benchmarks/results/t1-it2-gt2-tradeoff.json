@@ -1,0 +1,422 @@
+[
+  {
+    "task": "classification",
+    "family": "T1",
+    "config": "n_gaussians=1",
+    "n_gaussians": 1,
+    "extra": null,
+    "fit_time": 0.03825835799989363,
+    "performance": 0.9074074074074074,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.04381798200006415,
+    "performance": 0.9259259259259259,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "T1",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 0.040560170999924594,
+    "performance": 0.8888888888888888,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "T1",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 0.04510979000019688,
+    "performance": 0.9259259259259259,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "T1",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 0.051879282000072635,
+    "performance": 0.8148148148148148,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "IT2",
+    "config": "n_gaussians=1",
+    "n_gaussians": 1,
+    "extra": null,
+    "fit_time": 0.027496057999996992,
+    "performance": 0.9074074074074074,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.040970511000068655,
+    "performance": 0.9259259259259259,
+    "pareto": true
+  },
+  {
+    "task": "classification",
+    "family": "IT2",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 0.04413206399999581,
+    "performance": 0.9259259259259259,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "IT2",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 0.04847073599989926,
+    "performance": 0.9259259259259259,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "IT2",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 0.04903230400009306,
+    "performance": 0.8333333333333334,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "IT2+refine",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 3.379775387999871,
+    "performance": 0.9814814814814815,
+    "pareto": true
+  },
+  {
+    "task": "classification",
+    "family": "GT2",
+    "config": "n_gaussians=1,K=5",
+    "n_gaussians": 1,
+    "extra": 5,
+    "fit_time": 0.026177245999861043,
+    "performance": 0.9074074074074074,
+    "pareto": true
+  },
+  {
+    "task": "classification",
+    "family": "GT2",
+    "config": "n_gaussians=2,K=5",
+    "n_gaussians": 2,
+    "extra": 5,
+    "fit_time": 0.043010694000031435,
+    "performance": 0.9259259259259259,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=5",
+    "n_gaussians": 3,
+    "extra": 5,
+    "fit_time": 0.05075050999994346,
+    "performance": 0.8888888888888888,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "GT2",
+    "config": "n_gaussians=4,K=5",
+    "n_gaussians": 4,
+    "extra": 5,
+    "fit_time": 0.04314473999988877,
+    "performance": 0.9259259259259259,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "GT2",
+    "config": "n_gaussians=5,K=5",
+    "n_gaussians": 5,
+    "extra": 5,
+    "fit_time": 0.050333841000110624,
+    "performance": 0.8148148148148148,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=1",
+    "n_gaussians": 3,
+    "extra": 1,
+    "fit_time": 0.04854836100003013,
+    "performance": 0.8888888888888888,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=2",
+    "n_gaussians": 3,
+    "extra": 2,
+    "fit_time": 0.05065044299999499,
+    "performance": 0.8888888888888888,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=3",
+    "n_gaussians": 3,
+    "extra": 3,
+    "fit_time": 0.044689222999977574,
+    "performance": 0.8888888888888888,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=8",
+    "n_gaussians": 3,
+    "extra": 8,
+    "fit_time": 0.04504515300004641,
+    "performance": 0.8888888888888888,
+    "pareto": false
+  },
+  {
+    "task": "classification",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=10",
+    "n_gaussians": 3,
+    "extra": 10,
+    "fit_time": 0.03976153000007798,
+    "performance": 0.8888888888888888,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "T1",
+    "config": "n_gaussians=1",
+    "n_gaussians": 1,
+    "extra": null,
+    "fit_time": 0.015288760999965234,
+    "performance": 0.7874131842493017,
+    "pareto": true
+  },
+  {
+    "task": "regression",
+    "family": "T1",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.024959083000112514,
+    "performance": 0.7853757997276549,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "T1",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 0.0310130160000881,
+    "performance": 0.7270843283768961,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "T1",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 0.028219101000104274,
+    "performance": 0.7399269183548414,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "T1",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 0.035943807999956334,
+    "performance": 0.7303539561162917,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "IT2",
+    "config": "n_gaussians=1",
+    "n_gaussians": 1,
+    "extra": null,
+    "fit_time": 0.01685378800016224,
+    "performance": -0.266362387999838,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "IT2",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 0.02418501399984052,
+    "performance": 0.6391691825189505,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "IT2",
+    "config": "n_gaussians=3",
+    "n_gaussians": 3,
+    "extra": null,
+    "fit_time": 0.030845941000052335,
+    "performance": 0.6875969843001831,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "IT2",
+    "config": "n_gaussians=4",
+    "n_gaussians": 4,
+    "extra": null,
+    "fit_time": 0.030933062000030986,
+    "performance": 0.7096347490139507,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "IT2",
+    "config": "n_gaussians=5",
+    "n_gaussians": 5,
+    "extra": null,
+    "fit_time": 0.03980492499999855,
+    "performance": 0.7123561350905878,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "IT2+refine",
+    "config": "n_gaussians=2",
+    "n_gaussians": 2,
+    "extra": null,
+    "fit_time": 35.31439929600015,
+    "performance": 0.88034245082933,
+    "pareto": true
+  },
+  {
+    "task": "regression",
+    "family": "GT2",
+    "config": "n_gaussians=1,K=5",
+    "n_gaussians": 1,
+    "extra": 5,
+    "fit_time": 0.016684769999983473,
+    "performance": 0.7053243443127232,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "GT2",
+    "config": "n_gaussians=2,K=5",
+    "n_gaussians": 2,
+    "extra": 5,
+    "fit_time": 0.02247698499991202,
+    "performance": 0.76820294498583,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=5",
+    "n_gaussians": 3,
+    "extra": 5,
+    "fit_time": 0.036201478000066345,
+    "performance": 0.724453782108796,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "GT2",
+    "config": "n_gaussians=4,K=5",
+    "n_gaussians": 4,
+    "extra": 5,
+    "fit_time": 0.03565524800001185,
+    "performance": 0.7380533898253823,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "GT2",
+    "config": "n_gaussians=5,K=5",
+    "n_gaussians": 5,
+    "extra": 5,
+    "fit_time": 0.036362181000185956,
+    "performance": 0.7296898067247236,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=1",
+    "n_gaussians": 3,
+    "extra": 1,
+    "fit_time": 0.02957798600004935,
+    "performance": 0.7270843283768961,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=2",
+    "n_gaussians": 3,
+    "extra": 2,
+    "fit_time": 0.02819735100001708,
+    "performance": 0.727218183464774,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=3",
+    "n_gaussians": 3,
+    "extra": 3,
+    "fit_time": 0.03126553500010232,
+    "performance": 0.7257392227877058,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=8",
+    "n_gaussians": 3,
+    "extra": 8,
+    "fit_time": 0.02696657700016658,
+    "performance": 0.7236777489790129,
+    "pareto": false
+  },
+  {
+    "task": "regression",
+    "family": "GT2",
+    "config": "n_gaussians=3,K=10",
+    "n_gaussians": 3,
+    "extra": 10,
+    "fit_time": 0.028341942999986713,
+    "performance": 0.723384455002924,
+    "pareto": false
+  }
+]
