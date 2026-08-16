@@ -7,11 +7,12 @@ import pandas as pd
 from itertools import combinations
 from matplotlib import pyplot as plt
 from numpy import ndarray
-from scipy.optimize import minimize
 
 from tribblefis.gauss_data import GaussianMixtureModel
 from tribblefis.gauss_data import NormPair
+from tribblefis.gauss_data import ZERO_FIRING_THRESHOLD
 from tribblefis.gauss_math import tsk_firing_strengths
+from tribblefis.optimizer_utils import optimizers_sub_solve
 
 
 def plot_tsk_order_comparison(

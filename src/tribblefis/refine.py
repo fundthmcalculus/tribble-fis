@@ -1,20 +1,42 @@
-"""Phase 2: post-model antecedent (mu, sigma) refinement via held-out validation.
+"""Phase 2: post-model refinement of the Gaussian antecedent parameters.
 
-Refines Gaussian membership parameters to minimize validation MSE. Consequents
-solved in closed form per candidate (2*n_params search dimension). Provides:
-- `refine_antecedents_de`: SciPy differential evolution (global)
-- `refine_antecedents_ga`: genetic algorithm (tournament + BLX-alpha + Gaussian mutation)
-- `refine_antecedents_local`: L-BFGS-B local descent
+The heuristic membership fit (KMeans + `stats.norm.fit` per output bucket) sets
+every membership function's ``(mu, sigma)`` without ever looking at the
+regression objective. Those parameters determine the firing strengths, which are
+then frozen while the consequents are fit. This module closes that loop: it
+searches over the ``(mu, sigma)`` of every Gaussian membership function to
+minimize a held-out MSE, using the Phase 1 closed-form consequent solver
+(`solve_tsk_consequents`) as the fast, exact inner step. Because the consequents
+are solved in closed form for each candidate, the search dimension is just
+``2 * n_membership_functions`` -- the consequents are never themselves searched.
 
-All guarantee monotonic improvement over heuristic start on validation fold.
+Two optimizers are provided:
+- `refine_antecedents_de`  -- global population search via the in-house
+                              `optimizers` package (see `_run_optimizer_search`;
+                              this used to be SciPy differential evolution).
+- `refine_antecedents_ga`  -- a dependency-light real-coded genetic algorithm
+                              (tournament + BLX-alpha crossover + Gaussian
+                              mutation + elitism), seeded from the heuristic model.
+
+Both hold out an inner validation fold from the training data and select on that
+fold, never on the test set, and both guarantee they never return a model worse
+(on the validation fold) than the heuristic starting point.
+
+No `scipy.optimize` is imported by this module: every sub-solve that used to
+run through it (bounded local L-BFGS-B blocks, the classifier's SLSQP/TNC/
+Powell/Nelder-Mead choices, and the module-level differential evolution) now
+routes through `optimizer_utils.optimizers_sub_solve` /
+`optimizer_utils.projected_gradient_solve` (both backed by the in-house
+`optimizers` package) or `_run_optimizer_search` below. See those functions'
+docstrings for the behavioral tradeoffs -- most notably, `optimizers` itself
+still imports scipy internally, so this does not make the project scipy-free,
+only scipy-optimize-direct-import-free.
 """
 
 import typing
-import warnings
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import differential_evolution, minimize
 
 from .gauss_data import (
     GaussianMembership, LabelModel, FeatureModel, GaussianMixtureModel, NormPair, resolve_norm_pair,
@@ -23,6 +45,10 @@ from .gauss_math import tsk_firing_strengths, firing_strengths_and_mf_grad
 from .kernel import (
     IncrementalFIS, NotCompilable, compile_model,
     firing_strengths as kernel_firing_strengths,
+)
+from .optimizer_utils import (
+    optimizers_sub_solve as _optimizers_sub_solve,
+    projected_gradient_solve as _projected_gradient_solve,
 )
 from .regression import (
     solve_tsk_consequents, predict_tsk, _mse, _rsquared,
