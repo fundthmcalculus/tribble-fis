@@ -425,6 +425,39 @@ def _fold_mse_and_grad(
 # Per-variable (block) coordinate descent.
 # ---------------------------------------------------------------------------
 
+class _SubSolveResult(typing.NamedTuple):
+    x: np.ndarray
+    fun: float
+
+
+def _optimizers_sub_solve(fun: typing.Callable, x0: np.ndarray, bounds) -> "_SubSolveResult":
+    """Bounded local descent for one gradient-free coordinate-descent block,
+    via the in-house `optimizers` package instead of
+    `scipy.optimize.minimize(method="L-BFGS-B")` (#119).
+
+    Uses `optimizers.continuous.local.full_grad_optim`, which jointly descends
+    every parameter in the block from `x0` -- `single_var_grad_optim` (descend
+    one dimension at a time) was measured to land on a visibly worse optimum
+    on a non-smooth block objective, so it is not a like-for-like replacement
+    here even though it is the package's more commonly used "local polish".
+
+    This path has no `maxfun`/`maxiter` knob (`optimizers`'s local solve does
+    not expose one -- it always runs `scipy.optimize.minimize` to its own
+    convergence, uncapped), so it cannot reproduce the old hard evaluation
+    cap exactly. Measured on 2-3 parameter box-bounded blocks it lands within
+    the same order of magnitude of evaluations as the old `sub_maxfun`-capped
+    solve (same or better objective value, 1x-2.5x the evaluation count) --
+    see the benchmark in the PR description.
+    """
+    from optimizers.continuous.local import full_grad_optim
+    from optimizers.continuous.variables import InputContinuousVariable
+
+    variables = [InputContinuousVariable(f"p{i}", float(lo), float(hi))
+                 for i, (lo, hi) in enumerate(bounds)]
+    x, fun_val = full_grad_optim(fun, np.asarray(x0, dtype=float), variables)
+    return _SubSolveResult(x=np.asarray(x, dtype=float), fun=float(fun_val))
+
+
 def refine_antecedents_coordinate(
     model: GaussianMixtureModel,
     X_train: pd.DataFrame,
@@ -528,6 +561,11 @@ def refine_antecedents_coordinate(
                             n_ok += 1
                         return total_f / max(n_ok, 1), total_g / max(n_ok, 1)
 
+                    # Kept on scipy: this branch's whole point is exploiting the
+                    # closed-form bilevel gradient (issue #43), and `optimizers`'
+                    # local solve has no way to accept a supplied Jacobian --
+                    # swapping it would silently fall back to finite differences
+                    # and lose the optimization this branch exists for.
                     res = minimize(f_sub_grad, x[idx], method="L-BFGS-B", jac=True, bounds=sub_bounds,
                                    options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
                 else:
@@ -537,8 +575,7 @@ def refine_antecedents_coordinate(
                         n_eval[0] += 1
                         return fitness(trial)
 
-                    res = minimize(f_sub, x[idx], method="L-BFGS-B", bounds=sub_bounds,
-                                   options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
+                    res = _optimizers_sub_solve(f_sub, x[idx], sub_bounds)
                 if res.fun < cur - 1e-12:
                     x[idx] = np.clip(res.x, lo[idx], hi[idx])
                     cur = float(res.fun)

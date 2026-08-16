@@ -15,15 +15,17 @@ to run before it (contrast Type-1's coordinate descent, whose sub-problem
 re-solves TSK consequents in closed form -- IT2 regression has no analogue of
 that here; see the module-level TODO below).
 
-Each sub-problem is optimized with bounded L-BFGS-B, which estimates its own
-gradient by finite differences (the switch-point search inside `karnik_mendel_tsk`
-is not differentiable in closed form -- it is a discrete arg-sort-and-partition,
-not a smooth function of `(mu, sigma)` -- so an analytic gradient the way
-`refine.py`'s "probability"-norm block coordinate descent has one is not
-available here). An L2 penalty pulls each sub-problem back toward its value at
-the start of the current sweep, and -- mirroring `refine.py`'s "never return a
-model worse than the heuristic start" guarantee -- a candidate is only kept if
-it strictly improves the best training loss seen so far.
+Each sub-problem is optimized with `refine.py`'s `_optimizers_sub_solve` --
+bounded local descent via the in-house `optimizers` package (#119), which
+estimates its own gradient by finite differences under the hood (the
+switch-point search inside `karnik_mendel_tsk` is not differentiable in
+closed form -- it is a discrete arg-sort-and-partition, not a smooth function
+of `(mu, sigma)` -- so an analytic gradient the way `refine.py`'s
+"probability"-norm block coordinate descent has one is not available here).
+An L2 penalty pulls each sub-problem back toward its value at the start of
+the current sweep, and -- mirroring `refine.py`'s "never return a model worse
+than the heuristic start" guarantee -- a candidate is only kept if it
+strictly improves the best training loss seen so far.
 
 **Regression refinement** (`refine_it2_regressor_antecedents`) is the same
 coordinate descent, but unlike the classifier, `it2_regressor`'s consequents
@@ -51,7 +53,6 @@ uncertainty vanishes.
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
 
 from .gauss_data import (
     IT2GaussianMixtureModel, IT2FeatureModel, IT2LabelModel, IT2GaussianMembership,
@@ -59,7 +60,7 @@ from .gauss_data import (
 )
 from .gauss_math import tsk_firing_strengths
 from .it2_kernel import it2_firing_strengths, karnik_mendel_tsk, _extract_upper_model, _extract_lower_model
-from .refine import _make_folds, _prepare_folds
+from .refine import _make_folds, _prepare_folds, _optimizers_sub_solve
 from .regression import solve_tsk_consequents_from_firing, rule_consequent_values, _mse
 
 
@@ -237,7 +238,9 @@ def refine_it2_antecedents(
     n_sweeps : int, default=3
         Number of full passes over every IT2 Gaussian membership.
     sub_maxfun : int, default=25
-        Function-evaluation budget for each slot's L-BFGS-B sub-problem.
+        Currently unused (accepted for backward compatibility): each slot's
+        sub-problem now runs through `refine._optimizers_sub_solve` (#119),
+        which has no evaluation-budget knob to forward this to.
     sigma_min_frac : float, default=0.02
         Lower bound on sigma, as a fraction of the owning feature's observed
         range (mirrors `refine.py`'s `build_param_bounds`).
@@ -300,10 +303,7 @@ def refine_it2_antecedents(
                 penalty = l2_shrink * float(np.sum((v - x0) ** 2))
                 return loss + penalty
 
-            res = minimize(
-                fitness, x0, method="L-BFGS-B", bounds=bounds,
-                options={"maxfun": sub_maxfun, "maxiter": sub_maxfun},
-            )
+            res = _optimizers_sub_solve(fitness, x0, bounds)
 
             candidate = _replace_slot(current, fname, label, idx, _apply_slot_params(res.x, upper_id, lower_id))
             candidate_loss = _cross_entropy_loss(candidate, X, y_idx, norms, km_iterations)
@@ -554,10 +554,7 @@ def refine_it2_regressor_antecedents(
                 trial = _replace_slot(current, fname, label, idx, new_it2_mf)
                 return cv_fitness(trial)
 
-            res = minimize(
-                fitness, x0, method="L-BFGS-B", bounds=bounds,
-                options={"maxfun": sub_maxfun, "maxiter": sub_maxfun},
-            )
+            res = _optimizers_sub_solve(fitness, x0, bounds)
 
             candidate = _replace_slot(current, fname, label, idx, _apply_slot_params(res.x, upper_id, lower_id))
             candidate_loss = cv_fitness(candidate)
