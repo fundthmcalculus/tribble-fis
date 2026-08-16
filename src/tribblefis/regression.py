@@ -506,9 +506,9 @@ def optimize_tsk_coefficients(
     firing_strengths_train, labels_train = tsk_firing_strengths(
         X_train[top_n_todo], gaussian_memberships, norms=norms
     )
-    # Create mask for rows where sum > 1e-6
+    # Create mask for rows where sum > ZERO_FIRING_THRESHOLD
     row_sums = firing_strengths_train.sum(axis=1)
-    valid_rows = row_sums > 1e-6
+    valid_rows = row_sums > ZERO_FIRING_THRESHOLD
 
     # Initialize with zeros
     norm_firing_strength_train = np.zeros_like(firing_strengths_train)
@@ -587,13 +587,21 @@ def optimize_tsk_coefficients(
         )
         return _mse(y_train["y_value"].values, y_pred) + _correction_penalty(coeffs_flat)
 
-    # Optimize using L-BFGS-B
+    # Optimize via the in-house `optimizers` package instead of
+    # `scipy.optimize.minimize(method="L-BFGS-B")`. That scipy call ran
+    # unbounded (no `bounds` kwarg); `optimizers_sub_solve` needs a finite box,
+    # so use a generously wide one centered on 0 and scaled to the initial
+    # least-squares guess -- wide enough that the search is never the binding
+    # constraint on a well-conditioned problem, while still being finite.
     initial_obj = objective(initial_coeffs_flat)
-    result = minimize(objective, initial_coeffs_flat, method="L-BFGS-B", options={"maxiter": 1000})
+    coeff_scale = max(1.0, float(np.max(np.abs(initial_coeffs_flat))))
+    bound_width = 50.0 * coeff_scale
+    bounds = [(-bound_width, bound_width)] * len(initial_coeffs_flat)
+    result = optimizers_sub_solve(objective, initial_coeffs_flat, bounds)
 
     # Ill-conditioned problems (e.g. high-order trapezoid rules with sparse firing
-    # strengths) can leave L-BFGS-B at a point worse than where it started. Never
-    # return coefficients worse than the initial least-squares guess.
+    # strengths) can leave the optimizer at a point worse than where it started.
+    # Never return coefficients worse than the initial least-squares guess.
     if result.fun <= initial_obj:
         best_flat, best_obj = result.x, result.fun
     else:
@@ -743,19 +751,23 @@ def build_consequent_features(
 def _normalize_firing_strengths(firing_strengths: ndarray) -> ndarray:
     """Row-normalize firing strengths using the canonical zero-firing convention.
 
-    Rows whose total firing is <= 1e-6 are left as all-zero (no rule fires). This
-    exact convention must be shared by the solver and prediction, or training and
-    evaluation silently disagree. It is self-consistent for the closed-form solver:
-    an all-zero design row contributes nothing to the ridge normal equations (so
-    such training rows are effectively ignored by the fit), and at predict time the
-    row yields 0 -- the graceful fallback for a point no rule covers. (Contrast the
-    old L-BFGS path, which forced a uniform 1/n_labels blend only to stop the
-    optimizer wandering the resulting null space; the regularized closed-form solve
-    has no such null-space issue, and a uniform blend would multiply
+    Rows whose total firing is <= `ZERO_FIRING_THRESHOLD` are left as all-zero
+    (no rule fires). This exact convention must be shared by every consumer of
+    a firing-strength row sum -- the solver, prediction, and (via
+    `it2_kernel.karnik_mendel_tsk`) IT2/GT2's Karnik-Mendel search -- or
+    training and evaluation silently disagree; see `ZERO_FIRING_THRESHOLD`'s
+    own docstring for a concrete case where two different thresholds did. It
+    is self-consistent for the closed-form solver: an all-zero design row
+    contributes nothing to the ridge normal equations (so such training rows
+    are effectively ignored by the fit), and at predict time the row yields 0
+    -- the graceful fallback for a point no rule covers. (Contrast the old
+    L-BFGS path, which forced a uniform 1/n_labels blend only to stop the
+    optimizer wandering the resulting null space; the regularized closed-form
+    solve has no such null-space issue, and a uniform blend would multiply
     unbounded out-of-range consequents under extrapolation.)
     """
     row_sums = firing_strengths.sum(axis=1)
-    valid = row_sums > 1e-6
+    valid = row_sums > ZERO_FIRING_THRESHOLD
     norm = np.zeros_like(firing_strengths)
     norm[valid] = firing_strengths[valid] / row_sums[valid, np.newaxis]
     return norm
@@ -1065,21 +1077,28 @@ def apply_tsk_consequents(
 def compute_rbf_centers(X: ndarray, n_centers: int = 5) -> ndarray:
     """Compute RBF center points using quantiles of the feature space.
 
+    Uses a one-factor-at-a-time "star" design rather than a per-feature
+    Cartesian product: each center holds every feature at its median except
+    one, which is swept across `n_centers` quantiles. This keeps the center
+    count linear in `n_features` (matching this function's documented
+    contract) instead of exploding as `n_centers ** n_features`, which used
+    to OOM for ordinary feature counts (see #130).
+
     Args:
         X: (n_samples, n_features) feature matrix.
         n_centers: Number of centers per feature (default 5, produces n_features * n_centers total).
 
     Returns:
-        (n_centers_total, n_features) array of RBF centers.
+        (n_features * n_centers, n_features) array of RBF centers.
     """
     n_samples, n_features = X.shape
     quantiles = np.linspace(0.1, 0.9, n_centers)
-    centers = []
+    medians = np.median(X, axis=0)
+    centers = np.tile(medians, (n_features * n_centers, 1))
     for feat_idx in range(n_features):
         feat_quantiles = np.quantile(X[:, feat_idx], quantiles)
-        centers.append(feat_quantiles)
-    # Create a grid of all combinations (Cartesian product across features)
-    return np.column_stack(np.meshgrid(*centers, indexing='ij')).reshape(-1, n_features)
+        centers[feat_idx * n_centers:(feat_idx + 1) * n_centers, feat_idx] = feat_quantiles
+    return centers
 
 
 def select_interaction_terms(
