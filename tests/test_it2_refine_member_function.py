@@ -116,11 +116,6 @@ def test_refine_it2_regressor_antecedents_never_increases_cv_loss(member_functio
 
     norms = reg.norms_
     base = reg._base_regressor
-    _, _, _, init_info = refine_it2_regressor_antecedents(
-        X, y, reg.model_, norms, base.top_features_, order=base.tsk_order, l2_reg=base.l2_reg,
-        basis=base.consequent_basis, cross_pairs=base.cross_pairs_,
-        method="none", n_sweeps=0, verbose=False,
-    )
     refined_model, _, _, info = refine_it2_regressor_antecedents(
         X, y, reg.model_, norms, base.top_features_, order=base.tsk_order, l2_reg=base.l2_reg,
         basis=base.consequent_basis, cross_pairs=base.cross_pairs_,

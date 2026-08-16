@@ -48,6 +48,7 @@ from tribblefis.it2_regressor import IT2TribbleRegressor
 reg = IT2TribbleRegressor(
     top_n=3,
     n_gaussians=2,
+    member_function="gaussian",     # "gaussian", "trap", or "triangular"
     uncertainty_width=0.5,
     km_iterations=10,
     random_state=42,
@@ -408,15 +409,17 @@ print(f"Average interval width: {interval_width.mean():.3f}")
 
 ### ✅ Implemented in v4
 
-1. **All Membership Types**: Gaussian, trapezoidal, triangular (with type-aware uncertainty expansion)
+1. **All Membership Types**: Gaussian, trapezoidal, triangular (with type-aware uncertainty
+   expansion, `gauss_data.widen_membership`), for both classification and regression (#144)
 2. **Antecedent Refinement**: Pre-conversion Type-1 refinement for discriminative bounds
 3. **Real Karnik-Mendel Type Reduction**: `karnik_mendel_tsk` runs the actual switch-point
    search over rule consequents (regressor), numba-compiled and parallelized across
    samples; the classifier's per-class interval midpoint is closed-form (see above)
 4. **Post-Fit IT2 Refinement**: `refine_it2` runs block coordinate descent directly on the
-   IT2 upper/lower Gaussian antecedents, after conversion -- for both classification
-   (cross-entropy objective) and regression (held-out MSE with a per-candidate closed-form
-   consequent re-solve, `it2_refine.refine_it2_regressor_antecedents`)
+   IT2 upper/lower antecedents (any of Gaussian, trapezoidal, or triangular -- #144),
+   after conversion -- for both classification (cross-entropy objective) and regression
+   (held-out MSE with a per-candidate closed-form consequent re-solve,
+   `it2_refine.refine_it2_regressor_antecedents`)
 5. **Confidence Intervals**: `.predict_intervals()`, with the regressor's KM path
    *guaranteeing* containment of `.predict()`'s point estimate by construction
 6. **Both Classification and Regression**: Full support for both task types

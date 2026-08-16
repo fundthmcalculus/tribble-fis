@@ -17,7 +17,7 @@ from tribblefis.gt2_kernel import gt2_firing_strengths, extract_alpha_plane_mode
 from tribblefis.it2_kernel import it2_firing_strengths
 from tribblefis.gt2_refine import (
     _cross_entropy_loss,
-    _iter_gt2_gaussian_slots,
+    _iter_gt2_slots,
     refine_gt2_antecedents,
 )
 
@@ -64,7 +64,7 @@ def test_refine_gt2_antecedents_actually_changes_parameters(synthetic_classifica
 
     def _flat_params(model):
         params = []
-        for *_, gt2_mf in _iter_gt2_gaussian_slots(model):
+        for *_, gt2_mf in _iter_gt2_slots(model):
             params.extend([
                 gt2_mf.upper_mf.mu, gt2_mf.upper_mf.sigma,
                 gt2_mf.lower_mf.sigma, gt2_mf.principal_mf.sigma,
@@ -91,7 +91,7 @@ def test_refine_gt2_antecedents_preserves_sigma_ordering_invariant(synthetic_cla
         X, y_idx, clf.model_, norms, n_sweeps=3, sub_maxfun=15, n_alpha_planes=3, verbose=False,
     )
 
-    for *_, gt2_mf in _iter_gt2_gaussian_slots(refined):
+    for *_, gt2_mf in _iter_gt2_slots(refined):
         assert gt2_mf.lower_mf.sigma <= gt2_mf.principal_mf.sigma + 1e-9
         assert gt2_mf.principal_mf.sigma <= gt2_mf.upper_mf.sigma + 1e-9
 
