@@ -280,33 +280,24 @@ class TestMinMaxScaler(_SharedScalarTests, unittest.TestCase):
         self.assertGreaterEqual(Xt.min(), -1.0)
         self.assertLessEqual(Xt.max(), 1.0)
 
-    def test_clips_out_of_range_values_at_transform_time(self):
+    def test_extrapolates_out_of_range_values_at_transform_time(self):
+        """transform() no longer clips: out-of-range values are extrapolated
+        past the fitted bounds so inverse_transform can recover them."""
         scaler = MinMaxScaler().fit(self.X)
         X_test = self.X.copy()
         X_test.iloc[0, X_test.columns.get_loc("narrow")] = 1e9
         Xt = scaler.transform(X_test)
-        self.assertLessEqual(Xt.max(), 1.0)
+        self.assertGreater(Xt[0, X_test.columns.get_loc("narrow")], 1.0)
 
-    def test_inverse_transform_round_trip_warns_with_clipped_out_of_range_data(self):
-        """When clip=True (the default), out-of-range values are silently
-        clipped at transform time, breaking the round-trip. inverse_transform
-        should warn when it detects potential clipped artifacts (values sitting
-        exactly on the bounds)."""
-        scaler = MinMaxScaler(clip=True).fit(self.X)
+    def test_inverse_transform_round_trip_recovers_out_of_range_data(self):
+        scaler = MinMaxScaler().fit(self.X)
         X_test = self.X.copy()
         # Set one value way outside the fitted range.
         X_test.iloc[0, X_test.columns.get_loc("narrow")] = 1e9
         Xt = scaler.transform(X_test)
-        # The transformed value should be clipped to 1.0 (the upper bound).
-        self.assertEqual(Xt[0, X_test.columns.get_loc("narrow")], 1.0)
+        Xinv = scaler.inverse_transform(Xt)
 
-        # inverse_transform should warn about potential clipped artifacts.
-        with self.assertWarns(UserWarning):
-            Xinv = scaler.inverse_transform(Xt)
-
-        # The round-trip will not recover the original value; it will be wrong.
-        # This is the core issue: inverse_transform(transform(X)) != X
-        self.assertNotAlmostEqual(Xinv[0, X_test.columns.get_loc("narrow")], 1e9)
+        np.testing.assert_allclose(Xinv, X_test.to_numpy())
 
 
 class TestStandardScaler(_SharedScalarTests, unittest.TestCase):

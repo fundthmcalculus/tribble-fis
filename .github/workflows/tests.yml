@@ -52,8 +52,18 @@ jobs:
       # uv whatever the action version, and this pin broke in the first place
       # because a version-specific input silently stopped existing. Two
       # mechanisms for one value is how that recurs.
+      #
+      # enable-cache persists uv's wheel/build cache (keyed on uv.lock) via
+      # actions/cache. Without it every run rebuilds the two git dependencies
+      # (optimizers, tribble-clustering) from source and re-downloads the
+      # numpy/scipy/numba/pandas/matplotlib stack from scratch, on both matrix
+      # legs -- most of the wall-clock this workflow was burning before a
+      # single test ran.
       - name: Install uv
         uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: ${{ matrix.kernel }}
 
       - name: Install dependencies
         run: uv sync --extra dev
@@ -94,5 +104,8 @@ jobs:
           print(f"kernel backend under test: {'compiled' if want else 'numpy'}")
           PY
 
+      # -n auto (pytest-xdist) spreads the suite's ~840 tests across the
+      # runner's cores instead of running them one at a time in a single
+      # process; combined with the uv cache above this is most of the win.
       - name: Run tests
-        run: uv run pytest ${{ github.event_name == 'pull_request' && '-m "not performance"' || '' }}
+        run: uv run pytest -n auto ${{ github.event_name == 'pull_request' && '-m "not performance"' || '' }}

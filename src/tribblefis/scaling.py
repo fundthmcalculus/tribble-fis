@@ -67,8 +67,8 @@ silently shifted to the minimum before the log is applied. This flooring:
 - Applies only to features selected for logging (by ``log_features`` or
   automatic detection via ``log_dynamic_range``).
 - Preserves domain safety but discards the magnitude of out-of-range
-  excursions below the training minimum (similar to ``clip=True`` on
-  :class:`MinMaxScaler`, but unconditional and log-feature-only).
+  excursions below the training minimum, unconditionally and for
+  log-selected features only.
 
 For :class:`StandardScaler`, this means logged features are partially
 bounded below, even though the class otherwise advertises unbounded output.
@@ -135,8 +135,6 @@ pipeline, extreme output-bucket means pinned to ``[0, 1]`` -- assume a
 assumption the rule construction relies on. The degradation shows up on
 *training* data too, so it is underfitting rather than overfitting.
 """
-
-import warnings
 
 import numpy as np
 import pandas as pd
@@ -290,19 +288,6 @@ class MinMaxScaler(_FuzzyScalarBase):
             an error but this one wins. ``[]`` means "log nothing" and is
             distinct from the default ``None``, which means "auto-detect".
             Naming a feature that is not in the data raises at ``fit`` time.
-        clip: Whether ``transform`` clips values falling outside the range
-            seen during ``fit`` (e.g. test data below the training min/max).
-
-            This default is a **modelling decision, not just numerical
-            hygiene**, and it is worth choosing deliberately. In a one-class
-            or anomaly-detection setup where the scaler is fitted on normal
-            data only (say, benign network traffic), every attack row that
-            falls outside the fitted range is saturated at the bounds rather
-            than extrapolated. That is often exactly what you want -- it keeps
-            membership functions inside their supported domain -- but it does
-            discard the magnitude of the excursion, which is sometimes the
-            most informative thing about an outlier. Pass ``clip=False`` when
-            you need that magnitude to survive into the model.
     """
 
     def __init__(
@@ -310,12 +295,10 @@ class MinMaxScaler(_FuzzyScalarBase):
         feature_range=(0.0, 1.0),
         log_dynamic_range=3.0,
         log_features=None,
-        clip=True,
     ):
         self.feature_range = feature_range
         self.log_dynamic_range = log_dynamic_range
         self.log_features = log_features
-        self.clip = clip
 
     def fit(self, X, y=None):
         X_df = self._as_dataframe(X)
@@ -341,27 +324,12 @@ class MinMaxScaler(_FuzzyScalarBase):
         lo, hi = self.feature_range
         scaled = (X_log - self.data_min_) / self.scale_
         scaled = scaled.to_numpy() * (hi - lo) + lo
-        if self.clip:
-            scaled = np.clip(scaled, lo, hi)
         return scaled
 
     def inverse_transform(self, X):
         check_is_fitted(self)
         X = np.asarray(X, dtype=float)
         lo, hi = self.feature_range
-
-        if self.clip:
-            on_bounds = np.isclose(X, lo) | np.isclose(X, hi)
-            if np.any(on_bounds):
-                warnings.warn(
-                    "inverse_transform detected values sitting exactly on the bounds "
-                    f"{(lo, hi)}. Since clip=True, these may be clipped artifacts from "
-                    "transform(), and the round-trip inverse_transform(transform(X)) may not "
-                    "recover the original values outside the fitted range. "
-                    "See https://github.com/fundthmcalculus/tribble-fis/issues/74 for details.",
-                    UserWarning,
-                    stacklevel=2,
-                )
 
         unscaled = (X - lo) / (hi - lo)
         unscaled = unscaled * self.scale_.to_numpy() + self.data_min_.to_numpy()
