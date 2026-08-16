@@ -1,20 +1,42 @@
-"""Phase 2: post-model antecedent (mu, sigma) refinement via held-out validation.
+"""Phase 2: post-model refinement of the Gaussian antecedent parameters.
 
-Refines Gaussian membership parameters to minimize validation MSE. Consequents
-solved in closed form per candidate (2*n_params search dimension). Provides:
-- `refine_antecedents_de`: SciPy differential evolution (global)
-- `refine_antecedents_ga`: genetic algorithm (tournament + BLX-alpha + Gaussian mutation)
-- `refine_antecedents_local`: L-BFGS-B local descent
+The heuristic membership fit (KMeans + `stats.norm.fit` per output bucket) sets
+every membership function's ``(mu, sigma)`` without ever looking at the
+regression objective. Those parameters determine the firing strengths, which are
+then frozen while the consequents are fit. This module closes that loop: it
+searches over the ``(mu, sigma)`` of every Gaussian membership function to
+minimize a held-out MSE, using the Phase 1 closed-form consequent solver
+(`solve_tsk_consequents`) as the fast, exact inner step. Because the consequents
+are solved in closed form for each candidate, the search dimension is just
+``2 * n_membership_functions`` -- the consequents are never themselves searched.
 
-All guarantee monotonic improvement over heuristic start on validation fold.
+Two optimizers are provided:
+- `refine_antecedents_de`  -- global population search via the in-house
+                              `optimizers` package (see `_run_optimizer_search`;
+                              this used to be SciPy differential evolution).
+- `refine_antecedents_ga`  -- a dependency-light real-coded genetic algorithm
+                              (tournament + BLX-alpha crossover + Gaussian
+                              mutation + elitism), seeded from the heuristic model.
+
+Both hold out an inner validation fold from the training data and select on that
+fold, never on the test set, and both guarantee they never return a model worse
+(on the validation fold) than the heuristic starting point.
+
+No `scipy.optimize` is imported by this module: every sub-solve that used to
+run through it (bounded local L-BFGS-B blocks, the classifier's SLSQP/TNC/
+Powell/Nelder-Mead choices, and the module-level differential evolution) now
+routes through `optimizer_utils.optimizers_sub_solve` /
+`optimizer_utils.projected_gradient_solve` (both backed by the in-house
+`optimizers` package) or `_run_optimizer_search` below. See those functions'
+docstrings for the behavioral tradeoffs -- most notably, `optimizers` itself
+still imports scipy internally, so this does not make the project scipy-free,
+only scipy-optimize-direct-import-free.
 """
 
 import typing
-import warnings
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import differential_evolution, minimize
 
 from .gauss_data import (
     GaussianMembership, LabelModel, FeatureModel, GaussianMixtureModel, NormPair, resolve_norm_pair,
@@ -24,12 +46,19 @@ from .kernel import (
     IncrementalFIS, NotCompilable, compile_model,
     firing_strengths as kernel_firing_strengths,
 )
+from .optimizer_utils import (
+    optimizers_sub_solve as _optimizers_sub_solve,
+    projected_gradient_solve as _projected_gradient_solve,
+)
 from .regression import (
     solve_tsk_consequents, predict_tsk, _mse, _rsquared,
     build_consequent_features, _normalize_firing_strengths,
 )
 
-# Thousands of tiny linear solves: single-thread BLAS to avoid spawn overhead.
+# The refinement fitness runs thousands of tiny (~O(100)-wide) linear solves. On a
+# multithreaded BLAS those small matrices thrash on thread-spawn overhead and
+# oversubscribe the machine -- pinning BLAS to a single thread roughly halves
+# wall-clock here. Wrap the search loops in `_single_threaded()`.
 try:
     from threadpoolctl import threadpool_limits
 
@@ -136,7 +165,15 @@ def _make_kfold_fitness(
     model, X_train, y_train, folds, top_n_todo, n_output_buckets, order, l2_reg, basis, cross_pairs,
     pin_extremes=False, norms: NormPair | None = None, prepared=None,
 ):
-    """Cross-validated fitness: mean held-out MSE over k-folds to avoid overfitting."""
+    """Cross-validated fitness: mean held-out MSE over `folds`.
+
+    A single validation fold is far too easy to overfit when the search has
+    O(100) free antecedent parameters -- the optimizer drives that one fold's MSE
+    down while test error rises. Averaging over k folds forces the antecedents to
+    generalize. Each fold pre-slices its train/val DataFrames (and pre-extracts
+    their feature arrays -- see `_prepare_folds`) once, outside the hot loop, so a
+    fitness call is just: apply params -> per-fold solve+predict.
+    """
     if prepared is None:
         prepared = _prepare_folds(X_train, y_train, folds)
     y_bucket_mean_dummy = np.zeros(n_output_buckets)  # solver ignores this arg when pin_extremes=False
@@ -200,7 +237,14 @@ def refine_antecedents_de(
     popsize: int = 8,
     seed: int = 42,
 ) -> tuple[GaussianMixtureModel, dict]:
-    """Refine antecedents with SciPy differential evolution.
+    """Refine antecedents with a global population search via the in-house
+    `optimizers` package (`_run_optimizer_search`; this used to run SciPy
+    differential evolution).
+
+    `maxiter`/`popsize` are kept for backward compatibility, mapped onto
+    `_run_optimizer_search`'s `num_generations`/`population_size`, with a
+    genuinely global (not localized) search box -- `local_scale=None` --
+    matching DE's original unlocalized behavior.
 
     Returns (refined_model, info) where info has the initial/final validation MSE.
     Never returns a model worse than the heuristic start on the CV fitness.
@@ -211,23 +255,17 @@ def refine_antecedents_de(
     bounds = build_param_bounds(model, X_train)
     x0 = np.clip(extract_gaussian_params(model),
                  [b[0] for b in bounds], [b[1] for b in bounds])
-    init_fit = fitness(x0)
 
-    print(f"\nDE antecedent refinement: {len(bounds)} params, order={order}, "
-          f"init val MSE={init_fit:.5f}")
+    print(f"\nDE-replacement (GA) antecedent refinement: {len(bounds)} params, order={order}")
     with _single_threaded():
-        result = differential_evolution(
-            fitness, bounds, x0=x0, seed=seed, maxiter=maxiter, popsize=popsize,
-            tol=1e-6, mutation=(0.5, 1.0), recombination=0.7, polish=True,
-            init="sobol", updating="immediate",
+        best_x, best_fit, info = _run_optimizer_search(
+            fitness, bounds, x0, method="ga", local_grad_optim="single-var-grad",
+            population_size=popsize, num_generations=maxiter,
+            local_scale=None, seed=seed, label="antecedents-de",
         )
-
-    best_x, best_fit = (result.x, result.fun) if result.fun <= init_fit else (x0, init_fit)
-    if result.fun > init_fit:
-        print("  DE did not beat the heuristic start; keeping heuristic antecedents.")
-    print(f"  DE done: val MSE {init_fit:.5f} -> {best_fit:.5f} "
-          f"({100 * (init_fit - best_fit) / max(init_fit, 1e-12):.1f}% lower)")
-    return apply_gaussian_params(model, best_x), {"init_val_mse": init_fit, "val_mse": best_fit}
+    return apply_gaussian_params(model, best_x), {
+        "init_val_mse": info["init_fit"], "val_mse": best_fit,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +288,22 @@ def refine_antecedents_local(
     maxfun: int = 15000,
     seed: int = 42,
 ) -> tuple[GaussianMixtureModel, dict]:
-    """L-BFGS-B local descent from heuristic start (for comparison; use coordinate default)."""
+    """Refine antecedents by a single full-vector local descent from the
+    heuristic start, via `optimizer_utils.optimizers_sub_solve` (this used to
+    run SciPy's L-BFGS-B).
+
+    Kept for comparison; `refine_antecedents_coordinate` is the recommended default
+    at this scale (this single high-dimensional solve spends one evaluation
+    per parameter on every finite-difference gradient). Empirically, aggressive
+    global search (DE without polish, or a long GA) drives the CV fitness down but
+    *overfits that CV estimate* -- test error rises. A local refinement stays in
+    the heuristic's basin and reliably improves test error.
+
+    `maxiter`/`maxfun` are kept for backward compatibility but unused:
+    `optimizers_sub_solve` has no evaluation-budget knob (see its docstring).
+
+    Never returns a model worse than the heuristic start on the CV fitness.
+    """
     folds = _make_folds(len(X_train), n_folds, val_fraction, seed)
     fitness = _make_kfold_fitness(model, X_train, y_train, folds, top_n_todo,
                                   n_output_buckets, order, l2_reg, basis, cross_pairs)
@@ -260,11 +313,10 @@ def refine_antecedents_local(
     x0 = np.clip(extract_gaussian_params(model), lo, hi)
     init_fit = fitness(x0)
 
-    print(f"\nLocal (L-BFGS-B) antecedent refinement: {len(bounds)} params, "
+    print(f"\nLocal antecedent refinement: {len(bounds)} params, "
           f"order={order}, {n_folds}-fold init val MSE={init_fit:.5f}")
     with _single_threaded():
-        result = minimize(fitness, x0, method="L-BFGS-B", bounds=bounds,
-                          options={"maxiter": maxiter, "maxfun": maxfun})
+        result = _optimizers_sub_solve(fitness, x0, bounds)
 
     best_x, best_fit = (result.x, result.fun) if result.fun <= init_fit else (x0, init_fit)
     if result.fun > init_fit:
@@ -275,9 +327,17 @@ def refine_antecedents_local(
 
 
 # ---------------------------------------------------------------------------
-# Analytic gradient for one Gaussian (mu, sigma) block: bilevel derivative
-# (consequents re-solved per candidate, envelope theorem applies).
-# Only supported with "probability" t-norms (smooth everywhere).
+# Analytic gradient of one coordinate-descent block's CV fitness (issue #43).
+#
+# `refine_antecedents_coordinate`'s sub-problem is always exactly one Gaussian's
+# (mu, sigma) when `block == 2` (the default), everything else in the model held
+# fixed. That is a *bilevel* derivative: the consequents `beta*` are re-solved
+# for every candidate theta, so the total derivative of the validation MSE picks
+# up a `dbeta*/dtheta` term as well as the direct `dPhi_val/dtheta` term (the
+# envelope theorem applies to the training objective beta* minimizes, not to the
+# validation loss being differentiated here). See the issue for the derivation;
+# restricted to "probability" norms, where the objective is smooth everywhere
+# (min/max is only piecewise smooth, and FD already finds its subgradient).
 # ---------------------------------------------------------------------------
 
 def _analytic_block_supported(norms: NormPair, pin_extremes: bool, block: int) -> bool:
@@ -379,6 +439,10 @@ def _fold_mse_and_grad(
 
 # ---------------------------------------------------------------------------
 # Per-variable (block) coordinate descent.
+#
+# `_optimizers_sub_solve` and `_projected_gradient_solve` (imported above from
+# `optimizer_utils`) are the two sub-solve backends used throughout this
+# module and `it2_refine.py`/`gt2_refine.py`/`trapz_math.py`/`regression.py`.
 # ---------------------------------------------------------------------------
 
 def refine_antecedents_coordinate(
@@ -484,8 +548,14 @@ def refine_antecedents_coordinate(
                             n_ok += 1
                         return total_f / max(n_ok, 1), total_g / max(n_ok, 1)
 
-                    res = minimize(f_sub_grad, x[idx], method="L-BFGS-B", jac=True, bounds=sub_bounds,
-                                   options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
+                    # This branch's whole point is exploiting the closed-form
+                    # bilevel gradient (issue #43), and `optimizers`' local
+                    # solve has no way to accept a supplied Jacobian, so it
+                    # runs through `_projected_gradient_solve` instead of
+                    # `_optimizers_sub_solve` -- an in-house projected-gradient
+                    # descent that still uses the exact gradient (and, unlike
+                    # `_optimizers_sub_solve`, keeps an exact evaluation cap).
+                    res = _projected_gradient_solve(f_sub_grad, x[idx], sub_bounds, max_evals=sub_maxfun)
                 else:
                     def f_sub(v, idx=idx):
                         trial = x.copy()
@@ -493,8 +563,7 @@ def refine_antecedents_coordinate(
                         n_eval[0] += 1
                         return fitness(trial)
 
-                    res = minimize(f_sub, x[idx], method="L-BFGS-B", bounds=sub_bounds,
-                                   options={"maxfun": sub_maxfun, "maxiter": sub_maxfun})
+                    res = _optimizers_sub_solve(f_sub, x[idx], sub_bounds)
                 if res.fun < cur - 1e-12:
                     x[idx] = np.clip(res.x, lo[idx], hi[idx])
                     cur = float(res.fun)
@@ -883,44 +952,51 @@ def _cross_entropy_from_strengths(fs: np.ndarray, y_idx: np.ndarray, n_labels: i
     return _CrossEntropy(y_idx, n_labels, fs.shape)(fs)
 
 
-# Per-solver option spelling and gradient support for the two-parameter
-# sub-problem. All of these honour box bounds; COBYLA and trust-constr are left
-# out because the first needs constraints rather than bounds and the second's
-# setup cost dwarfs a 2-D problem.
+# Historically, per-solver option spelling and gradient support for five
+# distinct SciPy methods (`sub_method` picked one). Measured back then: SLSQP
+# 1.14x over L-BFGS-B at equal accuracy, and 1.95x with the gradient; Powell
+# was slightly more accurate but 1.5x slower; TNC was 3x slower (see
+# `refine_classifier_antecedents`'s docstring).
+#
+# `_sub_solve` no longer calls scipy at all: there is exactly one backend per
+# whether a gradient is supplied (see below), so `jac` -- not `method` --
+# now decides which runs. `_SUB_SOLVERS` is kept only to validate `sub_method`
+# against the same five names (so a typo still raises the same error) and to
+# look up whether the *requested* method supports a gradient at all -- e.g.
+# `sub_method="Powell"` with `analytic_gradient=True` still finite-differences,
+# matching the old scipy behavior where Powell silently ignored `jac`.
 _SUB_SOLVERS: dict[str, dict[str, typing.Any]] = {
-    # `maxfun` and `maxiter` mean different things to different solvers, and a
-    # gradient-free method silently ignores `jac`, so the differences are spelled
-    # out here rather than guessed at the call site.
-    "L-BFGS-B":    {"budget": ("maxfun", "maxiter"), "jac": True},
-    "SLSQP":       {"budget": ("maxiter",),          "jac": True},
-    "TNC":         {"budget": ("maxfun",),           "jac": True},
-    "Powell":      {"budget": ("maxfev",),           "jac": False},
-    "Nelder-Mead": {"budget": ("maxfev",),           "jac": False},
+    "L-BFGS-B":    {"jac": True},
+    "SLSQP":       {"jac": True},
+    "TNC":         {"jac": True},
+    "Powell":      {"jac": False},
+    "Nelder-Mead": {"jac": False},
 }
 
 
 def _sub_solve(method: str, fun, x0, bounds, budget: int, jac: bool):
-    """Run one bounded sub-problem with `method`, spelling its options correctly."""
+    """Run one bounded sub-problem, in-house rather than via `scipy.optimize`.
+
+    `method` (`sub_method` at the public API) is retained for backward
+    compatibility and is still validated against the same five names, but no
+    longer selects a distinct algorithm -- there is exactly one non-scipy
+    backend per whether a gradient is supplied:
+      - a gradient is supplied and `method` supports one:
+        `_projected_gradient_solve` (an in-house projected-gradient descent
+        with an exact evaluation budget of `budget`).
+      - otherwise: `_optimizers_sub_solve` (finite-difference joint descent
+        via the in-house `optimizers` package, which has no evaluation-budget
+        knob -- see its docstring).
+    """
     try:
         spec = _SUB_SOLVERS[method]
     except KeyError:
         raise ValueError(
             f"sub_method={method!r} not in {sorted(_SUB_SOLVERS)}"
         ) from None
-    options = {name: budget for name in spec["budget"]}
-    with warnings.catch_warnings():
-        # SLSQP steps outside the box before projecting back, and SciPy warns
-        # once per occurrence -- about seven times per fit, hundreds per
-        # cross-validation. It is noise, not a defect: SciPy clips, the objective
-        # is defined outside the box anyway (sigma is floored independently), and
-        # the accepted point is clipped again by the caller. Silencing it is a
-        # precondition for making SLSQP a default.
-        warnings.filterwarnings(
-            "ignore", message="Values in x were outside bounds",
-            category=RuntimeWarning,
-        )
-        return minimize(fun, x0, method=method, bounds=bounds,
-                        jac=jac and spec["jac"], options=options)
+    if jac and spec["jac"]:
+        return _projected_gradient_solve(fun, x0, bounds, max_evals=budget)
+    return _optimizers_sub_solve(fun, x0, bounds)
 
 
 # ---------------------------------------------------------------------------
@@ -1414,9 +1490,15 @@ def refine_classifier_antecedents(
     leaves it off there. ``True``/``False`` override the rule. See
     ``docs/analytic-gradient-evaluation.md``.
 
-    ``sub_method`` selects the solver for each block. Measured under the default
-    family: SLSQP 1.14x over L-BFGS-B at equal accuracy, and 1.95x with the
-    gradient; Powell is slightly more accurate but 1.5x slower; TNC is 3x slower.
+    ``sub_method`` no longer selects a distinct scipy algorithm -- `_sub_solve`
+    routes every block through one of two in-house, non-scipy backends chosen
+    by whether a gradient is supplied (`_projected_gradient_solve` or
+    `_optimizers_sub_solve`; see `_sub_solve`'s docstring). The parameter is
+    kept so a caller's `sub_method` still validates against the same five
+    names. The comparison below is historical, from when each name really did
+    select a different scipy method: measured under the default family, SLSQP
+    was 1.14x over L-BFGS-B at equal accuracy and 1.95x with the gradient;
+    Powell was slightly more accurate but 1.5x slower; TNC was 3x slower.
 
     ``guard`` decides whether a refinement is kept. It defaults to ``"none"`` --
     keep it always -- which is a measured result, not an oversight: across 108
@@ -1638,7 +1720,9 @@ def refine_ruspini_partition(
     Searches the concatenated per-feature apex-knot vector (each candidate is
     re-sorted into a valid monotone partition by ``RuspiniPartitionModel.with_knots``,
     so partition-of-unity is preserved automatically). ``method="coordinate"`` moves
-    one knot at a time via a tiny L-BFGS-B; ``method="optimizers"`` uses the
+    one knot at a time via a coarse-to-fine grid line search (no scipy, no
+    `optimizers` -- the knot objective is piecewise-linear, so a gradient step
+    stalls; see the loop below); ``method="optimizers"`` uses the
     `optimizers`-package population+polish search. The objective is a ridge-shrunk
     training cross-entropy; the refined knots are accepted only if they do not
     worsen a held-out split's accuracy (CE tiebreak), else the input model is
