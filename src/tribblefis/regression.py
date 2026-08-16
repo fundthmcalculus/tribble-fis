@@ -11,6 +11,7 @@ from scipy.optimize import minimize
 
 from tribblefis.gauss_data import GaussianMixtureModel
 from tribblefis.gauss_data import NormPair
+from tribblefis.gauss_data import ZERO_FIRING_THRESHOLD
 from tribblefis.gauss_math import tsk_firing_strengths
 
 
@@ -361,9 +362,9 @@ def optimize_tsk_coefficients(
     firing_strengths_train, labels_train = tsk_firing_strengths(
         X_train[top_n_todo], gaussian_memberships, norms=norms
     )
-    # Create mask for rows where sum > 1e-6
+    # Create mask for rows where sum > ZERO_FIRING_THRESHOLD
     row_sums = firing_strengths_train.sum(axis=1)
-    valid_rows = row_sums > 1e-6
+    valid_rows = row_sums > ZERO_FIRING_THRESHOLD
 
     # Initialize with zeros
     norm_firing_strength_train = np.zeros_like(firing_strengths_train)
@@ -598,19 +599,23 @@ def build_consequent_features(
 def _normalize_firing_strengths(firing_strengths: ndarray) -> ndarray:
     """Row-normalize firing strengths using the canonical zero-firing convention.
 
-    Rows whose total firing is <= 1e-6 are left as all-zero (no rule fires). This
-    exact convention must be shared by the solver and prediction, or training and
-    evaluation silently disagree. It is self-consistent for the closed-form solver:
-    an all-zero design row contributes nothing to the ridge normal equations (so
-    such training rows are effectively ignored by the fit), and at predict time the
-    row yields 0 -- the graceful fallback for a point no rule covers. (Contrast the
-    old L-BFGS path, which forced a uniform 1/n_labels blend only to stop the
-    optimizer wandering the resulting null space; the regularized closed-form solve
-    has no such null-space issue, and a uniform blend would multiply
+    Rows whose total firing is <= `ZERO_FIRING_THRESHOLD` are left as all-zero
+    (no rule fires). This exact convention must be shared by every consumer of
+    a firing-strength row sum -- the solver, prediction, and (via
+    `it2_kernel.karnik_mendel_tsk`) IT2/GT2's Karnik-Mendel search -- or
+    training and evaluation silently disagree; see `ZERO_FIRING_THRESHOLD`'s
+    own docstring for a concrete case where two different thresholds did. It
+    is self-consistent for the closed-form solver: an all-zero design row
+    contributes nothing to the ridge normal equations (so such training rows
+    are effectively ignored by the fit), and at predict time the row yields 0
+    -- the graceful fallback for a point no rule covers. (Contrast the old
+    L-BFGS path, which forced a uniform 1/n_labels blend only to stop the
+    optimizer wandering the resulting null space; the regularized closed-form
+    solve has no such null-space issue, and a uniform blend would multiply
     unbounded out-of-range consequents under extrapolation.)
     """
     row_sums = firing_strengths.sum(axis=1)
-    valid = row_sums > 1e-6
+    valid = row_sums > ZERO_FIRING_THRESHOLD
     norm = np.zeros_like(firing_strengths)
     norm[valid] = firing_strengths[valid] / row_sums[valid, np.newaxis]
     return norm

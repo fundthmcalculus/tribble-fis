@@ -49,6 +49,21 @@ DefaultMemberFunction: MemberFunction = "gaussian"
 DEFAULT_DEDUP_RTOL = 1e-2
 DEFAULT_DEDUP_ATOL = 1e-3
 
+# Below this total firing strength, a row is treated as "no rule meaningfully
+# covers this point" and predictions fall back to a fixed default (0) rather
+# than trusting a firing-weighted average of near-noise-level weights (see
+# `regression._normalize_firing_strengths`'s docstring for the extrapolation
+# rationale). Every zero-firing gate in the package -- Type-1's own
+# normalization, the TSK consequent solver, and IT2/GT2's Karnik-Mendel search
+# -- must share this single value: two different thresholds for "no rule
+# fires" is what silently broke the "IT2/GT2 converges to Type-1 as the
+# footprint of uncertainty vanishes" invariant: `karnik_mendel_tsk` used to
+# gate at 1e-9 of its own, three decades stricter than this one, so a row deep
+# in that gap got a real Karnik-Mendel answer while Type-1 returned its 0
+# fallback for the exact same point (found while investigating a GT2 regressor
+# RMSE gap that turned out to reproduce on plain IT2 too).
+ZERO_FIRING_THRESHOLD = 1e-6
+
 NORM_FAMILIES: tuple[NormConorm, ...] = (
     "min/max", "probability", "luk", "hamacher", "einstein",
 )

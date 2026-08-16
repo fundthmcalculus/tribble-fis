@@ -13,8 +13,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from tribblefis.gauss_data import ZERO_FIRING_THRESHOLD
 from tribblefis.it2_kernel import karnik_mendel_tsk
 from tribblefis.it2_regressor import IT2TribbleRegressor
+from tribblefis.regression import _normalize_firing_strengths
 
 
 def _brute_force_km(y, f_lower, f_upper, n_grid=20):
@@ -74,6 +76,53 @@ def test_karnik_mendel_tsk_zero_firing_row_is_zero():
     y_l, y_r = karnik_mendel_tsk(y, f_lower, f_upper)
     assert y_l[0] == 0.0
     assert y_r[0] == 0.0
+
+
+@pytest.mark.parametrize("row_sum", [1e-11, 1e-9, 1e-7, ZERO_FIRING_THRESHOLD])
+def test_karnik_mendel_tsk_zero_firing_gate_matches_type1_convention(row_sum):
+    """`karnik_mendel_tsk` and `regression._normalize_firing_strengths` must
+    gate "no rule fires" at the exact same total firing strength
+    (`gauss_data.ZERO_FIRING_THRESHOLD`), or a row whose firing sum falls
+    between two different thresholds gets a real computed answer from one
+    code path and a hard zero from the other for the same input -- exactly
+    what broke the "IT2/GT2 converges to Type-1 as the footprint of
+    uncertainty vanishes" invariant before the two were unified (found while
+    investigating a GT2 regressor RMSE gap that reproduced on plain IT2 too,
+    at a row whose firing sum sat at ~1e-9: past `karnik_mendel_tsk`'s old,
+    three-decades-stricter gate, but nowhere near this one).
+
+    Every `row_sum` here is at or below the shared threshold, so both paths
+    must return the zero-firing fallback.
+    """
+    rule_values = np.array([[-1.0, 0.0, 1.0]])
+    f_upper = np.array([[row_sum * 0.1, row_sum * 0.3, row_sum * 0.6]])
+    f_lower = f_upper.copy()
+
+    y_l, y_r = karnik_mendel_tsk(rule_values, f_lower, f_upper)
+    assert y_l[0] == 0.0
+    assert y_r[0] == 0.0
+
+    norm = _normalize_firing_strengths(f_upper)
+    t1_style = float(np.sum(norm * rule_values, axis=1)[0])
+    assert t1_style == 0.0
+
+
+def test_karnik_mendel_tsk_just_above_the_gate_matches_type1_convention():
+    """The other side of the gate: once the firing sum clears
+    `ZERO_FIRING_THRESHOLD`, both paths must agree on the same *nonzero*
+    firing-weighted average, not just on when to fall back to zero."""
+    rule_values = np.array([[-1.0, 0.0, 1.0]])
+    row_sum = ZERO_FIRING_THRESHOLD * 1.001
+    f_upper = np.array([[row_sum * 0.1, row_sum * 0.3, row_sum * 0.6]])
+    f_lower = f_upper.copy()
+
+    y_l, y_r = karnik_mendel_tsk(rule_values, f_lower, f_upper)
+    norm = _normalize_firing_strengths(f_upper)
+    t1_style = float(np.sum(norm * rule_values, axis=1)[0])
+
+    assert y_l[0] == pytest.approx(t1_style)
+    assert y_r[0] == pytest.approx(t1_style)
+    assert t1_style != 0.0  # confirms this row actually cleared the gate
 
 
 def test_karnik_mendel_tsk_batches_multiple_rows_independently():

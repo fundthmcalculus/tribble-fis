@@ -41,6 +41,7 @@ from .gauss_data import (
     IT2TrapezoidMembership,
     IT2TriangularMembership,
     NormPair,
+    ZERO_FIRING_THRESHOLD,
 )
 from .gauss_math import tsk_firing_strengths, GaussianMixtureModel, FeatureModel, LabelModel
 
@@ -228,7 +229,7 @@ def _karnik_mendel_batch(y_rule, f_lower, f_upper, max_iterations, tol):
         total_fu = 0.0
         for i in range(n_rules):
             total_fu += row_fu[i]
-        if total_fu <= 1e-9:
+        if total_fu <= ZERO_FIRING_THRESHOLD:
             y_l[s] = 0.0
             y_r[s] = 0.0
             continue
@@ -279,9 +280,15 @@ def karnik_mendel_tsk(
 
     Returns:
         (y_l, y_r): (n_samples,) arrays, the type-reduced output interval.
-        Rows where no rule fires at all (``firing_upper`` row-sum ~0) return
-        ``(0, 0)``, matching `regression._normalize_firing_strengths`'s
-        zero-firing convention.
+        Rows where no rule fires at all (``firing_upper`` row-sum
+        ``<= ZERO_FIRING_THRESHOLD``) return ``(0, 0)`` -- the exact same
+        gate `regression._normalize_firing_strengths` uses, via the shared
+        `gauss_data.ZERO_FIRING_THRESHOLD` constant. This must stay a shared
+        constant, not two independently-chosen thresholds: a row whose firing
+        sum falls between two different gates gets a real computed answer
+        from one code path and a hard zero from the other, for the same
+        input, which is exactly the failure this once had (see that
+        constant's own docstring).
 
     The per-sample switch-point search is inherently sequential (each
     iteration depends on the previous one's switch point) and was previously
