@@ -16,7 +16,7 @@ from tribblefis.it2_classifier import IT2TribbleClassifier
 from tribblefis.it2_kernel import it2_firing_strengths
 from tribblefis.it2_refine import (
     _cross_entropy_loss,
-    _iter_it2_gaussian_slots,
+    _iter_it2_slots,
     refine_it2_antecedents,
 )
 from tribblefis.gauss_data import resolve_norm_pair
@@ -64,7 +64,7 @@ def test_refine_it2_antecedents_actually_changes_parameters(synthetic_classifica
 
     def _flat_params(model):
         params = []
-        for *_, it2_mf in _iter_it2_gaussian_slots(model):
+        for *_, it2_mf in _iter_it2_slots(model):
             params.extend([it2_mf.upper_mf.mu, it2_mf.upper_mf.sigma,
                            it2_mf.lower_mf.mu, it2_mf.lower_mf.sigma])
         return np.array(params)
@@ -82,7 +82,7 @@ def test_refine_it2_antecedents_preserves_lower_le_upper_invariant(synthetic_cla
     every downstream consumer of `firing_upper`/`firing_lower` relies on, and
     concretely producing an inverted (`y_l > y_r`) Karnik-Mendel output on a
     real regression fit. `mu` is now shared and `sigma_upper >= sigma_lower`
-    is enforced by construction (see `it2_refine._iter_it2_gaussian_slots`)."""
+    is enforced by construction (see `it2_refine._iter_it2_slots`)."""
     X, y = synthetic_classification_data
     clf = IT2TribbleClassifier(top_n=3, uncertainty_width=0.5, km_iterations=10, random_state=0)
     clf.fit(X, y)
