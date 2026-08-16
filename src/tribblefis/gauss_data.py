@@ -235,6 +235,59 @@ class TriangularMembership(NamedTuple):
 AnyMembership = GaussianMembership | TrapezoidMembership | TriangularMembership
 
 
+def widen_membership(
+    mf: AnyMembership, uncertainty_width: float, min_val: float = 1e-4,
+) -> tuple[AnyMembership, AnyMembership]:
+    """``(upper, lower)``: footprint-of-uncertainty widened/narrowed versions
+    of ``mf``, holding its peak fixed and scaling its spread by
+    ``(1 + uncertainty_width)`` (upper, wider, more permissive) /
+    ``max(0.1, 1 - uncertainty_width)`` (lower, narrower, more restrictive) --
+    the one transform every IT2/GT2 conversion (`it2_classifier.py`,
+    `it2_regressor.py`, `gt2_classifier.py`, `gt2_regressor.py`) applies,
+    now shared instead of duplicated once per membership type per file.
+
+    "Spread" is type-specific: Gaussian's ``sigma``; trapezoid's two slope
+    half-widths, ``b - a`` and ``d - c``, scaled independently so the flat top
+    ``[b, c]`` is untouched (the trapezoid analogue of holding ``mu`` fixed);
+    triangular's two leg half-widths, ``b - a`` and ``c - b``, scaled
+    independently around the fixed apex ``b``. Trapezoid/triangular shoulders
+    (``a = -inf`` / ``c = +inf``, see `TriangularMembership`'s Ruspini-
+    partition use) have no finite spread to scale and are not supported here --
+    conversion only ever sees memberships from `create_gaussian_membership_dict`/
+    `create_trapz_membership_dict[_fast]`, which never produce one.
+    """
+    w = uncertainty_width
+    if isinstance(mf, GaussianMembership):
+        base_sigma = max(mf.sigma, min_val)
+        return (
+            GaussianMembership(mu=mf.mu, sigma=base_sigma * (1.0 + w)),
+            GaussianMembership(mu=mf.mu, sigma=base_sigma * max(0.1, 1.0 - w)),
+        )
+    if isinstance(mf, TrapezoidMembership):
+        if not (np.isfinite(mf.a) and np.isfinite(mf.d)):
+            raise ValueError("widen_membership does not support trapezoid shoulders (a=-inf/d=+inf)")
+        left = max(mf.b - mf.a, min_val)
+        right = max(mf.d - mf.c, min_val)
+        left_wide, left_narrow = left * (1.0 + w), left * max(0.1, 1.0 - w)
+        right_wide, right_narrow = right * (1.0 + w), right * max(0.1, 1.0 - w)
+        return (
+            TrapezoidMembership(a=mf.b - left_wide, b=mf.b, c=mf.c, d=mf.c + right_wide),
+            TrapezoidMembership(a=mf.b - left_narrow, b=mf.b, c=mf.c, d=mf.c + right_narrow),
+        )
+    if isinstance(mf, TriangularMembership):
+        if not (np.isfinite(mf.a) and np.isfinite(mf.c)):
+            raise ValueError("widen_membership does not support triangular shoulders (a=-inf/c=+inf)")
+        left = max(mf.b - mf.a, min_val)
+        right = max(mf.c - mf.b, min_val)
+        left_wide, left_narrow = left * (1.0 + w), left * max(0.1, 1.0 - w)
+        right_wide, right_narrow = right * (1.0 + w), right * max(0.1, 1.0 - w)
+        return (
+            TriangularMembership(a=mf.b - left_wide, b=mf.b, c=mf.b + right_wide),
+            TriangularMembership(a=mf.b - left_narrow, b=mf.b, c=mf.b + right_narrow),
+        )
+    raise TypeError(f"Unsupported membership type for widen_membership: {type(mf)!r}")
+
+
 class IT2GaussianMembership(NamedTuple):
     """An interval type-2 Gaussian membership function.
 
@@ -322,6 +375,23 @@ class IT2TriangularMembership(NamedTuple):
 
 
 IT2AnyMembership = IT2GaussianMembership | IT2TrapezoidMembership | IT2TriangularMembership
+
+_IT2_MEMBERSHIP_BY_TYPE1: dict[type, type] = {
+    GaussianMembership: IT2GaussianMembership,
+    TrapezoidMembership: IT2TrapezoidMembership,
+    TriangularMembership: IT2TriangularMembership,
+}
+
+
+def to_it2_membership(
+    upper_mf: AnyMembership, lower_mf: AnyMembership, id: Optional[uuid.UUID] = None,
+) -> IT2AnyMembership:
+    """Wrap a ``(upper_mf, lower_mf)`` pair (e.g. from `widen_membership`) in
+    the matching `IT2AnyMembership` container for their shared Type-1 type."""
+    it2_cls = _IT2_MEMBERSHIP_BY_TYPE1.get(type(upper_mf))
+    if it2_cls is None:
+        raise TypeError(f"Unsupported membership type for to_it2_membership: {type(upper_mf)!r}")
+    return it2_cls(upper_mf=upper_mf, lower_mf=lower_mf, id=id)
 
 
 class Rule(NamedTuple):
@@ -819,7 +889,143 @@ class GT2GaussianMembership(NamedTuple):
         )
 
 
-GT2AnyMembership = GT2GaussianMembership  # Gaussian-only in v1, mirroring IT2's own scope.
+class GT2TrapezoidMembership(NamedTuple):
+    """A general type-2 trapezoidal membership function via the alpha-plane
+    representation -- the trapezoidal analogue of `GT2GaussianMembership`
+    (see its docstring for the general alpha-plane/secondary-grade design).
+
+    The flat top ``[b, c]`` is shared across all three trapezoids (mirroring
+    `GT2GaussianMembership`'s shared ``mu``); the two outer slopes -- left
+    half-width ``b - a`` and right half-width ``d - c`` -- each carry their
+    own independent triangular secondary grade over ``[lower, upper]``, apex
+    at ``principal``.
+    """
+
+    upper_mf: TrapezoidMembership
+    lower_mf: TrapezoidMembership
+    principal_mf: TrapezoidMembership
+    id: Optional[uuid.UUID] = None
+
+    @staticmethod
+    def create(
+        b: float, c: float,
+        upper_a: float, upper_d: float,
+        lower_a: float, lower_d: float,
+        principal_a: float | None = None,
+        principal_d: float | None = None,
+    ) -> "GT2TrapezoidMembership":
+        """``principal_a``/``principal_d`` default to the midpoint of their
+        ``[lower, upper]`` range when omitted -- see `GT2GaussianMembership.create`."""
+        if principal_a is None:
+            principal_a = 0.5 * (lower_a + upper_a)
+        if principal_d is None:
+            principal_d = 0.5 * (lower_d + upper_d)
+        return GT2TrapezoidMembership(
+            upper_mf=TrapezoidMembership(a=upper_a, b=b, c=c, d=upper_d),
+            lower_mf=TrapezoidMembership(a=lower_a, b=b, c=c, d=lower_d),
+            principal_mf=TrapezoidMembership(a=principal_a, b=b, c=c, d=principal_d),
+            id=uuid.uuid4(),
+        )
+
+    def alpha_cut(self, alpha: float) -> IT2TrapezoidMembership:
+        """The IT2-shaped alpha-plane at level ``alpha`` in ``[0, 1]`` -- see
+        `GT2GaussianMembership.alpha_cut`; here each outer edge (``a``, ``d``)
+        is interpolated toward its own principal value independently."""
+        a_upper = self.upper_mf.a - alpha * (self.upper_mf.a - self.principal_mf.a)
+        a_lower = self.lower_mf.a + alpha * (self.principal_mf.a - self.lower_mf.a)
+        d_upper = self.upper_mf.d - alpha * (self.upper_mf.d - self.principal_mf.d)
+        d_lower = self.lower_mf.d + alpha * (self.principal_mf.d - self.lower_mf.d)
+        b, c = self.principal_mf.b, self.principal_mf.c
+        return IT2TrapezoidMembership(
+            upper_mf=TrapezoidMembership(a=a_upper, b=b, c=c, d=d_upper, id=self.upper_mf.id),
+            lower_mf=TrapezoidMembership(a=a_lower, b=b, c=c, d=d_lower, id=self.lower_mf.id),
+            id=self.id,
+        )
+
+
+class GT2TriangularMembership(NamedTuple):
+    """A general type-2 triangular membership function via the alpha-plane
+    representation -- the triangular analogue of `GT2GaussianMembership`
+    (see its docstring for the general alpha-plane/secondary-grade design).
+
+    The apex ``b`` is shared across all three triangles (mirroring
+    `GT2GaussianMembership`'s shared ``mu``); the two legs -- left half-width
+    ``b - a`` and right half-width ``c - b`` -- each carry their own
+    independent triangular secondary grade over ``[lower, upper]``, apex at
+    ``principal``. Shoulder legs (``a = -inf`` / ``c = +inf``, see
+    `TriangularMembership`) have no finite spread to cut and are passed
+    through unchanged by `alpha_cut`.
+    """
+
+    upper_mf: TriangularMembership
+    lower_mf: TriangularMembership
+    principal_mf: TriangularMembership
+    id: Optional[uuid.UUID] = None
+
+    @staticmethod
+    def create(
+        b: float,
+        upper_a: float, upper_c: float,
+        lower_a: float, lower_c: float,
+        principal_a: float | None = None,
+        principal_c: float | None = None,
+    ) -> "GT2TriangularMembership":
+        """``principal_a``/``principal_c`` default to the midpoint of their
+        ``[lower, upper]`` range when omitted -- see `GT2GaussianMembership.create`."""
+        if principal_a is None:
+            principal_a = 0.5 * (lower_a + upper_a)
+        if principal_c is None:
+            principal_c = 0.5 * (lower_c + upper_c)
+        return GT2TriangularMembership(
+            upper_mf=TriangularMembership(a=upper_a, b=b, c=upper_c),
+            lower_mf=TriangularMembership(a=lower_a, b=b, c=lower_c),
+            principal_mf=TriangularMembership(a=principal_a, b=b, c=principal_c),
+            id=uuid.uuid4(),
+        )
+
+    def alpha_cut(self, alpha: float) -> IT2TriangularMembership:
+        """The IT2-shaped alpha-plane at level ``alpha`` in ``[0, 1]`` -- see
+        `GT2GaussianMembership.alpha_cut`; each leg (``a``, ``c``) is
+        interpolated toward its own principal value independently, with an
+        infinite (shoulder) leg passed through unchanged."""
+        def _cut(lower_val: float, principal_val: float, upper_val: float) -> tuple[float, float]:
+            if not np.isfinite(principal_val):
+                return principal_val, principal_val
+            return (
+                lower_val + alpha * (principal_val - lower_val),
+                upper_val - alpha * (upper_val - principal_val),
+            )
+
+        a_lower, a_upper = _cut(self.lower_mf.a, self.principal_mf.a, self.upper_mf.a)
+        c_lower, c_upper = _cut(self.lower_mf.c, self.principal_mf.c, self.upper_mf.c)
+        b = self.principal_mf.b
+        return IT2TriangularMembership(
+            upper_mf=TriangularMembership(a=a_upper, b=b, c=c_upper, id=self.upper_mf.id),
+            lower_mf=TriangularMembership(a=a_lower, b=b, c=c_lower, id=self.lower_mf.id),
+            id=self.id,
+        )
+
+
+GT2AnyMembership = GT2GaussianMembership | GT2TrapezoidMembership | GT2TriangularMembership
+
+_GT2_MEMBERSHIP_BY_TYPE1: dict[type, type] = {
+    GaussianMembership: GT2GaussianMembership,
+    TrapezoidMembership: GT2TrapezoidMembership,
+    TriangularMembership: GT2TriangularMembership,
+}
+
+
+def to_gt2_membership(
+    upper_mf: AnyMembership, lower_mf: AnyMembership, principal_mf: AnyMembership,
+    id: Optional[uuid.UUID] = None,
+) -> GT2AnyMembership:
+    """Wrap a ``(upper_mf, lower_mf, principal_mf)`` triple (e.g. ``upper``/
+    ``lower`` from `widen_membership`, ``principal`` the original Type-1 fit)
+    in the matching `GT2AnyMembership` container for their shared Type-1 type."""
+    gt2_cls = _GT2_MEMBERSHIP_BY_TYPE1.get(type(upper_mf))
+    if gt2_cls is None:
+        raise TypeError(f"Unsupported membership type for to_gt2_membership: {type(upper_mf)!r}")
+    return gt2_cls(upper_mf=upper_mf, lower_mf=lower_mf, principal_mf=principal_mf, id=id)
 
 
 class GT2LabelModel(NamedTuple):
