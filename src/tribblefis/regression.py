@@ -227,18 +227,35 @@ def compute_first_order_corrections(
     y_bucket_mean,
     y_train,
 ) -> ndarray:
+    """Compute first-order (linear) corrections per rule.
+
+    Parameters
+    ----------
+    X_train : pd.DataFrame
+        Training features.
+    gaussian_memberships : GaussianMixtureModel
+        Membership model with rule_ids.
+    n_top_vars : int
+        Number of top variables.
+    top_n_todo : list[str]
+        Feature column names.
+    y_bucket_mean : array-like
+        Per-rule output means.
+    y_train : pd.DataFrame
+        Training target with 'y_bucket' and 'y_value' columns.
+
+    Returns
+    -------
+    ndarray
+        Correction terms shape (n_slots, n_top_vars).
+    """
     n_slots = max(gaussian_memberships.rule_ids) + 1
     corr_terms = np.zeros(shape=(n_slots, n_top_vars))
-    # Loop through each rule
     for rule_id in gaussian_memberships.rule_ids:
-        # Find the X_train, y_train which belong to this output bucket
         rule_mask = y_train["y_bucket"] == rule_id
         X_train_rule = X_train[rule_mask][top_n_todo].to_numpy()
         y_train_rule_err = y_train[rule_mask]["y_value"] - y_bucket_mean[rule_id]
-        A = X_train_rule
-        b = y_train_rule_err
-        # A \ b
-        corr_terms[rule_id, :] = np.linalg.pinv(A) @ b
+        corr_terms[rule_id, :] = np.linalg.pinv(X_train_rule) @ y_train_rule_err
     return corr_terms
 
 
@@ -250,20 +267,36 @@ def compute_second_order_corrections(
     y_bucket_mean,
     y_train,
 ) -> ndarray:
+    """Compute second-order (quadratic) corrections per rule: [X, X²].
+
+    Parameters
+    ----------
+    X_train : pd.DataFrame
+        Training features.
+    gaussian_memberships : GaussianMixtureModel
+        Membership model with rule_ids.
+    n_top_vars : int
+        Number of top variables.
+    top_n_todo : list[str]
+        Feature column names.
+    y_bucket_mean : array-like
+        Per-rule output means.
+    y_train : pd.DataFrame
+        Training target with 'y_bucket' and 'y_value' columns.
+
+    Returns
+    -------
+    ndarray
+        Correction terms shape (n_slots, n_top_vars * 2).
+    """
     n_slots = max(gaussian_memberships.rule_ids) + 1
     corr_terms = np.zeros(shape=(n_slots, n_top_vars * 2))
-    # Loop through each rule
     for rule_id in gaussian_memberships.rule_ids:
-        # Find the X_train, y_train which belong to this output bucket
         rule_mask = y_train["y_bucket"] == rule_id
         X_train_rule = X_train[rule_mask][top_n_todo].to_numpy()
-        # Augment with the second-order terms, excluding cross-power terms
-        X_train_rule_squared = X_train_rule**2
-        A = np.hstack([X_train_rule, X_train_rule_squared])
+        A = np.hstack([X_train_rule, X_train_rule**2])
         y_train_rule_err = y_train[rule_mask]["y_value"] - y_bucket_mean[rule_id]
-        b = y_train_rule_err
-        # A \ b
-        corr_terms[rule_id, :] = np.linalg.pinv(A) @ b
+        corr_terms[rule_id, :] = np.linalg.pinv(A) @ y_train_rule_err
     return corr_terms
 
 
@@ -275,19 +308,36 @@ def compute_third_order_corrections(
     y_bucket_mean,
     y_train,
 ) -> ndarray:
+    """Compute third-order (cubic) corrections per rule: [X, X², X³].
+
+    Parameters
+    ----------
+    X_train : pd.DataFrame
+        Training features.
+    gaussian_memberships : GaussianMixtureModel
+        Membership model with rule_ids.
+    n_top_vars : int
+        Number of top variables.
+    top_n_todo : list[str]
+        Feature column names.
+    y_bucket_mean : array-like
+        Per-rule output means.
+    y_train : pd.DataFrame
+        Training target with 'y_bucket' and 'y_value' columns.
+
+    Returns
+    -------
+    ndarray
+        Correction terms shape (n_slots, n_top_vars * 3).
+    """
     n_slots = max(gaussian_memberships.rule_ids) + 1
     corr_terms = np.zeros(shape=(n_slots, n_top_vars * 3))
-    # Loop through each rule
     for rule_id in gaussian_memberships.rule_ids:
-        # Find the X_train, y_train which belong to this output bucket
         rule_mask = y_train["y_bucket"] == rule_id
         X_train_rule = X_train[rule_mask][top_n_todo].to_numpy()
-        # Augment with the second-order terms, excluding cross-power terms
         A = np.hstack([X_train_rule, X_train_rule**2, X_train_rule**3])
         y_train_rule_err = y_train[rule_mask]["y_value"] - y_bucket_mean[rule_id]
-        b = y_train_rule_err
-        # A \ b
-        corr_terms[rule_id, :] = np.linalg.pinv(A) @ b
+        corr_terms[rule_id, :] = np.linalg.pinv(A) @ y_train_rule_err
     return corr_terms
 
 
@@ -299,29 +349,43 @@ def compute_full_second_order_corrections(
     y_bucket_mean,
     y_train,
 ) -> ndarray:
-    # Calculate number of cross-power terms
+    """Compute full second-order corrections: [X, X², cross-products].
+
+    Parameters
+    ----------
+    X_train : pd.DataFrame
+        Training features.
+    gaussian_memberships : GaussianMixtureModel
+        Membership model with rule_ids.
+    n_top_vars : int
+        Number of top variables.
+    top_n_todo : list[str]
+        Feature column names.
+    y_bucket_mean : array-like
+        Per-rule output means.
+    y_train : pd.DataFrame
+        Training target with 'y_bucket' and 'y_value' columns.
+
+    Returns
+    -------
+    ndarray
+        Correction terms shape (n_slots, n_terms) where n_terms includes cross-products.
+    """
     n_cross_terms = len(list(combinations(range(n_top_vars), 2)))
-    total_terms = n_top_vars + n_top_vars + n_cross_terms  # linear + squared + cross
+    total_terms = n_top_vars + n_top_vars + n_cross_terms
     n_slots = max(gaussian_memberships.rule_ids) + 1
     corr_terms = np.zeros(shape=(n_slots, total_terms))
-    # Loop through each rule
     for rule_id in gaussian_memberships.rule_ids:
-        # Find the X_train, y_train which belong to this output bucket
         rule_mask = y_train["y_bucket"] == rule_id
         X_train_rule = X_train[rule_mask][top_n_todo].to_numpy()
-        # Augment with the second-order terms, including cross-power terms
         X_train_rule_squared = X_train_rule**2
-        # Compute cross-power terms
-        cross_terms = []
-        for i, j in combinations(range(n_top_vars), 2):
-            cross_terms.append(X_train_rule[:, i] * X_train_rule[:, j])
-        X_train_rule_cross = np.column_stack(cross_terms) if cross_terms else np.empty((X_train_rule.shape[0], 0))
-
+        cross_terms = [X_train_rule[:, i] * X_train_rule[:, j]
+                       for i, j in combinations(range(n_top_vars), 2)]
+        X_train_rule_cross = (np.column_stack(cross_terms)
+                              if cross_terms else np.empty((X_train_rule.shape[0], 0)))
         A = np.hstack([X_train_rule, X_train_rule_squared, X_train_rule_cross])
         y_train_rule_err = y_train[rule_mask]["y_value"] - y_bucket_mean[rule_id]
-        b = y_train_rule_err
-        # A \ b
-        corr_terms[rule_id, :] = np.linalg.lstsq(A, b, rcond=None)[0]
+        corr_terms[rule_id, :] = np.linalg.lstsq(A, y_train_rule_err, rcond=None)[0]
     return corr_terms
 
 
