@@ -16,7 +16,7 @@ implements, including the measured cost of the alpha-plane approach and the
 architectural reuse assessment against IT2.
 
 This is not a separate system from IT2 so much as IT2 with one more
-Gaussian per antecedent (`principal_mf`, the single most-likely membership
+membership per antecedent (`principal_mf`, the single most-likely membership
 within the footprint) and a loop around IT2's own kernel. If that reads as
 underwhelming, that is the point: the alpha-plane approach exists precisely
 so GT2 does not need its own inference or type-reduction algorithm.
@@ -116,13 +116,16 @@ Post-conversion antecedent refinement directly on the GT2
 dimension wider than IT2's own coordinate descent:
 
 **Classifier** (`gt2_refine.refine_gt2_antecedents`): cycles through one GT2
-Gaussian membership at a time, searching its
-`(mu, sigma_lower, sigma_principal, sigma_upper)` -- `mu` shared across all
-three, `sigma_lower <= sigma_principal <= sigma_upper` enforced by
-construction (the GT2 analogue of IT2's own `sigma_upper >= sigma_lower`
-invariant, needed for the same reason: `GT2GaussianMembership.alpha_cut`'s
-narrowing property depends on that ordering holding). The objective is the
-cross-entropy of the alpha-combined, row-normalized firing strengths.
+membership at a time (any of Gaussian, trapezoidal, or triangular -- #144),
+searching its shared peak plus two independent non-negative spread gaps per
+side (Gaussian: `(mu, sigma_lower, sigma_principal, sigma_upper)`, `mu`
+shared across all three, `sigma_lower <= sigma_principal <= sigma_upper`
+enforced by construction -- the GT2 analogue of IT2's own
+`sigma_upper >= sigma_lower` invariant, needed for the same reason:
+`GT2GaussianMembership.alpha_cut`'s narrowing property depends on that
+ordering holding; trapezoid/triangular slots follow the identical pattern
+one level wider, see `gt2_refine.py`'s module docstring). The objective is
+the cross-entropy of the alpha-combined, row-normalized firing strengths.
 
 **Regressor** (`gt2_refine.refine_gt2_regressor_antecedents`): the same
 coordinate descent, but -- as with IT2 -- a regressor's antecedents are only
@@ -148,7 +151,10 @@ Same as `IT2TribbleClassifier`/`IT2TribbleRegressor`: `top_n`, `top_p`,
 
 ### 1. Model Conversion
 
-Identical to IT2's own conversion, plus one field:
+Identical to IT2's own conversion, plus one field (shown here for Gaussian;
+trapezoid/triangular follow the same shared-peak, scaled-spread pattern --
+see `gauss_data.widen_membership`/`GT2TrapezoidMembership`/
+`GT2TriangularMembership`):
 
 ```
 Type-1 Gaussian: (mu=5, sigma=2)
@@ -213,16 +219,18 @@ is what `predict()`'s alpha-combined estimate staying inside
 ## Design Philosophy
 
 **KISS, same as IT2**:
-- Gaussian memberships only
+- Gaussian, trapezoidal, or triangular memberships (#144 -- the alpha-plane
+  kernel (`gt2_kernel.py`) is fully type-agnostic; only each type's own
+  `alpha_cut` (`gauss_data.py`) needed type-specific math)
 - Triangular secondary membership grade only (the simplest closed-form
   alpha-cut; other shapes, e.g. Gaussian-on-Gaussian, are a possible
   follow-up if a real workload needs the extra expressiveness)
 - Reuses every IT2 kernel function verbatim, once per alpha-plane
 
-**Extensibility**: mirrors IT2's own list -- other membership types, other
-norm families, GPU acceleration, and swapping `scipy.optimize` for the
-project's own `optimizers` package all apply identically here, since the
-per-plane kernel calls are exactly IT2's.
+**Extensibility**: mirrors IT2's own list -- other norm families, GPU
+acceleration, and swapping `scipy.optimize` for the project's own
+`optimizers` package all apply identically here, since the per-plane kernel
+calls are exactly IT2's.
 
 ## Testing
 
