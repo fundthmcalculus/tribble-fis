@@ -24,6 +24,8 @@ Three things are measured, because they are three different kinds of cost:
 
 from __future__ import annotations
 
+import contextlib
+import io
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -38,6 +40,20 @@ from tribblefis.gauss_data import (
     LabelModel,
     NormPair,
 )
+
+
+@contextlib.contextmanager
+def _quiet():
+    """Suppress stdout for the duration of the block.
+
+    `TribbleClassifier`/`TribbleRegressor.fit` (via `gauss_math.take_top_features`)
+    unconditionally print a feature-ranking table with no `verbose` switch to
+    turn it off. Harmless to correctness, but the `t1-*`/`t2-*` fit workloads
+    below call `fit` several times per repeat, and letting that print through
+    would bury the benchmark table in the same block of text every run.
+    """
+    with contextlib.redirect_stdout(io.StringIO()):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -591,6 +607,265 @@ def _predict_workload(
 
 
 # ---------------------------------------------------------------------------
+# Type-1 vs Type-2 (interval type-2) comparative workloads.
+#
+# `T2TribbleClassifier`/`T2TribbleRegressor` are never independent of their
+# Type-1 counterpart: `fit` fits a `TribbleClassifier`/`TribbleRegressor`
+# first, then converts its Gaussian antecedents into an upper/lower footprint
+# of uncertainty (`it2_classifier._convert_to_it2` et al.) and, at inference
+# time, doubles the forward pass (upper model, lower model) and optionally runs
+# the Karnik-Mendel switch-point search on top. So a `t2-*` row is never
+# expected to be *faster* than its `t1-*` counterpart -- the pair exists so
+# that an unexpected change in the t2/t1 *ratio* (not either number alone) is
+# what flags a regression specific to the IT2 path, as opposed to a change
+# that simply moved every workload together (e.g. a faster/slower machine).
+#
+# `t1-vs-t2-*-divergence` workloads are a different kind of receipt: rather
+# than timing, the checksum itself *is* a behavioural-divergence metric
+# (prediction agreement for the classifier, relative predictive difference for
+# the regressor) between the two models fit on the same data. Wiring that
+# through `checksum` re-uses `bench.py --compare`'s existing "checksum moved"
+# machinery to flag drift in how far IT2's uncertainty band pulls predictions
+# away from its Type-1 base -- exactly the kind of change that a pure timing
+# comparison would never surface.
+# ---------------------------------------------------------------------------
+
+def make_regression_dataset(
+    n_samples: int, n_features: int, seed: int = 0
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """A nonlinear synthetic regression set: a linear combination of features
+    plus one sinusoidal term on the first feature, so the TSK consequent solve
+    has a real nonlinearity to fit rather than a target any single rule could
+    match exactly."""
+    rng = np.random.default_rng(seed)
+    X = rng.uniform(-3.0, 3.0, size=(n_samples, n_features))
+    weights = rng.normal(0.0, 1.0, size=n_features)
+    y = X @ weights + 2.0 * np.sin(X[:, 0]) + rng.normal(0.0, 0.1, size=n_samples)
+    cols = [f"f{i}" for i in range(n_features)]
+    return pd.DataFrame(X, columns=cols), y
+
+
+def _forward_t2_workload(
+    name: str, n_samples: int, n_features: int, n_labels: int, n_mf: int,
+    norm: str, repeats: int,
+) -> Workload:
+    """IT2 counterpart of `_forward_workload`: the same synthetic model,
+    converted to an IT2 footprint of uncertainty the way `T2TribbleClassifier`
+    itself does (`_convert_to_it2`, `uncertainty_width=0.5` default), so this
+    row and its `forward-*` twin measure the same shape of problem through the
+    Type-1 and Type-2 kernels respectively -- read the two side by side rather
+    than in isolation.
+
+    Unlike `_forward_workload`, this does not pass a pre-extracted
+    `feature_arrays` mapping: `it2_firing_strengths` has no parameter for one
+    yet, so this row's cost includes the per-call pandas column lookups that
+    `forward-*`'s deliberately excludes. That is a real, currently-unclosed gap
+    between the two kernels, not a benchmark artifact -- see the module
+    docstring's project-tracked-work note.
+    """
+    def setup():
+        from tribblefis.it2_classifier import T2TribbleClassifier
+        from tribblefis.gauss_data import resolve_norm_pair
+
+        X, _ = make_dataset(n_samples, n_features, n_labels, seed=0)
+        model = make_model(n_features, n_labels, n_mf, seed=0)
+        it2_model = T2TribbleClassifier()._convert_to_it2(model)
+        return X, it2_model, resolve_norm_pair(norm)
+
+    def run(state):
+        from tribblefis.it2_kernel import it2_firing_strengths
+
+        X, it2_model, norms = state
+        _, _, firing_crisp, _labels = it2_firing_strengths(
+            X, it2_model, norms, km_iterations=None
+        )
+        return firing_crisp
+
+    return Workload(
+        name=name,
+        description=(
+            f"it2_firing_strengths (IT2 counterpart of forward-*): {n_samples} "
+            f"samples x {n_features} features x {n_labels} labels x {n_mf} MF, "
+            f"{norm} norms"
+        ),
+        setup=setup,
+        run=run,
+        checksum=_array_checksum,
+        repeats=repeats,
+        tags=("forward", "type2"),
+    )
+
+
+def _clf_fit_workload(
+    name: str, n_samples: int, n_features: int, n_labels: int, type2: bool, repeats: int,
+) -> Workload:
+    """End-to-end `.fit` + `.predict` for one classifier family, on the same
+    synthetic dataset and `random_state` as its `type2` counterpart.
+
+    `T2TribbleClassifier.fit` always fits a `TribbleClassifier` internally
+    before converting to IT2 (see `it2_classifier.py`), so its `t2-*` row is a
+    strict superset of the matching `t1-*` row's cost plus conversion and the
+    doubled (upper/lower) forward pass `predict` runs -- putting them at
+    matching names and sizes is what lets a regression specific to either half
+    show up against the other, rather than against an unrelated absolute
+    number.
+    """
+    def setup():
+        X, y = make_dataset(n_samples, n_features, n_labels, seed=5)
+        return X, y
+
+    def run(state):
+        X, y = state
+        if type2:
+            from tribblefis.it2_classifier import T2TribbleClassifier
+            clf = T2TribbleClassifier(random_state=0)
+        else:
+            from tribblefis.gaussian_classifier import TribbleClassifier
+            clf = TribbleClassifier(random_state=0)
+        with _quiet():
+            clf.fit(X, y)
+        return clf.predict(X)
+
+    def checksum(result):
+        # Predicted labels are the small integers `make_dataset` drew them
+        # from, so this is order-sensitive without needing a probability array.
+        return _array_checksum(np.asarray(result, dtype=float))
+
+    kind = "T2TribbleClassifier" if type2 else "TribbleClassifier"
+    return Workload(
+        name=name,
+        description=f"{kind}.fit + .predict: {n_samples}x{n_features}, {n_labels} labels",
+        setup=setup,
+        run=run,
+        checksum=checksum,
+        repeats=repeats,
+        warmups=0,
+        tags=("train", "type2" if type2 else "type1", "classifier"),
+    )
+
+
+def _reg_fit_workload(
+    name: str, n_samples: int, n_features: int, type2: bool, repeats: int,
+) -> Workload:
+    """`_clf_fit_workload`'s regressor counterpart: `.fit` + `.predict` for one
+    regressor family, on the same synthetic dataset and `random_state` as its
+    `type2` twin."""
+    def setup():
+        X, y = make_regression_dataset(n_samples, n_features, seed=5)
+        return X, y
+
+    def run(state):
+        X, y = state
+        if type2:
+            from tribblefis.it2_regressor import T2TribbleRegressor
+            reg = T2TribbleRegressor(random_state=0)
+        else:
+            from tribblefis.gaussian_regressor import TribbleRegressor
+            reg = TribbleRegressor(random_state=0)
+        with _quiet():
+            reg.fit(X, y)
+        return reg.predict(X)
+
+    kind = "T2TribbleRegressor" if type2 else "TribbleRegressor"
+    return Workload(
+        name=name,
+        description=f"{kind}.fit + .predict: {n_samples}x{n_features}",
+        setup=setup,
+        run=run,
+        checksum=_array_checksum,
+        repeats=repeats,
+        warmups=0,
+        tags=("train", "type2" if type2 else "type1", "regressor"),
+    )
+
+
+def _clf_divergence_workload(
+    name: str, n_samples: int, n_features: int, n_labels: int, repeats: int,
+) -> Workload:
+    """Checksum-as-metric: fit `TribbleClassifier` and `T2TribbleClassifier` on
+    the identical data, and report their prediction *agreement rate* as the
+    checksum. Both models start from the same heuristic antecedent fit
+    (`random_state=0`, `refine`/`refine_it2` both off), so the only source of
+    disagreement is IT2's footprint of uncertainty and its type-reduced argmax
+    -- a stable algorithm should reach a stable agreement rate, and a change to
+    either model that shifts how far IT2 diverges from its Type-1 base (for
+    better or worse) is exactly what `bench.py --compare` should flag.
+    """
+    def setup():
+        X, y = make_dataset(n_samples, n_features, n_labels, seed=6)
+        return X, y
+
+    def run(state):
+        from tribblefis.gaussian_classifier import TribbleClassifier
+        from tribblefis.it2_classifier import T2TribbleClassifier
+
+        X, y = state
+        t1 = TribbleClassifier(random_state=0)
+        t2 = T2TribbleClassifier(random_state=0)
+        with _quiet():
+            t1.fit(X, y)
+            t2.fit(X, y)
+        pred1 = t1.predict(X)
+        pred2 = t2.predict(X)
+        return float(np.mean(pred1 == pred2))
+
+    return Workload(
+        name=name,
+        description=(
+            f"TribbleClassifier vs T2TribbleClassifier prediction agreement rate "
+            f"(checksum IS the metric): {n_samples}x{n_features}, {n_labels} labels"
+        ),
+        setup=setup,
+        run=run,
+        checksum=float,
+        repeats=repeats,
+        warmups=0,
+        tags=("divergence", "classifier"),
+    )
+
+
+def _reg_divergence_workload(
+    name: str, n_samples: int, n_features: int, repeats: int,
+) -> Workload:
+    """`_clf_divergence_workload`'s regressor counterpart: the checksum is the
+    mean absolute difference between `TribbleRegressor` and `T2TribbleRegressor`
+    predictions, normalized by the target's training range so the number is
+    comparable across datasets."""
+    def setup():
+        X, y = make_regression_dataset(n_samples, n_features, seed=7)
+        return X, y
+
+    def run(state):
+        from tribblefis.gaussian_regressor import TribbleRegressor
+        from tribblefis.it2_regressor import T2TribbleRegressor
+
+        X, y = state
+        t1 = TribbleRegressor(random_state=0)
+        t2 = T2TribbleRegressor(random_state=0)
+        with _quiet():
+            t1.fit(X, y)
+            t2.fit(X, y)
+        pred1 = t1.predict(X)
+        pred2 = t2.predict(X)
+        y_range = float(np.max(y) - np.min(y)) or 1.0
+        return float(np.mean(np.abs(pred1 - pred2)) / y_range)
+
+    return Workload(
+        name=name,
+        description=(
+            f"TribbleRegressor vs T2TribbleRegressor mean |prediction diff| / "
+            f"target range (checksum IS the metric): {n_samples}x{n_features}"
+        ),
+        setup=setup,
+        run=run,
+        checksum=float,
+        repeats=repeats,
+        warmups=0,
+        tags=("divergence", "regressor"),
+    )
+
+
+# ---------------------------------------------------------------------------
 # The suite.
 # ---------------------------------------------------------------------------
 
@@ -646,6 +921,30 @@ def all_workloads() -> list[Workload]:
                             n_candidates=64, repeats=3),
         _gpu_batch_workload("batch-candidates-gpu-seq", 4_000, 20, 6, 3,
                             n_candidates=64, repeats=3, batched=False),
+        # Type-1 vs Type-2 (interval type-2) comparative pairs. Read each
+        # `t2-*`/`forward-t2-*` row against its `t1-*`/`forward-*` counterpart
+        # (same size, same seed) rather than in isolation -- the ratio between
+        # them, not either absolute number, is what a regression specific to
+        # the IT2 path moves. Sized to match the existing `forward-*` sweep so
+        # the two families sit directly next to each other in the table.
+        _forward_t2_workload("forward-t2-small", 1_000, 8, 3, 3, "min/max", repeats=300),
+        _forward_t2_workload("forward-t2-wide", 2_000, 40, 6, 4, "min/max", repeats=10),
+        _forward_t2_workload("forward-t2-large", 50_000, 20, 8, 4, "min/max", repeats=5),
+        _clf_fit_workload("t1-clf-fit-small", 1_000, 8, 3, type2=False, repeats=5),
+        _clf_fit_workload("t2-clf-fit-small", 1_000, 8, 3, type2=True, repeats=5),
+        _clf_fit_workload("t1-clf-fit-medium", 4_000, 20, 6, type2=False, repeats=3),
+        _clf_fit_workload("t2-clf-fit-medium", 4_000, 20, 6, type2=True, repeats=3),
+        _reg_fit_workload("t1-reg-fit-small", 1_000, 8, type2=False, repeats=5),
+        _reg_fit_workload("t2-reg-fit-small", 1_000, 8, type2=True, repeats=5),
+        _reg_fit_workload("t1-reg-fit-medium", 4_000, 20, type2=False, repeats=3),
+        _reg_fit_workload("t2-reg-fit-medium", 4_000, 20, type2=True, repeats=3),
+        # Checksum-as-metric: these two don't exist to be timed, they exist so
+        # that a behavioural drift between the Type-1 and Type-2 models --
+        # which a pure timing comparison would never see -- shows up as a
+        # moved checksum in `bench.py --compare`, the same mechanism that
+        # already catches a kernel rewrite changing its answer.
+        _clf_divergence_workload("t1-vs-t2-clf-divergence", 2_000, 15, 4, repeats=3),
+        _reg_divergence_workload("t1-vs-t2-reg-divergence", 2_000, 15, repeats=3),
     ]
 
 
