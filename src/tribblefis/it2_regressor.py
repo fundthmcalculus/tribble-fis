@@ -20,7 +20,7 @@ from .it2_kernel import it2_firing_strengths, karnik_mendel_tsk
 from .regression import rule_consequent_values, _normalize_firing_strengths
 
 
-class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
+class T2TribbleRegressor(BaseEstimator, RegressorMixin):
     """Interval Type-2 Fuzzy regressor with uncertainty quantification.
 
     Converts a Type-1 TSK regressor to IT2 by creating upper and lower bound
@@ -118,7 +118,7 @@ class IntervalType2FuzzyRegressor(BaseEstimator, RegressorMixin):
 
         Returns
         -------
-        self : IntervalType2FuzzyRegressor
+        self : T2TribbleRegressor
             Fitted estimator.
         """
         X, y = check_X_y(X, y, accept_sparse=False, dtype=None, multi_output=False)

@@ -40,10 +40,10 @@ upper, lower = clf.predict_intervals(X_test)
 ### Regression
 
 ```python
-from tribblefis.it2_regressor import IntervalType2FuzzyRegressor
+from tribblefis.it2_regressor import T2TribbleRegressor
 
 # Create and fit regressor
-reg = IntervalType2FuzzyRegressor(
+reg = T2TribbleRegressor(
     top_n=3,
     n_gaussians=2,
     uncertainty_width=0.5,
@@ -301,9 +301,9 @@ Post-fit IT2 antecedent refinement (`refine_it2_antecedents`, `refine_it2`):
 ### Regression with Uncertainty Quantification
 
 ```python
-from tribblefis.it2_regressor import IntervalType2FuzzyRegressor
+from tribblefis.it2_regressor import T2TribbleRegressor
 
-reg = IntervalType2FuzzyRegressor(
+reg = T2TribbleRegressor(
     top_n=4,
     n_gaussians=3,
     n_output_buckets=5,
