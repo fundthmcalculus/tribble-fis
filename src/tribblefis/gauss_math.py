@@ -10,6 +10,9 @@ from . import kernel
 from .gauss_data import *  # noqa: F401, F403
 from .stats_numba import norm_fit, norm_pdf, jensenshannon_distance, wasserstein_distance, silhouette_score, kmeans_1d
 
+# Numeric thresholds for numerical stability
+_SIGMA_FLOOR = 1e-6  # Minimum variance/sigma to avoid numerical issues
+_SMALL_THRESHOLD = 1e-12  # Threshold for near-zero denominators in norm calculations
 
 #: Variance floor for BIC scoring: scale-relative (fraction of feature variance)
 #: to avoid hard floors on different units. Prevents single-point components.
@@ -17,7 +20,22 @@ BIC_VARIANCE_FLOOR_FRAC = 1e-6
 
 
 def _hard_partition_gaussians(data: np.ndarray, labels: np.ndarray, n_clusters: int):
-    """MLE Gaussian mixture from hard k-means partition: (mu, sigma, weight) per cluster."""
+    """MLE Gaussian mixture from hard k-means partition: (mu, sigma, weight) per cluster.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        1-D array of data points.
+    labels : np.ndarray
+        Hard cluster assignments (0 to n_clusters-1).
+    n_clusters : int
+        Number of clusters.
+
+    Returns
+    -------
+    list[tuple[float, float, float]]
+        List of (mu, sigma, weight) tuples for each cluster with samples.
+    """
     n = len(data)
     out = []
     for i in range(n_clusters):
@@ -34,11 +52,24 @@ def _hard_partition_gaussians(data: np.ndarray, labels: np.ndarray, n_clusters: 
 def _mixture_bic(data: np.ndarray, components, var_floor: float) -> float:
     """BIC of a 1-D Gaussian mixture, scored on every point.
 
-    Same criterion ``GaussianMixture.bic`` reports -- ``n_params * log(N) - 2 *
-    log_likelihood`` with ``3k - 1`` free parameters -- evaluated at the
-    hard-assignment MLE instead of at an EM optimum. The likelihood is the full
-    mixture density at every observation, not a per-cluster sum, which is what
-    makes the numbers comparable across k.
+    Parameters
+    ----------
+    data : np.ndarray
+        1-D array of data points.
+    components : list[tuple[float, float, float]]
+        List of (mu, sigma, weight) Gaussian components.
+    var_floor : float
+        Variance floor to prevent numerical issues.
+
+    Returns
+    -------
+    float
+        BIC score (n_params * log(N) - 2 * log_likelihood); lower is better.
+
+    Notes
+    -----
+    Uses hard-assignment MLE instead of EM optimum, evaluated on full mixture
+    density at every point, making scores comparable across different k values.
     """
     if not components:
         return np.inf
@@ -52,6 +83,22 @@ def _mixture_bic(data: np.ndarray, components, var_floor: float) -> float:
 
 
 def _kmeans_labels_1d(data: np.ndarray, k: int, random_state: int) -> np.ndarray:
+    """1-D k-means clustering.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        1-D array of data points.
+    k : int
+        Number of clusters.
+    random_state : int
+        RNG seed for reproducibility.
+
+    Returns
+    -------
+    np.ndarray
+        Cluster labels (0 to k-1) for each data point.
+    """
     return kmeans_1d(data, k, random_state=random_state)
 
 
@@ -114,9 +161,24 @@ def fit_gaussian_mixture_1d(
 def find_optimal_gaussians(data, max_gaussians: int = 4, random_state: int = 42) -> int:
     """Number of Gaussians the data supports, by BIC.
 
-    Thin wrapper over :func:`fit_gaussian_mixture_1d`, kept because it is public.
-    Prefer that function directly: it hands back the fit the count was chosen
-    from instead of making the caller reproduce it.
+    Parameters
+    ----------
+    data : array-like
+        1-D data to fit.
+    max_gaussians : int, default=4
+        Maximum components to try.
+    random_state : int, default=42
+        RNG seed for k-means.
+
+    Returns
+    -------
+    int
+        Optimal number of components selected by BIC.
+
+    Notes
+    -----
+    Wrapper over :func:`fit_gaussian_mixture_1d`; prefer calling that directly
+    to get both components and count instead of refitting.
     """
     if len(data) < 2:
         return 1
@@ -137,22 +199,29 @@ def fit_gaussians(
 ):
     """Fit 1-D Gaussians to one variable, filtered to one label, by k-means.
 
-    If ``n_gaussians <= 0`` the component count is chosen by BIC.
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Feature data.
+    y : pd.Series
+        Labels.
+    column : str
+        Feature name to fit.
+    label_value : int
+        Label value to filter to.
+    n_gaussians : int, default=0
+        Number of components (0 = auto-select by BIC).
+    max_samples : int | None, default=None
+        Row cap for fitting; None uses all rows. Random rows without replacement.
+    random_state : int, default=42
+        RNG seed for k-means and subsampling.
+    verbose : bool, default=False
+        Print auto-selected component count.
 
-    Args:
-        max_samples: Cap on the rows used for the fit. ``None`` -- the default --
-            uses every row. When a cap is given the rows are drawn **at random**
-            without replacement, seeded by ``random_state``.
-
-            This used to default to 20,000 and take the *first* 20,000 rows,
-            neither of which the caller could see or change:
-            ``create_gaussian_membership_dict`` did not expose the argument. Two
-            things were wrong with that. A prefix is not a sample -- on data
-            sorted by anything at all it is a biased one -- and a cost curve
-            measured through an invisible cap looks sublinear when it is merely
-            truncated. Subsampling is worth having; doing it silently is not.
-        verbose: Print the automatically-selected component count. Off by
-            default; this fires once per (feature, label) pair.
+    Returns
+    -------
+    list[GaussianMembership]
+        Fitted Gaussian components.
     """
 
     series = X[column][y == label_value].dropna()
@@ -199,10 +268,23 @@ def _pairwise_label_distance(
 ) -> float:
     """One label-pair's distance for a numeric 1-D series, under `method`.
 
-    `data_min`/`data_max` are the *overall* series' range (not just these two
-    labels'), matching the PDF comparison grid `calculate_gaussian_correlation`
-    always used -- factored out so `calculate_interaction_scores` can score a
-    derived (product) column with the identical metric, not a re-derivation of it.
+    Parameters
+    ----------
+    data_label_ij : np.ndarray
+        Data values for first label.
+    data_label_jk : np.ndarray
+        Data values for second label.
+    method : str
+        Distance metric: 'bhattacharyya', 'wasserstein', or 'composite'.
+    data_min : float
+        Overall series minimum for PDF grid.
+    data_max : float
+        Overall series maximum for PDF grid.
+
+    Returns
+    -------
+    float
+        Distance between the two distributions.
     """
     if method in ("bhattacharyya", "composite"):
         # Fit Gaussian distributions
@@ -263,10 +345,21 @@ def _pairwise_label_distance(
 def _differentiation_score(data: pd.Series, y: pd.Series, unique_labels, method: str) -> float:
     """Sum `_pairwise_label_distance` over every pair of labels in `unique_labels`.
 
-    Shared by `calculate_gaussian_correlation` (scoring a raw feature column)
-    and `calculate_interaction_scores` (scoring a derived product column) --
-    the metric must be identical in both places for the interaction "lift"
-    comparison to mean anything.
+    Parameters
+    ----------
+    data : pd.Series
+        Feature values.
+    y : pd.Series
+        Labels.
+    unique_labels : array-like
+        Unique label values to score pairwise.
+    method : str
+        Distance metric: 'bhattacharyya', 'wasserstein', or 'composite'.
+
+    Returns
+    -------
+    float
+        Sum of pairwise distances across all label pairs.
     """
     data_min, data_max = data.min(), data.max()
     score = 0.0
@@ -279,7 +372,20 @@ def _differentiation_score(data: pd.Series, y: pd.Series, unique_labels, method:
 
 
 def _encode_if_categorical(series: pd.Series, full_column: pd.Series) -> pd.Series:
-    """Map a categorical/string/integer column to integer codes; pass numeric data through."""
+    """Map a categorical/string/integer column to integer codes; pass numeric data through.
+
+    Parameters
+    ----------
+    series : pd.Series
+        Series to encode (may be subset).
+    full_column : pd.Series
+        Full column used to determine unique values and ordering.
+
+    Returns
+    -------
+    pd.Series
+        Encoded series (integer codes) or original if numeric.
+    """
     if (
         series.dtype == "object"
         or pd.api.types.is_string_dtype(series.dtype)
@@ -294,36 +400,27 @@ def _encode_if_categorical(series: pd.Series, full_column: pd.Series) -> pd.Seri
 def calculate_gaussian_correlation(X, y, method: str = "wasserstein", top_n: int = -1) -> list[tuple[Any, Any]]:
     """Calculate distance metric between distributions for each feature across different labels.
 
-    Args:
-        X: Feature dataframe
-        y: Label series
-        method: Distance metric to use. Options:
-            - "wasserstein" (default): non-parametric, makes no distributional assumption.
-              Preferred: a Gaussian-fit divergence silently mismeasures non-Gaussian
-              features, and the classifier keeps only the top-ranked few, so a
-              mis-ranked feature is simply never seen.
-            - "bhattacharyya": parametric (Gaussian fit per class). Cheaper, and fine
-              when features are approximately Gaussian.
-            - "composite": blend of four measures -- three Gaussian-fit
-              (Bhattacharyya, Jensen-Shannon, overlap coefficient) plus
-              wasserstein, the one non-parametric view -- via the average of
-              their arithmetic and geometric means. The geometric-mean term
-              requires every measure to agree, so a feature can't score high
-              on the strength of a single measure's blind spot; without
-              wasserstein the other three all share the same Gaussian-fit
-              blind spot and don't actually diversify against it. Costs ~4x
-              bhattacharyya. Does not include the histogram-correlation term
-              the pre-#34 blend had; that measure was on a different scale,
-              crashed on zero-variance features, and was the worst performing
-              of the four.
-        top_n: If > 0, only return the top N features by differentiation score.
-               If <= 0 (default), return all features sorted by score descending.
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Feature data.
+    y : pd.Series
+        Labels.
+    method : {'wasserstein', 'bhattacharyya', 'composite'}, default='wasserstein'
+        Distance metric. Wasserstein is non-parametric; bhattacharyya is parametric
+        (cheaper, works for approximately Gaussian data); composite blends both.
+    top_n : int, default=-1
+        If > 0, return only top N features; if <= 0, return all sorted descending.
 
-    Returns:
-        List of tuples (feature_name, differentiation_score) sorted by score descending
+    Returns
+    -------
+    list[tuple[str, float]]
+        (feature_name, normalized_score) sorted by score descending; scores in [0, 1].
 
-    Raises:
-        ValueError: If method is not recognized
+    Raises
+    ------
+    ValueError
+        If method is not recognized.
     """
     if method not in _VALID_DIFFERENTIATION_METHODS:
         raise ValueError(f"method must be one of {_VALID_DIFFERENTIATION_METHODS}, got {method!r}")
@@ -375,49 +472,36 @@ def calculate_interaction_scores(
 ) -> list[tuple[Any, Any, float]]:
     """Score every candidate feature *pair* for interaction "lift" beyond either alone.
 
-    `calculate_gaussian_correlation` is univariate by construction -- it can
-    never see that two individually weak features are jointly informative.
-    This scores the elementwise product of each candidate pair with the
-    *identical* distance metric (`_differentiation_score`), so the comparison
-    against each feature's own individual score is apples-to-apples:
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Feature data (all features, not just top-selected).
+    y : pd.Series
+        Labels.
+    feature_differentiators : list[tuple[str, float]]
+        Output of `calculate_gaussian_correlation` with individual scores.
+    method : {'wasserstein', 'bhattacharyya', 'composite'}, default='wasserstein'
+        Distance metric (must match `calculate_gaussian_correlation`).
+    candidate_pool : list[str] | None, default=None
+        Feature subset for pairs; None considers all in `feature_differentiators`.
+    max_pairs : int, default=2000
+        Maximum allowed pair count; raises ValueError if exceeded.
 
-        lift(i, j) = score(z_i * z_j) - max(score(i), score(j))
+    Returns
+    -------
+    list[tuple[str, str, float]]
+        (feature_i, feature_j, lift) sorted by lift descending, normalized to [0,1]
+        for positive lifts. Non-positive lifts included.
 
-    A positive lift means the joint value separates labels/buckets better
-    than either input alone -- the same idea as Friedman's H-statistic or
-    interaction information, phrased in this module's own metric rather than
-    a new one, so it costs no new dependency and stays comparable to the
-    univariate scores it's meant to rescue features against.
+    Raises
+    ------
+    ValueError
+        If method invalid or candidate pool produces more than max_pairs pairs.
 
-    Args:
-        X: Feature dataframe (the *pre-selection* frame -- pass every feature
-            `calculate_gaussian_correlation` was given, not just the
-            survivors of `take_top_features`, or a jointly-informative pair
-            can never be found in the first place).
-        y: Label/output-bucket series, aligned with `X`.
-        feature_differentiators: This dataset's own output from
-            `calculate_gaussian_correlation` (used for each feature's
-            individual score in the lift formula, and to restrict scoring to
-            finite-scored features).
-        method: Same distance-metric choice as `calculate_gaussian_correlation`;
-            must match it for the lift comparison to be meaningful.
-        candidate_pool: Feature subset to consider pairs from. `None` (default)
-            considers every feature `feature_differentiators` scored.
-        max_pairs: Raises rather than silently grinding through an
-            accidentally huge candidate pool -- pairs grow as
-            `n_choose_2`, and this is an O(n_pairs) distance computation per
-            pair, not a cheap one.
-
-    Returns:
-        `(feature_i, feature_j, lift)` tuples, sorted by lift descending,
-        normalized so the top *positive* lift is 1.0 (mirrors
-        `calculate_gaussian_correlation`'s own normalization). Non-positive
-        lifts are kept (a caller filtering for "worth adding" should filter
-        on sign, not assume everything returned is a genuine interaction).
-
-    Raises:
-        ValueError: If `method` is invalid, or the candidate pool's pair
-            count exceeds `max_pairs`.
+    Notes
+    -----
+    Lift = score(z_i * z_j) - max(score(i), score(j)), measuring joint separation
+    beyond either feature alone. See Friedman's H-statistic for similar concept.
     """
     if method not in _VALID_DIFFERENTIATION_METHODS:
         raise ValueError(f"method must be one of {_VALID_DIFFERENTIATION_METHODS}, got {method!r}")
@@ -448,7 +532,7 @@ def calculate_interaction_scores(
         zi, zj, y_common = zi.loc[common], zj.loc[common], y.loc[common]
 
         std_i, std_j = zi.std(), zj.std()
-        if std_i <= 1e-12 or std_j <= 1e-12:
+        if std_i <= _SMALL_THRESHOLD or std_j <= _SMALL_THRESHOLD:
             continue  # a constant feature has no interaction to offer
         product = zi * zj
 
@@ -474,24 +558,30 @@ def create_gaussian_membership_dict(
     random_state: int = 42,
     verbose: bool = False,
 ) -> GaussianMixtureModel:
-    """Create a dictionary of Gaussian input memberships for top-n variables across all class labels
+    """Create Gaussian input memberships for top-n variables across all class labels.
 
-    Args:
-        X: Feature dataframe
-        y: Label series
-        top_n_var_names: List of feature names
-        n_gaussians: Number of Gaussians to fit per feature per label (0 for automatic).
-                     Can also be a dictionary mapping feature names to their respective number of Gaussians.
-        max_samples: Rows per (feature, label) used for the fit; ``None`` uses
-                     all of them. See :func:`fit_gaussians` -- this argument
-                     exists here because the cap was previously applied at 20,000
-                     rows with no way for this caller to see it or turn it off.
-        random_state: Seeds both the k-means and, when ``max_samples`` is set,
-                      the subsample draw.
-        verbose: Print each automatically-selected component count.
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Feature data.
+    y : pd.Series
+        Labels.
+    top_n_var_names : list[str]
+        Features to fit Gaussians for.
+    n_gaussians : int | dict[str, int], default=0
+        Components per feature-label pair (0 = auto-select by BIC).
+        Can be dict mapping feature names or label values to component counts.
+    max_samples : int | None, default=None
+        Row cap per (feature, label) pair; None uses all rows.
+    random_state : int, default=42
+        RNG seed for k-means and subsampling.
+    verbose : bool, default=False
+        Print auto-selected component counts.
 
-    Returns:
-        GaussianMixtureModel containing the fit Gaussian membership functions
+    Returns
+    -------
+    GaussianMixtureModel
+        Fitted Gaussian components per feature and label.
     """
     import os
 
@@ -578,7 +668,22 @@ def create_gaussian_membership_dict(
 
 
 def t_norm(x, y, selected_norm: NormConorm | None = None):
-    """T-norm (AND) function for fuzzy logic operations."""
+    """T-norm (AND) function for fuzzy logic operations.
+
+    Parameters
+    ----------
+    x : np.ndarray | float
+        First operand.
+    y : np.ndarray | float | None
+        Second operand; None triggers column-wise aggregation of x.
+    selected_norm : NormConorm | None, default=None
+        Norm family to use (min/max, probability, luk, hamacher, einstein).
+
+    Returns
+    -------
+    np.ndarray | float
+        T-norm result under the selected norm family.
+    """
     # None means "unspecified"; any other value is validated below rather than
     # being swapped for the default by a falsy test.
     selected_norm = selected_norm if selected_norm is not None else DefaultNormCornorm
@@ -598,7 +703,7 @@ def t_norm(x, y, selected_norm: NormConorm | None = None):
     elif selected_norm == "hamacher":
         den = x + y - x * y
         out = np.zeros_like(np.asarray(x, dtype=float))
-        ok = np.abs(den) > 1e-12
+        ok = np.abs(den) > _SMALL_THRESHOLD
         np.divide(x * y, den, out=out, where=ok)
         return out
     elif selected_norm == "einstein":
@@ -611,7 +716,22 @@ def t_norm(x, y, selected_norm: NormConorm | None = None):
 
 
 def t_conorm(x, y, selected_norm: NormConorm | None = None):
-    """T-conorm (OR) function for fuzzy logic operations."""
+    """T-conorm (OR) function for fuzzy logic operations.
+
+    Parameters
+    ----------
+    x : np.ndarray | float
+        First operand.
+    y : np.ndarray | float | None
+        Second operand; None triggers column-wise aggregation of x.
+    selected_norm : NormConorm | None, default=None
+        Norm family to use (min/max, probability, luk, hamacher, einstein).
+
+    Returns
+    -------
+    np.ndarray | float
+        T-conorm result under the selected norm family.
+    """
     selected_norm = selected_norm if selected_norm is not None else DefaultNormCornorm
 
     if y is None:
@@ -635,7 +755,7 @@ def t_conorm(x, y, selected_norm: NormConorm | None = None):
         num = x + y - 2.0 * x * y
         den = 1.0 - x * y
         out = np.ones_like(np.asarray(x, dtype=float))
-        ok = np.abs(den) > 1e-12
+        ok = np.abs(den) > _SMALL_THRESHOLD
         np.divide(num, den, out=out, where=ok)
         return out
     else:
@@ -643,15 +763,42 @@ def t_conorm(x, y, selected_norm: NormConorm | None = None):
 
 
 def t_complement(x):
-    """T-complement function for fuzzy logic operations."""
+    """T-complement function for fuzzy logic operations.
+
+    Parameters
+    ----------
+    x : np.ndarray | float
+        Fuzzy membership value(s).
+
+    Returns
+    -------
+    np.ndarray | float
+        Complement (1 - x).
+    """
     return 1 - x
 
 
 def membership(x, mu, sigma, default_member: MemberFunction | None = None):
+    """Membership function for fuzzy logic operations.
+
+    Parameters
+    ----------
+    x : np.ndarray | float
+        Input values.
+    mu : float
+        Center of membership function.
+    sigma : float
+        Spread parameter.
+    default_member : MemberFunction | None, default=None
+        Type of membership function (gaussian or triangular).
+
+    Returns
+    -------
+    np.ndarray | float
+        Membership degree(s) in [0, 1].
+    """
     member_fn: MemberFunction = default_member or DefaultMemberFunction
-    # Add a small epsilon to sigma to avoid division by zero
-    sigma = max(sigma, 1e-6)
-    """Membership function for fuzzy logic operations."""
+    sigma = max(sigma, _SIGMA_FLOOR)
     if member_fn == "gaussian":
         return np.exp(-0.5 * ((x - mu) / sigma) ** 2)
     elif member_fn == "triangular":
@@ -673,27 +820,24 @@ def tsk_firing_strengths(
 ) -> tuple[np.ndarray, list[Any]]:
     """Calculate firing strengths for each label in a Zeroth-order TSK fuzzy model.
 
-    Args:
-        X: Feature dataframe (input variables)
-        model: GaussianMixtureModel containing labels and their Gaussian parameters
-        anomaly_details: Whether to include the anomaly label in the firing strengths
-        norms: Explicit (t-norm, t-conorm) pair. Takes precedence over
-            `anomaly_details`; when both are absent the default family is used.
-            Regression has no `anomaly_details` to carry the selection, so this
-            argument is the only way a regressor can choose its operators.
-        feature_arrays: Optional pre-extracted ``{feature_name: ndarray}`` mapping,
-            bypassing the `X[name].values` pandas lookups below. `X` never changes
-            between fitness evaluations under antecedent refinement, so callers
-            that hold a frame fixed across many calls (e.g. `refine.py`) can
-            extract each column once and pass the same mapping every time instead
-            of paying a pandas lookup per call. `None` (the default) reproduces
-            the extraction exactly as before, so every existing caller is
-            unaffected.
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Feature data (input variables).
+    model : GaussianMixtureModel
+        Fitted Gaussian components per feature and label.
+    anomaly_details : AnomalyParameters | None, default=None
+        Anomaly detection settings (label, threshold, norms).
+    norms : NormPair | None, default=None
+        Explicit (t-norm, t-conorm) pair; overrides anomaly_details.
+    feature_arrays : dict[str, np.ndarray] | None, default=None
+        Pre-extracted feature columns for efficiency; None re-extracts each call.
 
-    Returns:
-        tuple containing:
-            - np.ndarray of firing strengths (n_samples, n_labels)
-            - list of label values corresponding to the columns in firing_strengths
+    Returns
+    -------
+    tuple[np.ndarray, list]
+        - Firing strengths array (n_samples x n_labels).
+        - Label values corresponding to firing_strengths columns.
     """
     if norms is None:
         norms = anomaly_details.norms() if anomaly_details else resolve_norm_pair()
@@ -812,7 +956,20 @@ def tsk_firing_strengths(
 # ---------------------------------------------------------------------------
 
 def _conorm_fold_probability(feature_data: np.ndarray, memberships: list) -> np.ndarray:
-    """Probability t-conorm fold (``a S b = a + b - ab``) over a label's memberships."""
+    """Probability t-conorm fold (``a S b = a + b - ab``) over a label's memberships.
+
+    Parameters
+    ----------
+    feature_data : np.ndarray
+        1-D or 2-D feature values.
+    memberships : list[GaussianMembership]
+        Membership functions to fold.
+
+    Returns
+    -------
+    np.ndarray
+        Result of t-conorm fold over all memberships.
+    """
     z = np.zeros_like(feature_data, dtype=float)
     for mf in memberships:
         g = mf.evaluate(feature_data)
@@ -823,13 +980,23 @@ def _conorm_fold_probability(feature_data: np.ndarray, memberships: list) -> np.
 def _conorm_fold_probability_with_grad(
     feature_data: np.ndarray, memberships: list, target_index: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Probability t-conorm fold, plus d(z)/d(mu) and d(z)/d(sigma) of the
-    Gaussian membership at `target_index` (only that one membership depends on
-    theta; every other term in the fold is a constant with respect to it).
+    """Probability t-conorm fold plus gradient w.r.t. target membership parameters.
 
-    For ``z_new = t_conorm(z, g) = z + g - z*g``, the partials are
-    ``dz_new/dz = 1 - g`` and ``dz_new/dg = 1 - z``, so each fold step updates
-    the running derivative by the chain rule before advancing `z`.
+    Parameters
+    ----------
+    feature_data : np.ndarray
+        1-D or 2-D feature values.
+    memberships : list[GaussianMembership]
+        Membership functions to fold.
+    target_index : int
+        Index of membership function to differentiate.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray, np.ndarray]
+        - z: t-conorm fold result.
+        - dz_mu: Gradient w.r.t. target membership's mu.
+        - dz_sigma: Gradient w.r.t. target membership's sigma.
     """
     z = np.zeros_like(feature_data, dtype=float)
     dz_mu = np.zeros_like(feature_data, dtype=float)
@@ -856,24 +1023,32 @@ def firing_strengths_and_mf_grad(
     target_label: Any,
     target_mf_index: int,
 ) -> tuple[np.ndarray, list[Any], np.ndarray, np.ndarray]:
-    """Raw firing strengths under "probability" norms, plus the analytic
-    derivative of the *targeted rule's* column with respect to one Gaussian
-    membership function's ``(mu, sigma)``.
+    """Raw firing strengths under "probability" norms plus gradient.
 
-    Args:
-        feature_arrays: Pre-extracted ``{feature_name: ndarray}`` mapping (see
-            `tsk_firing_strengths`).
-        model: Candidate `GaussianMixtureModel` (already has the trial params applied).
-        target_feature: Name of the feature the targeted membership function belongs to.
-        target_label: Output label the targeted membership function belongs to.
-        target_mf_index: Index of the targeted `GaussianMembership` within that
-            label's membership list.
+    Parameters
+    ----------
+    feature_arrays : dict[str, np.ndarray]
+        Pre-extracted feature columns.
+    model : GaussianMixtureModel
+        Candidate model with trial parameters.
+    target_feature : str
+        Feature name of targeted membership.
+    target_label : Any
+        Output label of targeted membership.
+    target_mf_index : int
+        Index in that label's membership list.
 
-    Returns:
-        ``(firing_strengths, labels, dF_target_col_dmu, dF_target_col_dsigma)``,
-        where the last two are ``(n_samples,)`` arrays -- the derivative of
-        ``firing_strengths[:, labels.index(target_label)]`` only. Every other
-        column's derivative is exactly zero at this raw stage (see module note).
+    Returns
+    -------
+    tuple[np.ndarray, list, np.ndarray, np.ndarray]
+        - Firing strengths array (n_samples x n_labels).
+        - Label values.
+        - Derivative w.r.t. target column's mu.
+        - Derivative w.r.t. target column's sigma.
+
+    Notes
+    -----
+    Only target label's column derivatives are nonzero; others are exactly zero.
     """
     first_feature_model = next(iter(model.feature_models.values()))
     unique_labels: list[Any] = list(first_feature_model.ordered_keys)
@@ -918,13 +1093,19 @@ def firing_strengths_and_mf_grad(
 def tsk_predict(X: pd.DataFrame, model: GaussianMixtureModel,  anomaly_details: AnomalyParameters | None = None) -> np.ndarray:
     """Zeroth-order TSK fuzzy model for classification.
 
-    Args:
-        X: Feature dataframe (input variables)
-        model: GaussianMixtureModel containing labels and their Gaussian parameters
-        anomaly_details: AnomalyParameters containing anomaly detection details
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Feature data.
+    model : GaussianMixtureModel
+        Fitted Gaussian components per feature and label.
+    anomaly_details : AnomalyParameters | None, default=None
+        Anomaly detection settings.
 
-    Returns:
-        Array of predicted class labels (0 or 1)
+    Returns
+    -------
+    np.ndarray
+        Predicted class labels for each sample.
     """
     firing_strengths, unique_labels = tsk_firing_strengths(X, model, anomaly_details)
     predictions = np.argmax(firing_strengths, axis=1)
@@ -935,12 +1116,17 @@ def tsk_predict(X: pd.DataFrame, model: GaussianMixtureModel,  anomaly_details: 
 def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierModel) -> np.ndarray:
     """Predict labels using SimpleGaussianClassifierModel.
 
-    Args:
-        X: Feature dataframe (input variables)
-        model: SimpleGaussianClassifierModel containing input MFs and rules
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Feature data.
+    model : SimpleGaussianClassifierModel
+        Fitted classifier with rules and membership functions.
 
-    Returns:
-        Array of predicted labels
+    Returns
+    -------
+    np.ndarray
+        Predicted class labels for each sample.
     """
     n_samples = len(X)
     n_rules = len(model.rules)
@@ -988,19 +1174,19 @@ def take_top_features(
 ) -> tuple[int, list[Any]]:
     """Select features from a differentiation-score ranking.
 
-    Args:
-        feature_differentiators: (feature_name, score) pairs, normalized so the
-            top score is 1.0, sorted descending (as returned by
-            ``calculate_gaussian_correlation``).
-        top_p: Per-feature score threshold, not cumulative coverage. A feature is
-            kept when its own normalized score is >= (1 - top_p). Ignored if
-            top_n > 0. top_p=1.0 keeps every feature (threshold 0); lower top_p
-            raises the threshold and keeps fewer.
-        top_n: If > 0, keep exactly the top_n highest-scoring features and
-            ignore top_p.
+    Parameters
+    ----------
+    feature_differentiators : list[tuple[str, float]]
+        (feature_name, normalized_score) pairs, sorted descending.
+    top_p : float, default=0.95
+        Per-feature threshold; keep if score >= (1 - top_p). Ignored if top_n > 0.
+    top_n : int, default=-1
+        If > 0, keep exactly top_n features; if <= 0, use top_p threshold.
 
-    Returns:
-        Tuple of (number of features kept, list of kept feature names).
+    Returns
+    -------
+    tuple[int, list[str]]
+        Number of features kept and list of feature names.
     """
     if top_n > 0:
         return top_n, [s for s, v in feature_differentiators[:top_n]]
@@ -1016,25 +1202,23 @@ def take_top_interactions(
 ) -> list[tuple[Any, Any]]:
     """Select interacting pairs from a `calculate_interaction_scores` ranking.
 
-    Same threshold semantics as `take_top_features`, applied to lift instead
-    of individual score, and additionally restricted to *positive* lift --
-    unlike a feature's own differentiation score, a pair's lift is a
-    difference and a non-positive one means the pair adds nothing over its
-    better half alone, regardless of where it'd fall against a `top_p`/`top_n`
-    cut applied to magnitude.
+    Parameters
+    ----------
+    interaction_scores : list[tuple[str, str, float]]
+        (feature_i, feature_j, lift) triples, sorted descending by lift.
+    top_p : float, default=0.95
+        Per-pair threshold; keep if lift >= (1 - top_p). Ignored if top_n > 0.
+    top_n : int, default=-1
+        If > 0, keep top_n highest-lift pairs; if <= 0, use top_p threshold.
 
-    Args:
-        interaction_scores: `(feature_i, feature_j, lift)` triples, normalized
-            so the top positive lift is 1.0, sorted descending (as returned
-            by `calculate_interaction_scores`).
-        top_p: Per-pair lift threshold, not cumulative coverage -- a pair is
-            kept when its normalized lift is >= (1 - top_p). Ignored if
-            top_n > 0.
-        top_n: If > 0, keep exactly the top_n highest-lift pairs (still
-            requiring positive lift) and ignore top_p.
+    Returns
+    -------
+    list[tuple[str, str]]
+        Feature pairs with positive lift meeting selection criteria.
 
-    Returns:
-        List of `(feature_i, feature_j)` pairs kept.
+    Notes
+    -----
+    Only pairs with positive lift are returned, regardless of threshold.
     """
     positive = [(fi, fj, lift) for fi, fj, lift in interaction_scores if lift > 0]
     if top_n > 0:
@@ -1048,23 +1232,24 @@ def rescue_interacting_features(
 ) -> list[Any]:
     """Union any feature in a kept interacting pair into the selected feature list.
 
-    This is the actual fix to `calculate_gaussian_correlation`'s univariate
-    blind spot: a feature that scored under `take_top_features`'s threshold
-    but participates in a kept pair (`take_top_interactions`) would otherwise
-    never reach the model at all, cross term or not. Order follows
-    `feature_differentiators`' own (descending-score) order, so a rescued
-    feature slots in by its individual rank rather than being appended at
-    the end.
+    Parameters
+    ----------
+    top_features : list[str]
+        Features already selected by `take_top_features`.
+    feature_differentiators : list[tuple[str, float]]
+        Full ranking for ordering merged result.
+    kept_pairs : list[tuple[str, str]]
+        Interacting pairs from `take_top_interactions`.
 
-    Args:
-        top_features: `take_top_features`'s survivors (already selected).
-        feature_differentiators: The full (unfiltered) ranking, used only for
-            ordering the merged result.
-        kept_pairs: `take_top_interactions`'s output.
+    Returns
+    -------
+    list[str]
+        Union of top_features and rescued features, in feature_differentiators order.
 
-    Returns:
-        `top_features` plus any rescued features, in `feature_differentiators`
-        order.
+    Notes
+    -----
+    Rescues features in kept pairs that scored below `take_top_features` threshold,
+    fixing the univariate blind spot where joint interactions weren't discoverable.
     """
     rescued = {f for pair in kept_pairs for f in pair}
     keep = set(top_features) | rescued
@@ -1074,14 +1259,21 @@ def rescue_interacting_features(
 def calculate_top_k_accuracy(y_true, firing_strengths, labels, max_k: int = 5):
     """Calculate top-k accuracy for different values of k.
 
-    Args:
-        y_true: True class labels.
-        firing_strengths: Firing strengths for each label.
-        labels: List of label values corresponding to firing_strengths columns.
-        max_k: Maximum k to calculate top-k accuracy for.
+    Parameters
+    ----------
+    y_true : array-like
+        True class labels.
+    firing_strengths : np.ndarray
+        Firing strengths (n_samples x n_labels).
+    labels : list
+        Label values corresponding to firing_strengths columns.
+    max_k : int, default=5
+        Maximum k value to compute accuracy for.
 
-    Returns:
-        Dictionary mapping k to accuracy.
+    Returns
+    -------
+    dict[int, float]
+        Top-k accuracy (fraction of samples with true label in top-k predictions).
     """
     max_k = min(max_k, len(labels))
 
@@ -1110,15 +1302,23 @@ def generate_synthetic_data(
 ) -> tuple[pd.DataFrame, pd.Series]:
     """Generate synthetic data to improve parity for underrepresented classes.
 
-    Args:
-        X: Original feature dataframe.
-        y: Original labels series.
-        model: GaussianMixtureModel containing the fitted Gaussian parameters.
-        target_count: The number of samples to aim for in each class. If -1, uses the mean count.
-        classes_to_augment: List of specific classes to augment. If None, augments underrepresented classes.
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Original feature data.
+    y : pd.Series
+        Original labels.
+    model : GaussianMixtureModel
+        Fitted Gaussian components for sampling.
+    target_count : int, default=-1
+        Target samples per class (-1 = mean count across all classes).
+    classes_to_augment : list[Any] | None, default=None
+        Specific classes to augment (None = all underrepresented classes).
 
-    Returns:
-        tuple containing the augmented X and y.
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.Series]
+        Augmented feature data and labels.
     """
     counts = y.value_counts()
     if target_count == -1:

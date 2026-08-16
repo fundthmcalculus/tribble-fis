@@ -52,3 +52,14 @@ python_functions = ["test_*"]
 markers = [
     "performance: marks tests as performance benchmarks (deselect with '-m \"not performance\"')",
 ]
+
+[tool.mypy]
+# Enforce best practices for type checking.
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+# Ignore missing imports for external packages without type stubs.
+ignore_missing_imports = true

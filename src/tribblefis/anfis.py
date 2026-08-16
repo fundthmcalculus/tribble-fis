@@ -26,6 +26,13 @@ from .regression import build_consequent_features, _normalize_firing_strengths, 
 # Grid partitioning limit: 5000 rules x thousands of samples → multi-second solve.
 _MAX_RULES = 5000
 
+# Numeric thresholds and defaults for numerical stability
+_SIGMA_FLOOR = 1e-6  # Minimum variance/sigma to avoid numerical issues
+_SMALL_THRESHOLD = 1e-6  # Threshold for near-zero firing strengths
+_GRADIENT_THRESHOLD = 1e-12  # Threshold for gradient-related comparisons
+_ADAM_EPSILON = 1e-8  # Epsilon for Adam optimizer (numerical stability)
+_L2_REG_DEFAULT = 1e-6  # Default L2 regularization strength
+
 TSKOrder = typing.Literal["0th", "1st", "2nd", "3rd", "full-2nd"]
 
 
@@ -94,7 +101,7 @@ def _build_rule_grid(n_terms: tuple[int, ...]) -> np.ndarray:
 
 def _gaussian(x: np.ndarray, mu: np.ndarray, sigma: np.ndarray) -> np.ndarray:
     """Layer 1 for one feature: `(n_samples,) x (K,) -> (n_samples, K)`."""
-    sigma_safe = np.maximum(sigma, 1e-6)
+    sigma_safe = np.maximum(sigma, _SIGMA_FLOOR)
     z = (x[:, None] - mu[None, :]) / sigma_safe[None, :]
     return np.exp(-0.5 * z * z)
 
@@ -150,7 +157,7 @@ def solve_anfis_consequents(
     X_rule: np.ndarray,
     norm_fs: np.ndarray,
     y: np.ndarray,
-    l2_reg: float = 1e-6,
+    l2_reg: float = _L2_REG_DEFAULT,
 ) -> np.ndarray:
     """The exact, ridge-regularized weighted-least-squares consequent solve.
 
@@ -213,7 +220,7 @@ def _premise_gradients(
     """
     n = y.shape[0]
     row_sum = raw_fs.sum(axis=1)
-    invalid = row_sum <= 1e-6
+    invalid = row_sum <= _SMALL_THRESHOLD
     safe_row_sum = np.where(invalid, 1.0, row_sum)
 
     resid = (2.0 / n) * (y_hat - y)
@@ -228,7 +235,7 @@ def _premise_gradients(
     d_sigma: list[np.ndarray] = []
     for fi in range(model.n_features):
         g = memberships[fi]  # (n, K_f)
-        safe_g = np.maximum(g, 1e-12)
+        safe_g = np.maximum(g, _GRADIENT_THRESHOLD)
 
         divisor_shape = [1] * tp_tensor.ndim
         divisor_shape[0] = n
@@ -239,7 +246,7 @@ def _premise_gradients(
 
         x = feature_cols[fi]
         mu, sigma = model.mu[fi], model.sigma[fi]
-        sigma_safe = np.maximum(sigma, 1e-6)
+        sigma_safe = np.maximum(sigma, _SIGMA_FLOOR)
         diff = x[:, None] - mu[None, :]
         dg_dmu = g * diff / (sigma_safe[None, :] ** 2)
         dg_dsigma = g * (diff ** 2) / (sigma_safe[None, :] ** 3)
@@ -276,7 +283,7 @@ def _adam_step(
     lr: float,
     beta1: float = 0.9,
     beta2: float = 0.999,
-    eps: float = 1e-8,
+    eps: float = _ADAM_EPSILON,
 ) -> None:
     """In-place Adam update of premise parameters (no hand-tuned schedule needed)."""
     state.t += 1
@@ -373,7 +380,7 @@ def fit_anfis(
     y: np.ndarray,
     n_epochs: int = 200,
     learning_rate: float = 0.05,
-    l2_reg: float = 1e-6,
+    l2_reg: float = _L2_REG_DEFAULT,
     val_fraction: float = 0.2,
     patience: int = 15,
     seed: int = 42,
@@ -442,7 +449,7 @@ def fit_anfis(
         if verbose:
             print(f"epoch {epoch}: train_mse={train_mse:.6g} val_mse={val_mse:.6g}")
 
-        if val_mse < best_val - 1e-12:
+        if val_mse < best_val - _GRADIENT_THRESHOLD:
             best_val = val_mse
             best_snapshot = model.copy()
             stall = 0
@@ -507,7 +514,7 @@ class ANFISRegressor(BaseEstimator, RegressorMixin):
         consequent_basis: str = "raw",
         n_epochs: int = 200,
         learning_rate: float = 0.05,
-        l2_reg: float = 1e-6,
+        l2_reg: float = _L2_REG_DEFAULT,
         val_fraction: float = 0.2,
         patience: int = 15,
         random_state: int = 42,

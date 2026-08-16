@@ -5,6 +5,9 @@ from typing import NamedTuple, Literal, Optional
 
 import numpy as np
 
+# Numeric thresholds for numerical stability
+_SIGMA_FLOOR = 1e-6  # Minimum variance/sigma to avoid numerical issues
+
 # Norm/conorm families: each name selects a De Morgan dual pair T(x,y), S(x,y).
 # Taking both from one family (default). Mixing requires explicit opt-in (resolve_norm_pair).
 #   min/max       T = min, S = max
@@ -135,7 +138,7 @@ class GaussianMembership(NamedTuple):
     def evaluate(self, x: np.ndarray) -> np.ndarray:
         """Evaluate Gaussian membership function at given points."""
         x = np.asarray(x, dtype=float)
-        sigma = max(self.sigma, 1e-6)
+        sigma = max(self.sigma, _SIGMA_FLOOR)
         return np.exp(-0.5 * ((x - self.mu) / sigma) ** 2)
 
 
