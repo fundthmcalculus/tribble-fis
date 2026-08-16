@@ -219,6 +219,104 @@ def report_regression_performance(
     return r2, rmse
 
 
+def compute_polynomial_corrections(
+    X_train: pd.DataFrame,
+    gaussian_memberships: GaussianMixtureModel,
+    n_top_vars: int,
+    top_n_todo: list[str],
+    y_bucket_mean,
+    y_train,
+    order: str = "1st",
+) -> ndarray:
+    """Compute polynomial corrections per rule with specified order.
+
+    Consolidates four similar correction computation strategies into one
+    parametric function. Differs only in feature augmentation: linear,
+    quadratic, cubic, or full-quadratic (with cross-products).
+
+    Parameters
+    ----------
+    X_train : pd.DataFrame
+        Training features.
+    gaussian_memberships : GaussianMixtureModel
+        Membership model with rule_ids.
+    n_top_vars : int
+        Number of top variables.
+    top_n_todo : list[str]
+        Feature column names.
+    y_bucket_mean : array-like
+        Per-rule output means.
+    y_train : pd.DataFrame
+        Training target with 'y_bucket' and 'y_value' columns.
+    order : {'1st', '2nd', '3rd', 'full-2nd'}, default '1st'
+        Polynomial order:
+        - '1st': Linear features [X]
+        - '2nd': Quadratic features [X, X²]
+        - '3rd': Cubic features [X, X², X³]
+        - 'full-2nd': Full second-order [X, X², cross-products]
+
+    Returns
+    -------
+    ndarray
+        Correction terms shape (n_slots, n_coeffs) where n_coeffs depends on order.
+
+    Raises
+    ------
+    ValueError
+        If order is not one of the supported options.
+    """
+    if order not in ("1st", "2nd", "3rd", "full-2nd"):
+        raise ValueError(f"order must be one of {{'1st', '2nd', '3rd', 'full-2nd'}}, got {order!r}")
+
+    n_slots = max(gaussian_memberships.rule_ids) + 1
+
+    # Determine output shape and solver based on order
+    if order == "1st":
+        corr_shape = (n_slots, n_top_vars)
+        use_lstsq = False
+    elif order == "2nd":
+        corr_shape = (n_slots, n_top_vars * 2)
+        use_lstsq = False
+    elif order == "3rd":
+        corr_shape = (n_slots, n_top_vars * 3)
+        use_lstsq = False
+    else:  # full-2nd
+        n_cross_terms = len(list(combinations(range(n_top_vars), 2)))
+        corr_shape = (n_slots, n_top_vars + n_top_vars + n_cross_terms)
+        use_lstsq = True
+
+    corr_terms = np.zeros(shape=corr_shape)
+
+    for rule_id in gaussian_memberships.rule_ids:
+        rule_mask = y_train["y_bucket"] == rule_id
+        X_train_rule = X_train[rule_mask][top_n_todo].to_numpy()
+        y_train_rule_err = y_train[rule_mask]["y_value"] - y_bucket_mean[rule_id]
+
+        # Build feature matrix based on order
+        if order == "1st":
+            A = X_train_rule
+        elif order == "2nd":
+            A = np.hstack([X_train_rule, X_train_rule**2])
+        elif order == "3rd":
+            A = np.hstack([X_train_rule, X_train_rule**2, X_train_rule**3])
+        else:  # full-2nd
+            X_squared = X_train_rule**2
+            cross_terms = [X_train_rule[:, i] * X_train_rule[:, j]
+                          for i, j in combinations(range(n_top_vars), 2)]
+            X_cross = (np.column_stack(cross_terms)
+                      if cross_terms else np.empty((X_train_rule.shape[0], 0)))
+            A = np.hstack([X_train_rule, X_squared, X_cross])
+
+        # Solve: use lstsq for full-2nd (which is more numerically stable),
+        # pinv for others (for consistency with original implementation)
+        if use_lstsq:
+            corr_terms[rule_id, :] = np.linalg.lstsq(A, y_train_rule_err, rcond=None)[0]
+        else:
+            corr_terms[rule_id, :] = np.linalg.pinv(A) @ y_train_rule_err
+
+    return corr_terms
+
+
 def compute_first_order_corrections(
     X_train: pd.DataFrame,
     gaussian_memberships: GaussianMixtureModel,
@@ -228,6 +326,9 @@ def compute_first_order_corrections(
     y_train,
 ) -> ndarray:
     """Compute first-order (linear) corrections per rule.
+
+    Deprecated: Use compute_polynomial_corrections(..., order='1st') instead.
+    Kept for backward compatibility.
 
     Parameters
     ----------
@@ -249,14 +350,9 @@ def compute_first_order_corrections(
     ndarray
         Correction terms shape (n_slots, n_top_vars).
     """
-    n_slots = max(gaussian_memberships.rule_ids) + 1
-    corr_terms = np.zeros(shape=(n_slots, n_top_vars))
-    for rule_id in gaussian_memberships.rule_ids:
-        rule_mask = y_train["y_bucket"] == rule_id
-        X_train_rule = X_train[rule_mask][top_n_todo].to_numpy()
-        y_train_rule_err = y_train[rule_mask]["y_value"] - y_bucket_mean[rule_id]
-        corr_terms[rule_id, :] = np.linalg.pinv(X_train_rule) @ y_train_rule_err
-    return corr_terms
+    return compute_polynomial_corrections(
+        X_train, gaussian_memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train, order="1st"
+    )
 
 
 def compute_second_order_corrections(
@@ -268,6 +364,9 @@ def compute_second_order_corrections(
     y_train,
 ) -> ndarray:
     """Compute second-order (quadratic) corrections per rule: [X, X²].
+
+    Deprecated: Use compute_polynomial_corrections(..., order='2nd') instead.
+    Kept for backward compatibility.
 
     Parameters
     ----------
@@ -289,15 +388,9 @@ def compute_second_order_corrections(
     ndarray
         Correction terms shape (n_slots, n_top_vars * 2).
     """
-    n_slots = max(gaussian_memberships.rule_ids) + 1
-    corr_terms = np.zeros(shape=(n_slots, n_top_vars * 2))
-    for rule_id in gaussian_memberships.rule_ids:
-        rule_mask = y_train["y_bucket"] == rule_id
-        X_train_rule = X_train[rule_mask][top_n_todo].to_numpy()
-        A = np.hstack([X_train_rule, X_train_rule**2])
-        y_train_rule_err = y_train[rule_mask]["y_value"] - y_bucket_mean[rule_id]
-        corr_terms[rule_id, :] = np.linalg.pinv(A) @ y_train_rule_err
-    return corr_terms
+    return compute_polynomial_corrections(
+        X_train, gaussian_memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train, order="2nd"
+    )
 
 
 def compute_third_order_corrections(
@@ -309,6 +402,9 @@ def compute_third_order_corrections(
     y_train,
 ) -> ndarray:
     """Compute third-order (cubic) corrections per rule: [X, X², X³].
+
+    Deprecated: Use compute_polynomial_corrections(..., order='3rd') instead.
+    Kept for backward compatibility.
 
     Parameters
     ----------
@@ -330,15 +426,9 @@ def compute_third_order_corrections(
     ndarray
         Correction terms shape (n_slots, n_top_vars * 3).
     """
-    n_slots = max(gaussian_memberships.rule_ids) + 1
-    corr_terms = np.zeros(shape=(n_slots, n_top_vars * 3))
-    for rule_id in gaussian_memberships.rule_ids:
-        rule_mask = y_train["y_bucket"] == rule_id
-        X_train_rule = X_train[rule_mask][top_n_todo].to_numpy()
-        A = np.hstack([X_train_rule, X_train_rule**2, X_train_rule**3])
-        y_train_rule_err = y_train[rule_mask]["y_value"] - y_bucket_mean[rule_id]
-        corr_terms[rule_id, :] = np.linalg.pinv(A) @ y_train_rule_err
-    return corr_terms
+    return compute_polynomial_corrections(
+        X_train, gaussian_memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train, order="3rd"
+    )
 
 
 def compute_full_second_order_corrections(
@@ -350,6 +440,9 @@ def compute_full_second_order_corrections(
     y_train,
 ) -> ndarray:
     """Compute full second-order corrections: [X, X², cross-products].
+
+    Deprecated: Use compute_polynomial_corrections(..., order='full-2nd') instead.
+    Kept for backward compatibility.
 
     Parameters
     ----------
@@ -371,22 +464,9 @@ def compute_full_second_order_corrections(
     ndarray
         Correction terms shape (n_slots, n_terms) where n_terms includes cross-products.
     """
-    n_cross_terms = len(list(combinations(range(n_top_vars), 2)))
-    total_terms = n_top_vars + n_top_vars + n_cross_terms
-    n_slots = max(gaussian_memberships.rule_ids) + 1
-    corr_terms = np.zeros(shape=(n_slots, total_terms))
-    for rule_id in gaussian_memberships.rule_ids:
-        rule_mask = y_train["y_bucket"] == rule_id
-        X_train_rule = X_train[rule_mask][top_n_todo].to_numpy()
-        X_train_rule_squared = X_train_rule**2
-        cross_terms = [X_train_rule[:, i] * X_train_rule[:, j]
-                       for i, j in combinations(range(n_top_vars), 2)]
-        X_train_rule_cross = (np.column_stack(cross_terms)
-                              if cross_terms else np.empty((X_train_rule.shape[0], 0)))
-        A = np.hstack([X_train_rule, X_train_rule_squared, X_train_rule_cross])
-        y_train_rule_err = y_train[rule_mask]["y_value"] - y_bucket_mean[rule_id]
-        corr_terms[rule_id, :] = np.linalg.lstsq(A, y_train_rule_err, rcond=None)[0]
-    return corr_terms
+    return compute_polynomial_corrections(
+        X_train, gaussian_memberships, n_top_vars, top_n_todo, y_bucket_mean, y_train, order="full-2nd"
+    )
 
 
 def optimize_tsk_coefficients(
