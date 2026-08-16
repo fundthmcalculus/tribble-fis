@@ -1,15 +1,18 @@
 """Post-fit antecedent refinement for General Type-2 (GT2) FIS models.
 
 This is the GT2 counterpart of `it2_refine.py`'s block coordinate descent,
-extended by exactly one dimension per slot: an IT2 slot searches
-``(mu, sigma_lower, sigma_upper)``; a GT2 slot searches
+extended by exactly one dimension per side per slot: an IT2 Gaussian slot
+searches ``(mu, sigma_lower, sigma_upper)``; a GT2 Gaussian slot searches
 ``(mu, sigma_lower, sigma_principal, sigma_upper)``, with
 ``sigma_lower <= sigma_principal <= sigma_upper`` enforced by construction
 in `_apply_slot_params` -- the direct GT2 analogue of `it2_refine`'s own
 ``sigma_upper >= sigma_lower`` fix, for the same reason: an unordered triple
 would let some alpha-plane's footprint invert
 (`GT2GaussianMembership.alpha_cut`'s narrowing property depends on the
-ordering holding).
+ordering holding). Trapezoid/triangular slots follow the same pattern one
+level further: `it2_refine.py`'s two independent per-side spread gaps each
+grow one more non-negative "extra principal" gap (see
+`_trapezoid_slot_x0_and_bounds`/`_triangular_slot_x0_and_bounds`).
 
 **Classifier** (`refine_gt2_antecedents`): unchanged rationale from
 `it2_refine.refine_it2_antecedents` -- a zeroth-order TSK classifier's
@@ -37,47 +40,68 @@ import numpy as np
 import pandas as pd
 
 from .gauss_data import (
-    GT2GaussianMixtureModel, GT2FeatureModel, GT2LabelModel, GT2GaussianMembership,
-    GaussianMembership, NormPair,
+    GT2GaussianMixtureModel, GT2FeatureModel, GT2LabelModel,
+    GT2GaussianMembership, GT2TrapezoidMembership, GT2TriangularMembership,
+    GaussianMembership, TrapezoidMembership, TriangularMembership, NormPair,
 )
 from .gt2_kernel import (
     gt2_firing_strengths, gt2_rule_firing, gt2_karnik_mendel_tsk, alpha_weighted_average,
 )
-from .it2_refine import _normalize_proba
+from .it2_refine import _normalize_proba, _side_widths
 from .optimizer_utils import optimizers_sub_solve as _optimizers_sub_solve
 from .refine import _make_folds, _prepare_folds
 from .regression import solve_tsk_consequents_from_firing, rule_consequent_values, _mse
 
 
-def _iter_gt2_gaussian_slots(model: GT2GaussianMixtureModel):
-    """Yield ``(feature_name, label, mf_index, GT2GaussianMembership)`` for
-    every GT2 Gaussian membership in a deterministic order.
+def _iter_gt2_slots(model: GT2GaussianMixtureModel):
+    """Yield ``(feature_name, label, mf_index, GT2AnyMembership)`` for every
+    GT2 membership (any of Gaussian/trapezoid/triangular) in a deterministic
+    order.
 
-    Mirrors `it2_refine._iter_it2_gaussian_slots` exactly, one level up: a
-    slot here is a whole ``(upper_mf, lower_mf, principal_mf)`` triple, never
-    a single half, for the same reason IT2's own slot is the whole
-    membership -- see this module's docstring.
+    Mirrors `it2_refine._iter_it2_slots` exactly, one level up: a slot here
+    is a whole ``(upper_mf, lower_mf, principal_mf)`` triple, never a single
+    half, for the same reason IT2's own slot is the whole membership -- see
+    this module's docstring.
     """
     for fname, fmodel in model.feature_models.items():
         for label, lmodel in fmodel.label_models.items():
             for idx, gt2_mf in enumerate(lmodel.memberships):
-                if (
-                    isinstance(gt2_mf.upper_mf, GaussianMembership)
-                    and isinstance(gt2_mf.lower_mf, GaussianMembership)
-                    and isinstance(gt2_mf.principal_mf, GaussianMembership)
-                ):
-                    yield fname, label, idx, gt2_mf
+                yield fname, label, idx, gt2_mf
+
+
+def _side_widths3(peak: float, lower_edge: float, principal_edge: float, upper_edge: float, min_width: float):
+    """``(lower_width, extra_principal, extra_upper)`` for one side of one
+    GT2 slot -- the three-level extension of `it2_refine._side_widths`
+    (lower/upper only) that a GT2 slot's extra ``principal`` component needs.
+    """
+    lower_width = max(abs(peak - lower_edge), min_width)
+    principal_width = max(abs(peak - principal_edge), min_width)
+    upper_width = max(abs(peak - upper_edge), min_width)
+    extra_principal = max(principal_width - lower_width, 0.0)
+    extra_upper = max(upper_width - (lower_width + extra_principal), 0.0)
+    return lower_width, extra_principal, extra_upper
 
 
 def _slot_x0_and_bounds(gt2_mf, lo: float, hi: float, rng: float, sigma_min_frac: float):
-    """Initial ``(mu, sigma_lower, sigma_principal, sigma_upper)`` and box
-    bounds for one slot.
+    """Initial parameter vector and box bounds for one slot, dispatched by
+    `gt2_mf`'s membership type -- the GT2 analogue of
+    `it2_refine._slot_x0_and_bounds`, one dimension wider per side (an extra
+    non-negative gap for the principal component)."""
+    if isinstance(gt2_mf, GT2GaussianMembership):
+        return _gaussian_slot_x0_and_bounds(gt2_mf, lo, hi, rng, sigma_min_frac)
+    if isinstance(gt2_mf, GT2TrapezoidMembership):
+        return _trapezoid_slot_x0_and_bounds(gt2_mf, lo, hi, rng, sigma_min_frac)
+    if isinstance(gt2_mf, GT2TriangularMembership):
+        return _triangular_slot_x0_and_bounds(gt2_mf, lo, hi, rng, sigma_min_frac)
+    raise TypeError(f"Unsupported GT2 membership type for refinement: {type(gt2_mf)!r}")
 
-    ``mu`` starts at the principal half's center, mirroring
-    `it2_refine._slot_x0_and_bounds`'s choice of the upper half's own
-    ``mu`` as anchor -- for a freshly converted model all three halves share
-    one ``mu`` anyway (see `GT2GaussianMembership`'s docstring).
-    """
+
+def _gaussian_slot_x0_and_bounds(gt2_mf, lo, hi, rng, sigma_min_frac):
+    """``(mu, sigma_lower, sigma_principal, sigma_upper)``. ``mu`` starts at
+    the principal half's center, mirroring `it2_refine`'s choice of the
+    upper half's own ``mu`` as anchor -- for a freshly converted model all
+    three halves share one ``mu`` anyway (see `GT2GaussianMembership`'s
+    docstring)."""
     mu0 = gt2_mf.principal_mf.mu
     sigma_lower0 = gt2_mf.lower_mf.sigma
     sigma_principal0 = gt2_mf.principal_mf.sigma
@@ -88,11 +112,82 @@ def _slot_x0_and_bounds(gt2_mf, lo: float, hi: float, rng: float, sigma_min_frac
     return x0, bounds
 
 
-def _apply_slot_params(v: np.ndarray, upper_id, lower_id, principal_id) -> GT2GaussianMembership:
+def _trapezoid_slot_x0_and_bounds(gt2_mf, lo, hi, rng, sigma_min_frac):
+    """``(b, gap_bc, left_lower, extra_left_principal, extra_left_upper,
+    right_lower, extra_right_principal, extra_right_upper)`` -- the GT2
+    analogue of `it2_refine._trapezoid_slot_x0_and_bounds`, one extra
+    non-negative gap per side for the principal component. Reconstructing
+    `a`/`d` from these makes ``a_upper <= a_principal <= a_lower <= b <= c
+    <= d_lower <= d_principal <= d_upper`` true for *any* point in these box
+    bounds (see `_apply_trapezoid_slot_params`)."""
+    min_width = sigma_min_frac * rng
+    b0, c0 = gt2_mf.principal_mf.b, gt2_mf.principal_mf.c
+    left_lower0, extra_left_p0, extra_left_u0 = _side_widths3(
+        b0, gt2_mf.lower_mf.a, gt2_mf.principal_mf.a, gt2_mf.upper_mf.a, min_width,
+    )
+    right_lower0, extra_right_p0, extra_right_u0 = _side_widths3(
+        c0, gt2_mf.lower_mf.d, gt2_mf.principal_mf.d, gt2_mf.upper_mf.d, min_width,
+    )
+    x0 = np.array([
+        b0, max(c0 - b0, 0.0),
+        left_lower0, extra_left_p0, extra_left_u0,
+        right_lower0, extra_right_p0, extra_right_u0,
+    ])
+    bounds = [
+        (lo, hi), (0.0, rng),
+        (min_width, rng), (0.0, rng), (0.0, rng),
+        (min_width, rng), (0.0, rng), (0.0, rng),
+    ]
+    return x0, bounds
+
+
+def _triangular_slot_x0_and_bounds(gt2_mf, lo, hi, rng, sigma_min_frac):
+    """``(b, left_lower, extra_left_principal, extra_left_upper, right_lower,
+    extra_right_principal, extra_right_upper)`` -- the triangular analogue of
+    `_trapezoid_slot_x0_and_bounds`, one parameter fewer since the apex ``b``
+    is a single point rather than an interval."""
+    min_width = sigma_min_frac * rng
+    b0 = gt2_mf.principal_mf.b
+    left_lower0, extra_left_p0, extra_left_u0 = _side_widths3(
+        b0, gt2_mf.lower_mf.a, gt2_mf.principal_mf.a, gt2_mf.upper_mf.a, min_width,
+    )
+    right_lower0, extra_right_p0, extra_right_u0 = _side_widths3(
+        b0, gt2_mf.lower_mf.c, gt2_mf.principal_mf.c, gt2_mf.upper_mf.c, min_width,
+    )
+    x0 = np.array([
+        b0,
+        left_lower0, extra_left_p0, extra_left_u0,
+        right_lower0, extra_right_p0, extra_right_u0,
+    ])
+    bounds = [
+        (lo, hi),
+        (min_width, rng), (0.0, rng), (0.0, rng),
+        (min_width, rng), (0.0, rng), (0.0, rng),
+    ]
+    return x0, bounds
+
+
+def _apply_slot_params(gt2_mf, v: np.ndarray):
+    """Build a fresh GT2 membership of `gt2_mf`'s own type from `v`,
+    dispatched by type -- the GT2 analogue of `it2_refine._apply_slot_params`.
+    """
+    if isinstance(gt2_mf, GT2GaussianMembership):
+        ids = (gt2_mf.upper_mf.id, gt2_mf.lower_mf.id, gt2_mf.principal_mf.id)
+        return _apply_gaussian_slot_params(v, *ids)
+    if isinstance(gt2_mf, GT2TrapezoidMembership):
+        ids = (gt2_mf.upper_mf.id, gt2_mf.lower_mf.id, gt2_mf.principal_mf.id)
+        return _apply_trapezoid_slot_params(v, *ids)
+    if isinstance(gt2_mf, GT2TriangularMembership):
+        ids = (gt2_mf.upper_mf.id, gt2_mf.lower_mf.id, gt2_mf.principal_mf.id)
+        return _apply_triangular_slot_params(v, *ids)
+    raise TypeError(f"Unsupported GT2 membership type for refinement: {type(gt2_mf)!r}")
+
+
+def _apply_gaussian_slot_params(v: np.ndarray, upper_id, lower_id, principal_id) -> GT2GaussianMembership:
     """Build a fresh `GT2GaussianMembership` from
     ``(mu, sigma_lower, sigma_principal, sigma_upper)``, clamping
     ``sigma_lower <= sigma_principal <= sigma_upper`` so the ordering
-    `_iter_gt2_gaussian_slots` documents cannot be violated regardless of what
+    `_iter_gt2_slots` documents cannot be violated regardless of what
     the optimizer proposes.
     """
     mu = float(v[0])
@@ -106,14 +201,55 @@ def _apply_slot_params(v: np.ndarray, upper_id, lower_id, principal_id) -> GT2Ga
     )
 
 
+def _apply_trapezoid_slot_params(v: np.ndarray, upper_id, lower_id, principal_id) -> GT2TrapezoidMembership:
+    """Build a fresh `GT2TrapezoidMembership` from
+    ``(b, gap_bc, left_lower, extra_left_principal, extra_left_upper,
+    right_lower, extra_right_principal, extra_right_upper)``, all gaps
+    clamped non-negative so ``a_upper <= a_principal <= a_lower <= b <= c <=
+    d_lower <= d_principal <= d_upper`` holds regardless of what the
+    optimizer proposes."""
+    b = float(v[0])
+    c = b + max(float(v[1]), 0.0)
+    left_lower = max(float(v[2]), 1e-6)
+    left_principal = left_lower + max(float(v[3]), 0.0)
+    left_upper = left_principal + max(float(v[4]), 0.0)
+    right_lower = max(float(v[5]), 1e-6)
+    right_principal = right_lower + max(float(v[6]), 0.0)
+    right_upper = right_principal + max(float(v[7]), 0.0)
+    return GT2TrapezoidMembership(
+        upper_mf=TrapezoidMembership(a=b - left_upper, b=b, c=c, d=c + right_upper, id=upper_id),
+        lower_mf=TrapezoidMembership(a=b - left_lower, b=b, c=c, d=c + right_lower, id=lower_id),
+        principal_mf=TrapezoidMembership(a=b - left_principal, b=b, c=c, d=c + right_principal, id=principal_id),
+    )
+
+
+def _apply_triangular_slot_params(v: np.ndarray, upper_id, lower_id, principal_id) -> GT2TriangularMembership:
+    """Build a fresh `GT2TriangularMembership` from ``(b, left_lower,
+    extra_left_principal, extra_left_upper, right_lower,
+    extra_right_principal, extra_right_upper)`` -- the triangular analogue
+    of `_apply_trapezoid_slot_params`, apex ``b`` shared instead of a flat top."""
+    b = float(v[0])
+    left_lower = max(float(v[1]), 1e-6)
+    left_principal = left_lower + max(float(v[2]), 0.0)
+    left_upper = left_principal + max(float(v[3]), 0.0)
+    right_lower = max(float(v[4]), 1e-6)
+    right_principal = right_lower + max(float(v[5]), 0.0)
+    right_upper = right_principal + max(float(v[6]), 0.0)
+    return GT2TriangularMembership(
+        upper_mf=TriangularMembership(a=b - left_upper, b=b, c=b + right_upper, id=upper_id),
+        lower_mf=TriangularMembership(a=b - left_lower, b=b, c=b + right_lower, id=lower_id),
+        principal_mf=TriangularMembership(a=b - left_principal, b=b, c=b + right_principal, id=principal_id),
+    )
+
+
 def _replace_slot(
     model: GT2GaussianMixtureModel,
     fname: str,
     label: int,
     idx: int,
-    new_gt2_mf: GT2GaussianMembership,
+    new_gt2_mf,
 ) -> GT2GaussianMixtureModel:
-    """Return a copy of `model` with one GT2 Gaussian membership replaced.
+    """Return a copy of `model` with one GT2 membership replaced.
 
     Same NamedTuple-rebuild cost `it2_refine._replace_slot` pays, one level
     up the container hierarchy.
@@ -178,7 +314,7 @@ def refine_gt2_antecedents(
     refined_model : GT2GaussianMixtureModel
         The best model found, never worse (on training cross-entropy) than
         `gt2_model` itself. ``sigma_lower <= sigma_principal <= sigma_upper``
-        is preserved by construction (see `_iter_gt2_gaussian_slots`).
+        is preserved by construction (see `_iter_gt2_slots`).
     """
     if method in (None, "none"):
         return gt2_model
@@ -187,7 +323,7 @@ def refine_gt2_antecedents(
 
     y_idx = np.asarray(y_labels, dtype=np.intp)
 
-    slots = list(_iter_gt2_gaussian_slots(gt2_model))
+    slots = list(_iter_gt2_slots(gt2_model))
     if not slots:
         return gt2_model
 
@@ -204,19 +340,17 @@ def refine_gt2_antecedents(
     init_loss = best_loss
 
     if verbose:
-        print(f"\nGT2 classifier coordinate-descent antecedent refinement: {len(slots)} Gaussian "
+        print(f"\nGT2 classifier coordinate-descent antecedent refinement: {len(slots)} "
               f"memberships, {n_alpha_planes} alpha-planes, init loss={init_loss:.4f}")
 
     for sweep in range(n_sweeps):
         sweep_start_loss = best_loss
-        for fname, label, idx, gt2_mf in _iter_gt2_gaussian_slots(current):
+        for fname, label, idx, gt2_mf in _iter_gt2_slots(current):
             lo, hi, rng = feature_bounds[fname]
             x0, bounds = _slot_x0_and_bounds(gt2_mf, lo, hi, rng, sigma_min_frac)
-            upper_id, lower_id, principal_id = gt2_mf.upper_mf.id, gt2_mf.lower_mf.id, gt2_mf.principal_mf.id
 
-            def fitness(v, fname=fname, label=label, idx=idx,
-                        upper_id=upper_id, lower_id=lower_id, principal_id=principal_id, x0=x0):
-                new_gt2_mf = _apply_slot_params(v, upper_id, lower_id, principal_id)
+            def fitness(v, fname=fname, label=label, idx=idx, gt2_mf=gt2_mf, x0=x0):
+                new_gt2_mf = _apply_slot_params(gt2_mf, v)
                 trial = _replace_slot(current, fname, label, idx, new_gt2_mf)
                 loss = _cross_entropy_loss(trial, X, y_idx, norms, n_alpha_planes, km_iterations)
                 penalty = l2_shrink * float(np.sum((v - x0) ** 2))
@@ -224,10 +358,7 @@ def refine_gt2_antecedents(
 
             res = _optimizers_sub_solve(fitness, x0, bounds)
 
-            candidate = _replace_slot(
-                current, fname, label, idx,
-                _apply_slot_params(res.x, upper_id, lower_id, principal_id),
-            )
+            candidate = _replace_slot(current, fname, label, idx, _apply_slot_params(gt2_mf, res.x))
             candidate_loss = _cross_entropy_loss(candidate, X, y_idx, norms, n_alpha_planes, km_iterations)
             if candidate_loss < best_loss - 1e-12:
                 current = candidate
@@ -382,7 +513,7 @@ def refine_gt2_regressor_antecedents(
         )
         return gt2_model, corr_terms, y_bucket_mean, {"init_val_mse": None, "val_mse": None}
 
-    slots = list(_iter_gt2_gaussian_slots(gt2_model))
+    slots = list(_iter_gt2_slots(gt2_model))
     if not slots:
         corr_terms, y_bucket_mean, _ = _solve_gt2_consequents(
             gt2_model, X, y_df, top_n_todo, norms, order, l2_reg, basis, cross_pairs, n_alpha_planes,
@@ -412,28 +543,23 @@ def refine_gt2_regressor_antecedents(
 
     if verbose:
         print(f"\nGT2 regressor coordinate-descent antecedent refinement: {len(slots)} "
-              f"Gaussian memberships, {n_alpha_planes} alpha-planes, "
+              f"memberships, {n_alpha_planes} alpha-planes, "
               f"{n_folds}-fold init val MSE={init_loss:.5f}")
 
     for sweep in range(n_sweeps):
         sweep_start_loss = best_loss
-        for fname, label, idx, gt2_mf in _iter_gt2_gaussian_slots(current):
+        for fname, label, idx, gt2_mf in _iter_gt2_slots(current):
             lo, hi, rng = feature_bounds[fname]
             x0, bounds = _slot_x0_and_bounds(gt2_mf, lo, hi, rng, sigma_min_frac)
-            upper_id, lower_id, principal_id = gt2_mf.upper_mf.id, gt2_mf.lower_mf.id, gt2_mf.principal_mf.id
 
-            def fitness(v, fname=fname, label=label, idx=idx,
-                        upper_id=upper_id, lower_id=lower_id, principal_id=principal_id):
-                new_gt2_mf = _apply_slot_params(v, upper_id, lower_id, principal_id)
+            def fitness(v, fname=fname, label=label, idx=idx, gt2_mf=gt2_mf):
+                new_gt2_mf = _apply_slot_params(gt2_mf, v)
                 trial = _replace_slot(current, fname, label, idx, new_gt2_mf)
                 return cv_fitness(trial)
 
             res = _optimizers_sub_solve(fitness, x0, bounds)
 
-            candidate = _replace_slot(
-                current, fname, label, idx,
-                _apply_slot_params(res.x, upper_id, lower_id, principal_id),
-            )
+            candidate = _replace_slot(current, fname, label, idx, _apply_slot_params(gt2_mf, res.x))
             candidate_loss = cv_fitness(candidate)
             if candidate_loss < best_loss - 1e-12:
                 current = candidate
