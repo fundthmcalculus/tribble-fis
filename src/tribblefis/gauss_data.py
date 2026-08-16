@@ -5,47 +5,23 @@ from typing import NamedTuple, Literal, Optional
 
 import numpy as np
 
-# norm/conorm pairings
-#
-# Each name selects a FAMILY. A family's t-norm and t-conorm are De Morgan duals
-# under the standard negation N(x) = 1 - x, i.e. S(x, y) = 1 - T(1-x, 1-y):
-#
-#   min/max       T = min(x, y)              S = max(x, y)
-#   probability   T = xy                     S = x + y - xy
-#   luk           T = max(0, x + y - 1)      S = min(1, x + y)
-#   hamacher      T = xy / (x + y - xy)      S = (x + y - 2xy) / (1 - xy)
-#   einstein      T = xy / (2 - (x+y-xy))    S = (x + y) / (1 + xy)
-#
-# Taking both operators from one family is the default and the supported case.
-# Mixing families is possible but must be asked for explicitly -- see
-# `resolve_norm_pair`.
+# Numeric thresholds for numerical stability
+_SIGMA_FLOOR = 1e-6  # Minimum variance/sigma to avoid numerical issues
+
+# Norm/conorm families: each name selects a De Morgan dual pair T(x,y), S(x,y).
+# Taking both from one family (default). Mixing requires explicit opt-in (resolve_norm_pair).
+#   min/max       T = min, S = max
+#   probability   T = xy, S = x+y-xy (product/sum)
+#   luk           T = max(0,x+y-1), S = min(1,x+y)
+#   hamacher      T = xy/(x+y-xy), S = (x+y-2xy)/(1-xy)
+#   einstein      T = xy/(2-(x+y-xy)), S = (x+y)/(1+xy)
 NormConorm = Literal["min/max", "probability", "luk", "hamacher", "einstein"]
 MemberFunction = Literal["gaussian", "triangular", "trap"]
-# The default family. `probability` rather than the textbook `min/max` because
-# min/max measured as the *worst* of the four De Morgan families on classification
-# accuracy -- see docs/norm-family-evaluation.md. Over 18 dataset x split
-# combinations, refined:
-#
-#   min/max      0.7881   (baseline)
-#   hamacher     0.8029   +0.0148 +/- 0.0078
-#   probability  0.8135   +0.0254 +/- 0.0063   <- default
-#   einstein     0.8175   +0.0294 +/- 0.0061
-#
-# Einstein edges it out, but not separably (the gap between the two is well
-# inside their error bars) and it costs two divisions per operation. Probability
-# is the cheapest of the three, is the one family whose objective is smooth
-# everywhere -- which is what makes an exact analytic gradient possible -- and is
-# the most familiar (product / probabilistic sum).
+# Default: probability (not min/max) for smooth gradients; see norm-family-evaluation.md.
 DefaultNormCornorm: NormConorm = "probability"
 DefaultMemberFunction: MemberFunction = "gaussian"
 
-# Default numeric tolerance for membership-function deduplication (see
-# `_is_close` and issue #85). These are deliberately conservative -- an
-# exploratory measurement on Glass classification found the current default
-# merges ~13% of raw MFs with an accuracy delta indistinguishable from noise,
-# and headroom up to ~3x this before any real cost appears -- so callers who
-# want more reduction should pass a larger `rtol`/`atol` explicitly rather
-# than have the module quietly become more aggressive under them.
+# Conservative MF deduplication tolerances; issue #85, see _is_close.
 DEFAULT_DEDUP_RTOL = 1e-2
 DEFAULT_DEDUP_ATOL = 1e-3
 
@@ -162,7 +138,7 @@ class GaussianMembership(NamedTuple):
     def evaluate(self, x: np.ndarray) -> np.ndarray:
         """Evaluate Gaussian membership function at given points."""
         x = np.asarray(x, dtype=float)
-        sigma = max(self.sigma, 1e-6)
+        sigma = max(self.sigma, _SIGMA_FLOOR)
         return np.exp(-0.5 * ((x - self.mu) / sigma) ** 2)
 
 
