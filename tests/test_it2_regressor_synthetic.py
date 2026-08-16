@@ -5,7 +5,7 @@ import pytest
 import pandas as pd
 from sklearn.metrics import mean_squared_error
 
-from tribblefis.it2_regressor import IntervalType2FuzzyRegressor
+from tribblefis.it2_regressor import IT2TribbleRegressor
 
 
 @pytest.fixture
@@ -37,7 +37,7 @@ def test_it2_regressor_fit_predict(synthetic_regression_data):
     """Test IT2 regressor fit and predict on synthetic data."""
     X_train, X_test, y_train, y_test, y_true_test = synthetic_regression_data
 
-    regressor = IntervalType2FuzzyRegressor(
+    regressor = IT2TribbleRegressor(
         top_n=2,
         n_gaussians=2,
         n_output_buckets=3,
@@ -71,7 +71,7 @@ def test_it2_regressor_intervals_validity(synthetic_regression_data):
     """Test that prediction intervals are valid (lower <= upper)."""
     X_train, X_test, y_train, y_test, y_true_test = synthetic_regression_data
 
-    regressor = IntervalType2FuzzyRegressor(
+    regressor = IT2TribbleRegressor(
         top_n=2,
         n_gaussians=2,
         n_output_buckets=3,
@@ -103,7 +103,7 @@ def test_it2_regressor_uncertainty_width_effect(synthetic_regression_data):
     """Test that larger uncertainty_width produces wider intervals."""
     X_train, X_test, y_train, y_test, y_true_test = synthetic_regression_data
 
-    regressor_narrow = IntervalType2FuzzyRegressor(
+    regressor_narrow = IT2TribbleRegressor(
         top_n=2,
         n_gaussians=2,
         n_output_buckets=3,
@@ -113,7 +113,7 @@ def test_it2_regressor_uncertainty_width_effect(synthetic_regression_data):
     )
     regressor_narrow.fit(X_train, y_train)
 
-    regressor_wide = IntervalType2FuzzyRegressor(
+    regressor_wide = IT2TribbleRegressor(
         top_n=2,
         n_gaussians=2,
         n_output_buckets=3,
@@ -138,7 +138,7 @@ def test_it2_regressor_km_vs_averaging(synthetic_regression_data):
     """Test that KM type reduction and averaging can produce different results."""
     X_train, X_test, y_train, y_test, y_true_test = synthetic_regression_data
 
-    regressor_km = IntervalType2FuzzyRegressor(
+    regressor_km = IT2TribbleRegressor(
         top_n=2,
         n_gaussians=2,
         n_output_buckets=3,
@@ -148,7 +148,7 @@ def test_it2_regressor_km_vs_averaging(synthetic_regression_data):
     )
     regressor_km.fit(X_train, y_train)
 
-    regressor_avg = IntervalType2FuzzyRegressor(
+    regressor_avg = IT2TribbleRegressor(
         top_n=2,
         n_gaussians=2,
         n_output_buckets=3,
@@ -171,7 +171,7 @@ def test_it2_regressor_intervals_contain_true_values(synthetic_regression_data):
     """Test that prediction intervals are valid (lower <= upper)."""
     X_train, X_test, y_train, y_test, y_true_test = synthetic_regression_data
 
-    regressor = IntervalType2FuzzyRegressor(
+    regressor = IT2TribbleRegressor(
         top_n=2,
         n_gaussians=3,
         n_output_buckets=4,
@@ -214,7 +214,7 @@ def test_it2_converges_to_type1_as_footprint_vanishes(synthetic_regression_data)
     kw = dict(top_n=1, n_gaussians=3, n_output_buckets=5, random_state=42)
 
     t1 = TribbleRegressor(**kw).fit(X_train, y_train)
-    it2 = IntervalType2FuzzyRegressor(
+    it2 = IT2TribbleRegressor(
         uncertainty_width=1e-6, km_iterations=None, **kw
     ).fit(X_train, y_train)
 
@@ -244,7 +244,7 @@ def test_it2_footprint_widens_intervals_and_contains_the_point_estimate(
 
     widths = []
     for uw in (0.1, 0.3, 0.6, 0.9):
-        m = IntervalType2FuzzyRegressor(
+        m = IT2TribbleRegressor(
             uncertainty_width=uw, km_iterations=None, **kw
         ).fit(X_train, y_train)
         lo, hi = m.predict_intervals(X_test)
@@ -285,7 +285,7 @@ def test_it2_intervals_contain_the_point_estimate_off_fixture():
     y = pd.Series(y)
 
     for km in (None, 10):
-        m = IntervalType2FuzzyRegressor(
+        m = IT2TribbleRegressor(
             top_n=3, n_gaussians=2, n_output_buckets=5,
             uncertainty_width=0.5, km_iterations=km,
         ).fit(X[:300], y[:300])

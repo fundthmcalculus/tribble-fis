@@ -2,6 +2,20 @@
 
 Building FIS using a consequent first approach.
 
+## Installation
+
+Install with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv sync
+```
+
+To install with optional dev dependencies (testing and benchmarking):
+
+```bash
+uv sync --extra dev
+```
+
 ## ANFIS
 
 `tribblefis.anfis` implements the canonical Jang (1993) ANFIS network:
@@ -30,14 +44,13 @@ regressor, whose implicit rule base doesn't grow that way.
 
 The forward pass (`tsk_firing_strengths`, and therefore every prediction and
 every antecedent-refinement fitness evaluation) has an optional Cython
-implementation. It is not built by default — `pip install` needs no C compiler,
+implementation. It is not built by default — `uv sync` needs no C compiler,
 and everything works on the NumPy path without it.
 
 To build it in place:
 
 ```bash
-pip install cython setuptools
-python setup_cython.py build_ext --inplace
+uv run --with cython --with setuptools python setup_cython.py build_ext --inplace
 ```
 
 Nothing else changes: `tribblefis.kernel` picks the compiled kernel up

@@ -17,9 +17,10 @@ from .gauss_data import (
 )
 from .gaussian_classifier import TribbleClassifier
 from .it2_kernel import it2_firing_strengths
+from .it2_refine import refine_it2_antecedents
 
 
-class IntervalType2FuzzyClassifier(BaseEstimator, ClassifierMixin):
+class IT2TribbleClassifier(BaseEstimator, ClassifierMixin):
     """Interval Type-2 Fuzzy classifier with automatic uncertainty quantification.
 
     Converts a Type-1 TSK classifier to IT2 by creating upper and lower bound
@@ -62,6 +63,21 @@ class IntervalType2FuzzyClassifier(BaseEstimator, ClassifierMixin):
     refine_l2_shrink : float, default=0.05
         L2 regularization strength during refinement.
 
+    refine_it2 : bool, default=False
+        If True, additionally refines the IT2 upper/lower Gaussian antecedents
+        *after* conversion (`it2_refine.refine_it2_antecedents`), directly
+        against the type-reduced classification loss -- distinct from `refine`,
+        which only ever touches the pre-conversion Type-1 model and never sees
+        the footprint of uncertainty it becomes. Off by default because it is
+        additional optimization work on top of `refine`, not a substitute.
+
+    refine_it2_n_sweeps : int, default=3
+        Number of coordinate-descent sweeps for `refine_it2` (see
+        `it2_refine.refine_it2_antecedents`).
+
+    refine_it2_l2_shrink : float, default=0.05
+        L2 anchor strength for `refine_it2`'s coordinate descent.
+
     random_state : int, default=42
         Seed for reproducibility.
 
@@ -91,6 +107,9 @@ class IntervalType2FuzzyClassifier(BaseEstimator, ClassifierMixin):
         refine=False,
         refine_method="coordinate",
         refine_l2_shrink=0.05,
+        refine_it2=False,
+        refine_it2_n_sweeps=3,
+        refine_it2_l2_shrink=0.05,
         random_state=42,
         max_samples=None,
     ):
@@ -103,6 +122,9 @@ class IntervalType2FuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.refine = refine
         self.refine_method = refine_method
         self.refine_l2_shrink = refine_l2_shrink
+        self.refine_it2 = refine_it2
+        self.refine_it2_n_sweeps = refine_it2_n_sweeps
+        self.refine_it2_l2_shrink = refine_it2_l2_shrink
         self.random_state = random_state
         self.max_samples = max_samples
 
@@ -126,7 +148,7 @@ class IntervalType2FuzzyClassifier(BaseEstimator, ClassifierMixin):
 
         Returns
         -------
-        self : IntervalType2FuzzyClassifier
+        self : IT2TribbleClassifier
             Fitted estimator.
         """
         X, y = check_X_y(X, y, accept_sparse=False, dtype=None)
@@ -160,6 +182,21 @@ class IntervalType2FuzzyClassifier(BaseEstimator, ClassifierMixin):
 
         # Convert Type-1 model to IT2
         self.model_ = self._convert_to_it2(base.model_)
+
+        if self.refine_it2:
+            # `it2_firing_strengths`'s columns are `sorted(model.all_output_labels)`,
+            # which is exactly `self.classes_` (`predict` indexes `class_indices`
+            # into `self.classes_` the same way) -- so mapping y through
+            # `searchsorted` on the (already-sorted) `classes_` gives the column
+            # index each row's true label corresponds to.
+            y_idx = np.searchsorted(self.classes_, y)
+            self.model_ = refine_it2_antecedents(
+                X, y_idx, self.model_, self.norms_,
+                km_iterations=self.km_iterations if self.km_iterations else 10,
+                n_sweeps=self.refine_it2_n_sweeps,
+                l2_shrink=self.refine_it2_l2_shrink,
+                verbose=False,
+            )
 
         return self
 

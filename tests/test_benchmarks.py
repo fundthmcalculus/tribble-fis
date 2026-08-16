@@ -35,7 +35,11 @@ def test_model_shape_matches_request():
 
 
 @pytest.mark.performance
-@pytest.mark.parametrize("name", ["forward-small", "predict-large", "refine-classifier"])
+@pytest.mark.parametrize("name", [
+    "forward-small", "predict-large", "refine-classifier",
+    "forward-t2-small", "t1-clf-fit-small", "t2-clf-fit-small",
+    "t1-vs-t2-clf-divergence", "t1-vs-t2-reg-divergence",
+])
 def test_workload_checksum_is_reproducible(name):
     """Two runs of the same workload must agree exactly.
 

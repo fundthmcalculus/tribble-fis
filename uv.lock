@@ -1088,15 +1088,14 @@ wheels = [
 
 [[package]]
 name = "tribble-clustering"
-version = "0.1.8"
-source = { registry = "https://pypi.org/simple" }
+version = "0.2.1"
+source = { git = "https://github.com/fundthmcalculus/clustering.git#635ed6ed713298b9823ff226de533e68a8917c1b" }
 dependencies = [
     { name = "matplotlib" },
     { name = "numba" },
     { name = "numba-progress" },
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f9/0a/9b8a16f1b1b8550ec3502dfb10cf65251d4119dd578ad9d3e380ef009a76/tribble_clustering-0.1.8.tar.gz", hash = "sha256:2e5d6b303ac832255ce0bea10c592d08bdbca57fb6c203d491479d5212968d6e", size = 377405, upload-time = "2026-06-08T19:24:42.573Z" }
 
 [[package]]
 name = "tribble-fis"
@@ -1116,20 +1115,18 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "scikit-learn" },
-    { name = "scipy" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "matplotlib" },
     { name = "numba" },
-    { name = "numpy" },
+    { name = "numpy", specifier = ">=2.4.6" },
     { name = "optimizers", git = "https://github.com/fundthmcalculus/optimizers.git" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "scikit-learn", marker = "extra == 'dev'" },
-    { name = "scipy", marker = "extra == 'dev'" },
-    { name = "tribble-clustering", specifier = ">=0.1.8" },
+    { name = "tribble-clustering", git = "https://github.com/fundthmcalculus/clustering.git" },
     { name = "ucimlrepo", specifier = ">=0.0.7" },
 ]
 provides-extras = ["dev"]

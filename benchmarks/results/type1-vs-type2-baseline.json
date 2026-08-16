@@ -1,0 +1,189 @@
+{
+  "label": "Type-1 vs Type-2 comparative baseline",
+  "environment": {
+    "python": "3.11.15",
+    "numpy": "2.4.6",
+    "platform": "Linux-6.18.5-fc-v20-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "git_rev": "857fcd5"
+  },
+  "results": [
+    {
+      "name": "forward-t2-small",
+      "description": "it2_firing_strengths (IT2 counterpart of forward-*): 1000 samples x 8 features x 3 labels x 3 MF, min/max norms",
+      "tags": [
+        "forward",
+        "type2"
+      ],
+      "repeats": 300,
+      "min_s": 0.0013155930000721128,
+      "median_s": 0.0013868839999986449,
+      "max_s": 0.001825080000003254,
+      "checksum": 202.8780983930346
+    },
+    {
+      "name": "forward-t2-wide",
+      "description": "it2_firing_strengths (IT2 counterpart of forward-*): 2000 samples x 40 features x 6 labels x 4 MF, min/max norms",
+      "tags": [
+        "forward",
+        "type2"
+      ],
+      "repeats": 10,
+      "min_s": 0.021053243999972437,
+      "median_s": 0.02172617300004731,
+      "max_s": 0.02239785500000835,
+      "checksum": 70.00556863436914
+    },
+    {
+      "name": "forward-t2-large",
+      "description": "it2_firing_strengths (IT2 counterpart of forward-*): 50000 samples x 20 features x 8 labels x 4 MF, min/max norms",
+      "tags": [
+        "forward",
+        "type2"
+      ],
+      "repeats": 5,
+      "min_s": 0.21506036399989625,
+      "median_s": 0.22193901899993307,
+      "max_s": 0.22927298000001883,
+      "checksum": 8919.41683708075
+    },
+    {
+      "name": "t1-clf-fit-small",
+      "description": "TribbleClassifier.fit + .predict: 1000x8, 3 labels",
+      "tags": [
+        "train",
+        "type1",
+        "classifier"
+      ],
+      "repeats": 5,
+      "min_s": 0.13568703600003573,
+      "median_s": 0.14547716300000957,
+      "max_s": 0.1539759500000173,
+      "checksum": 491.356
+    },
+    {
+      "name": "t2-clf-fit-small",
+      "description": "IT2TribbleClassifier.fit + .predict: 1000x8, 3 labels",
+      "tags": [
+        "train",
+        "type2",
+        "classifier"
+      ],
+      "repeats": 5,
+      "min_s": 0.13531446199999664,
+      "median_s": 0.14044155300007333,
+      "max_s": 0.1453832820000116,
+      "checksum": 491.356
+    },
+    {
+      "name": "t1-clf-fit-medium",
+      "description": "TribbleClassifier.fit + .predict: 4000x20, 6 labels",
+      "tags": [
+        "train",
+        "type1",
+        "classifier"
+      ],
+      "repeats": 3,
+      "min_s": 1.18608258200004,
+      "median_s": 1.2008888119999028,
+      "max_s": 1.201609160000089,
+      "checksum": 5040.211
+    },
+    {
+      "name": "t2-clf-fit-medium",
+      "description": "IT2TribbleClassifier.fit + .predict: 4000x20, 6 labels",
+      "tags": [
+        "train",
+        "type2",
+        "classifier"
+      ],
+      "repeats": 3,
+      "min_s": 1.1879616479999413,
+      "median_s": 1.196894905000022,
+      "max_s": 1.2576492160000043,
+      "checksum": 5040.211
+    },
+    {
+      "name": "t1-reg-fit-small",
+      "description": "TribbleRegressor.fit + .predict: 1000x8",
+      "tags": [
+        "train",
+        "type1",
+        "regressor"
+      ],
+      "repeats": 5,
+      "min_s": 0.11134221500003605,
+      "median_s": 0.1170255490000045,
+      "max_s": 0.12017653600003086,
+      "checksum": -27.193143878107147
+    },
+    {
+      "name": "t2-reg-fit-small",
+      "description": "IT2TribbleRegressor.fit + .predict: 1000x8",
+      "tags": [
+        "train",
+        "type2",
+        "regressor"
+      ],
+      "repeats": 5,
+      "min_s": 0.12402568300001349,
+      "median_s": 0.12912734799999726,
+      "max_s": 0.3136080750000474,
+      "checksum": -35.978160533695835
+    },
+    {
+      "name": "t1-reg-fit-medium",
+      "description": "TribbleRegressor.fit + .predict: 4000x20",
+      "tags": [
+        "train",
+        "type1",
+        "regressor"
+      ],
+      "repeats": 3,
+      "min_s": 0.4768436759999304,
+      "median_s": 0.4782574990000512,
+      "max_s": 0.5352836849999676,
+      "checksum": -206.6235045068745
+    },
+    {
+      "name": "t2-reg-fit-medium",
+      "description": "IT2TribbleRegressor.fit + .predict: 4000x20",
+      "tags": [
+        "train",
+        "type2",
+        "regressor"
+      ],
+      "repeats": 3,
+      "min_s": 0.4788892469999837,
+      "median_s": 0.4875208800000337,
+      "max_s": 0.5203308989999869,
+      "checksum": -205.37601631904107
+    },
+    {
+      "name": "t1-vs-t2-clf-divergence",
+      "description": "TribbleClassifier vs IT2TribbleClassifier prediction agreement rate (checksum IS the metric): 2000x15, 4 labels",
+      "tags": [
+        "divergence",
+        "classifier"
+      ],
+      "repeats": 3,
+      "min_s": 0.876297419000025,
+      "median_s": 0.9000454309999668,
+      "max_s": 0.9119435910000675,
+      "checksum": 1.0
+    },
+    {
+      "name": "t1-vs-t2-reg-divergence",
+      "description": "TribbleRegressor vs IT2TribbleRegressor mean |prediction diff| / target range (checksum IS the metric): 2000x15",
+      "tags": [
+        "divergence",
+        "regressor"
+      ],
+      "repeats": 3,
+      "min_s": 0.656133705000002,
+      "median_s": 0.6627519569999549,
+      "max_s": 0.6719746270000542,
+      "checksum": 0.0022458955282666634
+    }
+  ]
+}

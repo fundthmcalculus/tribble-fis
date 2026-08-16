@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.optimize import minimize
+from tribblefis.optimizer_utils import optimizers_sub_solve
 
 
 def gauss(x):
@@ -47,20 +47,20 @@ def main():
 
     # Optimize triangular
     print("Optimizing triangular shape...")
-    result_tri = minimize(tri_err_scalar, x0=[1.0], method="L-BFGS-B", bounds=[(0.1, 10.0)])
+    result_tri = optimizers_sub_solve(tri_err_scalar, [1.0], [(0.1, 10.0)])
     print(f"Triangular optimal params: z1={result_tri.x[0]:.4f}, error={result_tri.fun:.6f}")
 
     # Optimize trapezoid
     print("Optimizing trapezoid shape...")
-    result_trap = minimize(trap_err_scalar, x0=[0.5, 2.0], method="L-BFGS-B", bounds=[(0.1, 5.0), (0.1, 10.0)])
+    result_trap = optimizers_sub_solve(trap_err_scalar, [0.5, 2.0], [(0.1, 5.0), (0.1, 10.0)])
     print(
         f"Trapezoid optimal params: z1={result_trap.x[0]:.4f}, z2={result_trap.x[1]:.4f}, error={result_trap.fun:.6f}"
     )
 
     # Optimize pentagonal
     print("Optimizing pentagonal shape...")
-    result_pen = minimize(
-        pen_err_scalar, x0=[0.5, 2.0, 0.6], method="L-BFGS-B", bounds=[(0.1, 5.0), (0.1, 10.0), (0.1, 1.0)]
+    result_pen = optimizers_sub_solve(
+        pen_err_scalar, [0.5, 2.0, 0.6], [(0.1, 5.0), (0.1, 10.0), (0.1, 1.0)]
     )
     print(
         f"Pentagonal optimal params: z1={result_pen.x[0]:.4f}, z2={result_pen.x[1]:.4f}, y={result_pen.x[2]:.4f}, error={result_pen.fun:.6f}"

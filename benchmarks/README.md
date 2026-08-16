@@ -43,6 +43,59 @@ TRIBBLEFIS_NUM_THREADS=1 python -m benchmarks.bench -k forward   # compiled, one
 | `refine-classifier-wide` | the same, at a size anyone would deploy: 4k x 20 features x 6 labels x 3 MF, 720 free parameters |
 | `forward-huge-cpu` / `-gpu64` / `-gpu32` | 1M-sample forward pass, data resident, CPU vs Torch |
 | `batch-candidates-cpu` / `-gpu` / `-gpu-seq` | 64 candidate parameter vectors, the shape a population search evaluates |
+| `forward-t2-small` / `-wide` / `-large` | `it2_firing_strengths` on the IT2 conversion of the matching `forward-*` model/dataset |
+| `t1-clf-fit-small` / `t2-clf-fit-small` (also `-medium`) | `TribbleClassifier` vs `IT2TribbleClassifier` end-to-end `.fit` + `.predict` |
+| `t1-reg-fit-small` / `t2-reg-fit-small` (also `-medium`) | `TribbleRegressor` vs `IT2TribbleRegressor` end-to-end `.fit` + `.predict` |
+| `t1-vs-t2-clf-divergence` | checksum-as-metric: prediction agreement rate between the two classifiers on identical data |
+| `t1-vs-t2-reg-divergence` | checksum-as-metric: mean \|prediction diff\| / target range between the two regressors |
+
+### Type-1 vs Type-2 comparison
+
+`IT2TribbleClassifier`/`IT2TribbleRegressor` are never independent of their
+Type-1 counterpart — `fit` fits a `TribbleClassifier`/`TribbleRegressor`
+first, then converts its Gaussian antecedents into an upper/lower footprint
+of uncertainty and, at inference time, doubles the forward pass (upper model,
+lower model) and optionally runs the Karnik-Mendel switch-point search on top.
+So a `t2-*`/`forward-t2-*` row is never expected to be *faster* than its
+`t1-*`/`forward-*` counterpart (same size, same seed) — read the **ratio**
+between the pair, not either absolute number: an unexpected jump in that
+ratio is what flags a regression specific to the IT2 path, as opposed to a
+change (faster/slower machine) that simply moves every row together.
+
+`t1-vs-t2-*-divergence` are a different kind of receipt. Rather than timing,
+the checksum itself *is* a behavioural-divergence metric — prediction
+agreement for the classifier, relative predictive difference for the
+regressor — between the two models fit on the same data. That reuses
+`bench.py --compare`'s existing "checksum moved" machinery to catch drift in
+how far IT2's uncertainty band pulls predictions away from its Type-1 base,
+which a pure timing comparison would never surface. Measured on
+`origin/main` (`857fcd5`):
+
+| workload | min | checksum |
+|---|---|---|
+| forward-t2-small | 1.32 ms | 202.878 |
+| forward-t2-wide | 21.05 ms | 70.006 |
+| forward-t2-large | 215.06 ms | 8919.417 |
+| t1-clf-fit-small | 135.69 ms | 491.356 |
+| t2-clf-fit-small | 135.31 ms | 491.356 |
+| t1-clf-fit-medium | 1.186 s | 5040.211 |
+| t2-clf-fit-medium | 1.188 s | 5040.211 |
+| t1-reg-fit-small | 111.34 ms | -27.193 |
+| t2-reg-fit-small | 124.03 ms | -35.978 |
+| t1-reg-fit-medium | 476.84 ms | -206.624 |
+| t2-reg-fit-medium | 478.89 ms | -205.376 |
+| t1-vs-t2-clf-divergence | 876.30 ms | **1.0** (perfect agreement on this dataset) |
+| t1-vs-t2-reg-divergence | 656.13 ms | **0.00225** (0.225% of the target range) |
+
+At this scale, `.fit`'s own cost (KMeans/BIC component selection, feature
+scoring) dominates the IT2 conversion overhead, so `t1-*`/`t2-*` land within
+noise of each other — the conversion itself is cheap. The classifier
+checksums matching exactly is a property of this particular synthetic
+dataset (its class blobs are separable enough that IT2's softened boundary
+never flips an argmax), not a general guarantee; `t1-vs-t2-clf-divergence`
+is what actually tracks that number, and 1.0 is a legitimate baseline value
+for it, not a sign the workload is broken. Full results, including these
+rows, are in `results/type1-vs-type2-baseline.json`.
 
 Both `refine-*` rows start from a **randomly parameterised** model, which is a
 stable fixed point for measuring the search but not how anyone trains. Their
