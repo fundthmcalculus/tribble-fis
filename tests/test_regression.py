@@ -505,6 +505,42 @@ class TestAntecedentRefinement(unittest.TestCase):
         self.assertLessEqual(info["val_mse"], info["init_val_mse"] + 1e-9)
         self.assertIn("n_eval", info)
 
+    def test_coordinate_refine_non_analytic_branch_never_worsens_val(self):
+        """Regression test for #119.
+
+        The default ("probability") norms make `refine_antecedents_coordinate`
+        take the analytic-gradient branch (still scipy L-BFGS-B, see the
+        module comment on why that one stays), which never exercises the
+        plain finite-difference branch this issue's fix touches. A non-
+        "probability" norm pair forces the other branch -- now routed through
+        `optimizers` instead of `scipy.optimize.minimize` -- and it must keep
+        the same never-worse-than-the-heuristic-start guarantee.
+        """
+        from tribblefis.gauss_data import NormPair
+        from tribblefis.refine import refine_antecedents_coordinate
+        X, y_part, model = self._make_model_and_data()
+        _, info = refine_antecedents_coordinate(
+            model, X, y_part, self.TOP, n_output_buckets=self.N_BUCKETS,
+            order="2nd", l2_reg=1e-3, basis="raw", n_folds=3, n_sweeps=2,
+            norms=NormPair(t_norm="min/max", t_conorm="min/max"),
+        )
+        self.assertLessEqual(info["val_mse"], info["init_val_mse"] + 1e-9)
+        self.assertIn("n_eval", info)
+
+    def test_optimizers_sub_solve_matches_scipy_quality(self):
+        """`_optimizers_sub_solve` (the scipy.optimize.minimize replacement,
+        #119) must find a comparably good minimum of a small bounded convex
+        quadratic to the L-BFGS-B call it replaces, without an explicit
+        evaluation-budget knob (see the function's docstring for why)."""
+        from tribblefis.refine import _optimizers_sub_solve
+
+        def quadratic(v):
+            return float((v[0] - 0.3) ** 2 + (v[1] + 0.4) ** 2)
+
+        res = _optimizers_sub_solve(quadratic, np.array([0.0, 0.0]), [(-1.0, 1.0), (-1.0, 1.0)])
+        np.testing.assert_allclose(res.x, [0.3, -0.4], atol=1e-3)
+        self.assertLess(res.fun, 1e-6)
+
 
 if __name__ == "__main__":
     test_gaussian_mixture_regression_2d()
