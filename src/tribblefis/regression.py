@@ -920,21 +920,28 @@ def apply_tsk_consequents(
 def compute_rbf_centers(X: ndarray, n_centers: int = 5) -> ndarray:
     """Compute RBF center points using quantiles of the feature space.
 
+    Uses a one-factor-at-a-time "star" design rather than a per-feature
+    Cartesian product: each center holds every feature at its median except
+    one, which is swept across `n_centers` quantiles. This keeps the center
+    count linear in `n_features` (matching this function's documented
+    contract) instead of exploding as `n_centers ** n_features`, which used
+    to OOM for ordinary feature counts (see #130).
+
     Args:
         X: (n_samples, n_features) feature matrix.
         n_centers: Number of centers per feature (default 5, produces n_features * n_centers total).
 
     Returns:
-        (n_centers_total, n_features) array of RBF centers.
+        (n_features * n_centers, n_features) array of RBF centers.
     """
     n_samples, n_features = X.shape
     quantiles = np.linspace(0.1, 0.9, n_centers)
-    centers = []
+    medians = np.median(X, axis=0)
+    centers = np.tile(medians, (n_features * n_centers, 1))
     for feat_idx in range(n_features):
         feat_quantiles = np.quantile(X[:, feat_idx], quantiles)
-        centers.append(feat_quantiles)
-    # Create a grid of all combinations (Cartesian product across features)
-    return np.column_stack(np.meshgrid(*centers, indexing='ij')).reshape(-1, n_features)
+        centers[feat_idx * n_centers:(feat_idx + 1) * n_centers, feat_idx] = feat_quantiles
+    return centers
 
 
 def select_interaction_terms(
