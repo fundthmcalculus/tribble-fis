@@ -208,17 +208,14 @@ def test_gt2_regressor_rmse_is_comparable_to_it2(synthetic_regression_data):
     """Guard against a gross regression: GT2's alpha-weighted combination
     should not blow up RMSE relative to plain IT2 on the same base fit.
 
-    Uses the same `(top_n=1, n_gaussians=3, n_output_buckets=5)` shape as
-    the convergence tests above rather than a narrower membership spread:
-    a tighter spread leaves the tail of this fixture's test split (which
-    extrapolates past x~0.9, the edge of the training range) with per-rule
-    firing sums a few orders of magnitude below `karnik_mendel_tsk`'s
-    zero-firing threshold but still nonzero -- a pre-existing edge case
-    shared by `IT2TribbleRegressor` (reproduces there too at
-    `uncertainty_width=1e-6`), not something specific to GT2's combination,
-    and not what this test exists to catch."""
+    This originally needed a wider membership spread to dodge a
+    `karnik_mendel_tsk` zero-firing-threshold mismatch (`gauss_data.
+    ZERO_FIRING_THRESHOLD`'s docstring) that made a handful of this
+    fixture's extrapolated test rows disagree sharply with Type-1/IT2's own
+    zero-firing fallback; with the two gates unified, the original
+    `(top_n=2, n_gaussians=2, n_output_buckets=3)` shape is back."""
     X_train, X_test, y_train, y_test, _ = synthetic_regression_data
-    kw = dict(top_n=1, n_gaussians=3, n_output_buckets=5, uncertainty_width=0.5, random_state=42)
+    kw = dict(top_n=2, n_gaussians=2, n_output_buckets=3, uncertainty_width=0.5, random_state=42)
 
     gt2 = GT2TribbleRegressor(**kw).fit(X_train, y_train)
     it2 = IT2TribbleRegressor(**kw).fit(X_train, y_train)
