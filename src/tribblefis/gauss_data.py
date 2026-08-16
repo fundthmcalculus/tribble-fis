@@ -260,8 +260,8 @@ def widen_membership(
     if isinstance(mf, GaussianMembership):
         base_sigma = max(mf.sigma, min_val)
         return (
-            GaussianMembership(mu=mf.mu, sigma=base_sigma * (1.0 + w)),
-            GaussianMembership(mu=mf.mu, sigma=base_sigma * max(0.1, 1.0 - w)),
+            GaussianMembership(mu=mf.mu, sigma=base_sigma * (1.0 + w), id=mf.id),
+            GaussianMembership(mu=mf.mu, sigma=base_sigma * max(0.1, 1.0 - w), id=mf.id),
         )
     if isinstance(mf, TrapezoidMembership):
         if not (np.isfinite(mf.a) and np.isfinite(mf.d)):
@@ -271,8 +271,8 @@ def widen_membership(
         left_wide, left_narrow = left * (1.0 + w), left * max(0.1, 1.0 - w)
         right_wide, right_narrow = right * (1.0 + w), right * max(0.1, 1.0 - w)
         return (
-            TrapezoidMembership(a=mf.b - left_wide, b=mf.b, c=mf.c, d=mf.c + right_wide),
-            TrapezoidMembership(a=mf.b - left_narrow, b=mf.b, c=mf.c, d=mf.c + right_narrow),
+            TrapezoidMembership(a=mf.b - left_wide, b=mf.b, c=mf.c, d=mf.c + right_wide, id=mf.id),
+            TrapezoidMembership(a=mf.b - left_narrow, b=mf.b, c=mf.c, d=mf.c + right_narrow, id=mf.id),
         )
     if isinstance(mf, TriangularMembership):
         if not (np.isfinite(mf.a) and np.isfinite(mf.c)):
@@ -282,8 +282,8 @@ def widen_membership(
         left_wide, left_narrow = left * (1.0 + w), left * max(0.1, 1.0 - w)
         right_wide, right_narrow = right * (1.0 + w), right * max(0.1, 1.0 - w)
         return (
-            TriangularMembership(a=mf.b - left_wide, b=mf.b, c=mf.b + right_wide),
-            TriangularMembership(a=mf.b - left_narrow, b=mf.b, c=mf.b + right_narrow),
+            TriangularMembership(a=mf.b - left_wide, b=mf.b, c=mf.b + right_wide, id=mf.id),
+            TriangularMembership(a=mf.b - left_narrow, b=mf.b, c=mf.b + right_narrow, id=mf.id),
         )
     raise TypeError(f"Unsupported membership type for widen_membership: {type(mf)!r}")
 
