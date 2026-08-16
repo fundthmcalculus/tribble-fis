@@ -138,30 +138,45 @@ L2 regularization strength during refinement. Controls how far refined parameter
 ### `refine_it2` (default: False)
 
 If True, runs a **second**, post-conversion refinement pass directly on the
-IT2 upper/lower Gaussian antecedents (`it2_refine.refine_it2_antecedents`),
-distinct from `refine` above (which only ever touches the pre-conversion
-Type-1 model and never sees the footprint of uncertainty it becomes).
+IT2 upper/lower Gaussian antecedents (`it2_refine`), distinct from `refine`
+above (which only ever touches the pre-conversion Type-1 model and never sees
+the footprint of uncertainty it becomes).
 
-**How it works**: cycles through one Gaussian half (upper or lower MF of one
-IT2 membership) at a time and runs a small bounded local solve on just its
-`(mu, sigma)`, holding everything else fixed, for `refine_it2_n_sweeps`
-sweeps -- the IT2 analogue of the Type-1 `"coordinate"` method. Each
-sub-problem's objective is the cross-entropy of the type-reduced,
-row-normalized firing strengths (the classifier has no consequents beyond the
-firing strength itself, the same reasoning `refine.py` gives for why refining
-antecedents *is* the whole Type-1 classifier). A candidate replaces the
-running best only on a strict training-loss improvement, so refinement never
-returns a model worse than its starting point.
+**Classifier** (`T2TribbleClassifier.refine_it2`,
+`it2_refine.refine_it2_antecedents`): cycles through one IT2 Gaussian
+membership at a time and runs a small bounded local solve on its
+`(mu, sigma_lower, sigma_upper)` -- `mu` shared between the upper and lower
+halves, `sigma_upper >= sigma_lower` enforced by construction so the search
+cannot invert `firing_lower <= firing_upper` -- holding everything else
+fixed, for `refine_it2_n_sweeps` sweeps. Each sub-problem's objective is the
+cross-entropy of the type-reduced, row-normalized firing strengths (the
+classifier has no consequents beyond the firing strength itself, the same
+reasoning `refine.py` gives for why refining antecedents *is* the whole
+Type-1 classifier). A candidate replaces the running best only on a strict
+training-loss improvement, so refinement never returns a model worse than its
+starting point.
 
-Regression has no `refine_it2` counterpart yet: the base regressor's
-consequents are fixed at conversion time, and refining antecedents alone
-without re-solving those consequents for each candidate is a materially
-different (and currently unimplemented) undertaking -- see
-`it2_refine.py`'s module docstring.
+**Regressor** (`IntervalType2FuzzyRegressor.refine_it2`,
+`it2_refine.refine_it2_regressor_antecedents`): the same coordinate descent,
+but a regressor's antecedents are only ever meaningful alongside consequents
+solved *for* them, so every candidate evaluated during the search re-solves
+the TSK consequents in closed form (ridge regression, weighted by each rule's
+midpoint firing strength) before scoring held-out MSE through the full
+Karnik-Mendel prediction path -- mirroring `refine.py`'s Type-1 regressor
+coordinate descent (antecedents outer, LSE-fit consequents inner). The final
+`y_bucket_mean_`/`corr_terms_` used by `predict`/`predict_intervals` are then
+re-solved once more against the *full* training set for the refined
+antecedents.
 
 ### `refine_it2_n_sweeps` (default: 3) / `refine_it2_l2_shrink` (default: 0.05)
 
-Sweep count and L2 anchor strength for `refine_it2`'s coordinate descent.
+Sweep count and L2 anchor strength for the classifier's `refine_it2`
+coordinate descent. The regressor's `refine_it2_n_sweeps` plays the same
+role; it has no `l2_shrink` (its ridge penalty is `l2_reg`, matching the base
+regressor's own consequent solve) but does add `refine_it2_km_iterations`
+(Karnik-Mendel iterations for the *search* objective; `None` falls back to
+`km_iterations`, or 15) and `refine_it2_n_folds` (cross-validation folds for
+the held-out MSE objective).
 
 ### Other Parameters
 
@@ -237,9 +252,8 @@ strengths, with no cross-rule optimization and no containment guarantee).
 **KISS (Keep It Simple, Stupid)**:
 - Gaussian memberships only (other types added later)
 - Probability norms only (5 norm families available for future extension)
-- Post-fit antecedent refinement now implemented for the classifier (`refine_it2`);
-  regression's version -- which would need to re-solve consequents per candidate -- remains
-  future work (see Future Extensions)
+- Post-fit antecedent refinement (`refine_it2`) now implemented for both classification and
+  regression, the latter re-solving TSK consequents in closed form per candidate
 - Reuses all existing Type-1 FIS code and patterns
 
 **Extensibility**:
@@ -250,7 +264,7 @@ strengths, with no cross-rule optimization and no containment guarantee).
 
 ## Testing
 
-Five test suites validate the implementation:
+Six test suites validate the implementation:
 
 ### 1. `test_it2_classifier_iris.py`
 
@@ -288,13 +302,27 @@ Correctness of the real Karnik-Mendel search (`karnik_mendel_tsk`):
 
 ### 5. `test_it2_refine.py`
 
-Post-fit IT2 antecedent refinement (`refine_it2_antecedents`, `refine_it2`):
+Post-fit IT2 classifier antecedent refinement (`refine_it2_antecedents`, `refine_it2`):
 - Refinement never increases training cross-entropy
 - Refinement actually moves antecedent parameters (guards against the previous
   always-`0.001`-gradient stub silently doing nothing)
+- Refinement preserves `firing_lower <= firing_upper` (guards against the
+  independent-halves bug described above)
 - `method="none"` is an identity no-op; an unknown method raises
 - The `T2TribbleClassifier(refine_it2=True)` option fits, predicts, and
   doesn't materially hurt training accuracy
+
+### 6. `test_it2_regressor_refine.py`
+
+Post-fit IT2 regressor antecedent refinement with per-candidate consequent
+re-solving (`refine_it2_regressor_antecedents`, `refine_it2`):
+- Refinement never increases held-out cross-validated MSE
+- Refinement preserves `firing_lower <= firing_upper`
+- `method="none"` still re-solves consequents for the (unchanged) antecedents
+  rather than returning stale ones; an unknown method raises
+- The `IntervalType2FuzzyRegressor(refine_it2=True)` option fits and predicts
+  with the containment guarantee (`y_lower <= predict() <= y_upper`) intact,
+  and doesn't drastically worsen RMSE
 
 ## Advanced Usage Examples
 
@@ -327,7 +355,7 @@ print(f"Average interval width: {interval_width.mean():.3f}")
 
 ## Feature Completeness
 
-### ✅ Implemented in v3
+### ✅ Implemented in v4
 
 1. **All Membership Types**: Gaussian, trapezoidal, triangular (with type-aware uncertainty expansion)
 2. **Antecedent Refinement**: Pre-conversion Type-1 refinement for discriminative bounds
@@ -335,7 +363,9 @@ print(f"Average interval width: {interval_width.mean():.3f}")
    search over rule consequents (regressor), numba-compiled and parallelized across
    samples; the classifier's per-class interval midpoint is closed-form (see above)
 4. **Post-Fit IT2 Refinement**: `refine_it2` runs block coordinate descent directly on the
-   IT2 upper/lower Gaussian antecedents, after conversion (classifier only -- see below)
+   IT2 upper/lower Gaussian antecedents, after conversion -- for both classification
+   (cross-entropy objective) and regression (held-out MSE with a per-candidate closed-form
+   consequent re-solve, `it2_refine.refine_it2_regressor_antecedents`)
 5. **Confidence Intervals**: `.predict_intervals()`, with the regressor's KM path
    *guaranteeing* containment of `.predict()`'s point estimate by construction
 6. **Both Classification and Regression**: Full support for both task types
@@ -345,10 +375,9 @@ print(f"Average interval width: {interval_width.mean():.3f}")
 1. **Norm Families**: Add all 5 families (probability is currently only option)
 2. **GPU Acceleration**: PyTorch backend for large-scale models
 3. **Hierarchical IT2**: IT2 fuzzy trees (leverage `tribble-tree`)
-4. **Regression `refine_it2`**: post-conversion antecedent refinement against held-out
-   MSE, re-solving consequents per candidate the way `refine.py`'s Type-1 regressor
-   path does (the classifier's `refine_it2` doesn't need this, since it has no
-   consequents to re-solve)
+4. **`optimizers`-based sub-problem solves**: replace the `scipy.optimize.minimize`
+   (L-BFGS-B) calls in `it2_refine.py`'s (and `refine.py`'s) coordinate descent with the
+   project's own `optimizers` package, to drop the `scipy` dependency (tracked upstream)
 5. **Large-Scale Optimization**: Evolutionary algorithms for IT2 learning
 6. **EIASC and other KM variants**: `karnik_mendel_tsk` implements the classic
    Karnik-Mendel switch-point search; faster variants (EIASC, Wu-Mendel closed forms)
