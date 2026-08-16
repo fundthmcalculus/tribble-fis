@@ -17,6 +17,7 @@ from .gauss_data import (
 )
 from .gaussian_regressor import TribbleRegressor
 from .it2_kernel import it2_firing_strengths, karnik_mendel_tsk
+from .it2_refine import refine_it2_regressor_antecedents
 from .regression import rule_consequent_values, _normalize_firing_strengths
 
 
@@ -54,6 +55,27 @@ class T2TribbleRegressor(BaseEstimator, RegressorMixin):
     norm_conorm : str, default="probability"
         Fuzzy operator family: "min/max", "probability", "luk", "hamacher", "einstein".
 
+    refine_it2 : bool, default=False
+        If True, refines the IT2 upper/lower Gaussian antecedents after
+        conversion (`it2_refine.refine_it2_regressor_antecedents`) against
+        held-out MSE, re-solving TSK consequents in closed form for every
+        candidate antecedent set -- unlike the classifier (which has no
+        consequents to re-solve), a regressor candidate's antecedents and its
+        consequents are only ever comparable together, so every step of the
+        search re-fits both.
+
+    refine_it2_n_sweeps : int, default=3
+        Number of coordinate-descent sweeps for `refine_it2`.
+
+    refine_it2_km_iterations : int | None, default=None
+        Karnik-Mendel iterations used for the *loss* evaluated during
+        `refine_it2`'s search. `None` falls back to `km_iterations` (or 15 if
+        that is also `None`/`0`) -- independent of whatever `km_iterations`
+        prediction later runs with.
+
+    refine_it2_n_folds : int, default=3
+        Cross-validation folds for `refine_it2`'s held-out MSE objective.
+
     random_state : int, default=42
         Seed for reproducibility.
 
@@ -64,6 +86,15 @@ class T2TribbleRegressor(BaseEstimator, RegressorMixin):
     ----------
     model_ : IT2GaussianMixtureModel
         The fitted IT2 model with upper and lower membership functions.
+
+    y_bucket_mean_ : ndarray
+        Rule bucket-mean consequent coefficients currently in use for
+        prediction -- the base Type-1 regressor's own fit, unless
+        `refine_it2=True`, in which case these were re-solved for the refined
+        antecedents (see `refine_it2`).
+
+    corr_terms_ : ndarray
+        Rule polynomial consequent coefficients, alongside `y_bucket_mean_`.
 
     y_min_ : float
         Minimum target value from training (for scaling).
@@ -84,6 +115,10 @@ class T2TribbleRegressor(BaseEstimator, RegressorMixin):
         uncertainty_width=0.5,
         km_iterations=10,
         norm_conorm=DefaultNormCornorm,
+        refine_it2=False,
+        refine_it2_n_sweeps=3,
+        refine_it2_km_iterations=None,
+        refine_it2_n_folds=3,
         random_state=42,
         max_samples=None,
     ):
@@ -94,11 +129,18 @@ class T2TribbleRegressor(BaseEstimator, RegressorMixin):
         self.uncertainty_width = uncertainty_width
         self.km_iterations = km_iterations
         self.norm_conorm = norm_conorm
+        self.refine_it2 = refine_it2
+        self.refine_it2_n_sweeps = refine_it2_n_sweeps
+        self.refine_it2_km_iterations = refine_it2_km_iterations
+        self.refine_it2_n_folds = refine_it2_n_folds
         self.random_state = random_state
         self.max_samples = max_samples
 
         # Will be set during fit
         self.model_ = None
+        self.y_bucket_mean_ = None
+        self.corr_terms_ = None
+        self.refine_it2_info_ = None
         self.y_min_ = None
         self.y_max_ = None
         self.feature_names_in_ = None
@@ -153,20 +195,39 @@ class T2TribbleRegressor(BaseEstimator, RegressorMixin):
 
         # Convert Type-1 model to IT2
         self.model_ = self._convert_to_it2(base.model_)
+        self.y_bucket_mean_ = base.y_bucket_mean_
+        self.corr_terms_ = base.corr_terms_
+
+        if self.refine_it2:
+            km_iterations_for_refine = (
+                self.refine_it2_km_iterations
+                or self.km_iterations
+                or 15
+            )
+            self.model_, self.corr_terms_, self.y_bucket_mean_, self.refine_it2_info_ = (
+                refine_it2_regressor_antecedents(
+                    X, y, self.model_, self.norms_, base.top_features_,
+                    order=base.tsk_order, l2_reg=base.l2_reg, basis=base.consequent_basis,
+                    cross_pairs=base.cross_pairs_, km_iterations=km_iterations_for_refine,
+                    n_sweeps=self.refine_it2_n_sweeps, n_folds=self.refine_it2_n_folds,
+                    verbose=False,
+                )
+            )
 
         return self
 
     def _rule_bounds_and_values(self, X):
         """Shared setup for `predict`/`predict_intervals`: each rule's raw firing
         bounds (from the IT2 antecedents) and its own crisp consequent output
-        (from the base Type-1 regressor's fitted consequents), both keyed on the
-        same rule ordering."""
+        (`y_bucket_mean_`/`corr_terms_` -- the base Type-1 regressor's fit,
+        or, if `refine_it2=True`, consequents re-solved for the refined
+        antecedents), both keyed on the same rule ordering."""
         firing_upper, firing_lower, _, labels = it2_firing_strengths(
             X, self.model_, self.norms_, km_iterations=None
         )
         base = self._base_regressor
         rule_values = rule_consequent_values(
-            X, base.top_features_, labels, base.y_bucket_mean_, base.corr_terms_,
+            X, base.top_features_, labels, self.y_bucket_mean_, self.corr_terms_,
             order=base.tsk_order, basis=base.consequent_basis, cross_pairs=base.cross_pairs_,
         )
         return firing_upper, firing_lower, rule_values

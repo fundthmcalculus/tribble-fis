@@ -645,6 +645,52 @@ def solve_tsk_consequents(
     the intercept/bucket-mean columns) yields the exact minimizer of the
     firing-weighted MSE + ridge penalty -- no iterative optimizer needed.
 
+    ``feature_arrays``: optional pre-extracted ``{feature_name: ndarray}``
+    mapping (see `tsk_firing_strengths`), also reused here to build `X_rule`
+    without a pandas round-trip. `None` reproduces the previous behavior exactly.
+
+    Computes the firing strengths from `gaussian_memberships` and delegates the
+    actual solve to `solve_tsk_consequents_from_firing` -- see that function for
+    the ``pin_extremes`` behavior and the ``(corr_terms_opt, y_bucket_mean_opt)``
+    return value. Split out so callers that already have firing strengths from
+    somewhere other than a single `GaussianMixtureModel` -- e.g. the interval
+    type-2 antecedent refiner, which needs its own per-candidate consequent
+    re-solve -- can reuse the identical ridge solve instead of reimplementing it.
+    """
+    if verbose:
+        print(f"\nSolving {order} consequents in closed form (basis={basis}, l2={l2_reg:g})...")
+
+    firing_strengths_train, labels_train = tsk_firing_strengths(
+        X_train[top_n_todo], gaussian_memberships, norms=norms, feature_arrays=feature_arrays
+    )
+    return solve_tsk_consequents_from_firing(
+        firing_strengths_train, labels_train, X_train, top_n_todo, y_bucket_mean, y_train,
+        order=order, l2_reg=l2_reg, basis=basis, cross_pairs=cross_pairs, pin_extremes=pin_extremes,
+        verbose=verbose, feature_arrays=feature_arrays, rbf_centers=rbf_centers,
+        rbf_gamma=rbf_gamma, rbf_radius=rbf_radius,
+    )
+
+
+def solve_tsk_consequents_from_firing(
+    firing_strengths_train: ndarray,
+    labels_train: list[int],
+    X_train: pd.DataFrame,
+    top_n_todo: list[typing.Any],
+    y_bucket_mean: pd.Series | ndarray,
+    y_train: pd.DataFrame,
+    order: typing.Literal["0th", "1st", "2nd", "3rd", "full-2nd"] = "2nd",
+    l2_reg: float = 1e-6,
+    basis: str = "raw",
+    cross_pairs: list[tuple[int, int]] | None = None,
+    pin_extremes: bool = True,
+    verbose: bool = True,
+    feature_arrays: dict[str, np.ndarray] | None = None,
+    rbf_centers: ndarray | None = None,
+    rbf_gamma: float = 1.0,
+    rbf_radius: float | None = None,
+) -> tuple[ndarray, ndarray]:
+    """`solve_tsk_consequents`'s ridge solve, given firing strengths directly.
+
     ``pin_extremes`` holds the first and last rules' bucket means fixed at the
     values supplied in ``y_bucket_mean`` -- normally the observed min and max set
     by :func:`partition_output` -- instead of letting the solve re-derive them.
@@ -662,19 +708,9 @@ def solve_tsk_consequents(
     unconstrained solve. A non-finite value at one extreme skips only that end;
     the other stays pinned.
 
-    ``feature_arrays``: optional pre-extracted ``{feature_name: ndarray}``
-    mapping (see `tsk_firing_strengths`), also reused here to build `X_rule`
-    without a pandas round-trip. `None` reproduces the previous behavior exactly.
-
     Returns (corr_terms_opt, y_bucket_mean_opt), matching
     `optimize_tsk_coefficients`.
     """
-    if verbose:
-        print(f"\nSolving {order} consequents in closed form (basis={basis}, l2={l2_reg:g})...")
-
-    firing_strengths_train, labels_train = tsk_firing_strengths(
-        X_train[top_n_todo], gaussian_memberships, norms=norms, feature_arrays=feature_arrays
-    )
     norm_fs = _normalize_firing_strengths(firing_strengths_train)
     n_rules = norm_fs.shape[1]
 

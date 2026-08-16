@@ -25,14 +25,28 @@ the start of the current sweep, and -- mirroring `refine.py`'s "never return a
 model worse than the heuristic start" guarantee -- a candidate is only kept if
 it strictly improves the best training loss seen so far.
 
-Regression refinement (optimizing IT2 antecedents against held-out MSE, the way
-`refine.py`'s regressor path does) is not implemented: unlike the classifier,
-`it2_regressor`'s consequents are fixed at conversion time from the base
-Type-1 fit, so refining antecedents alone changes the *inputs* to
-`karnik_mendel_tsk` without ever re-solving those consequents for the
-candidate antecedents -- a materially bigger undertaking (each fitness
-evaluation would need its own closed-form consequent re-solve, as in
-`refine.py`'s Type-1 regressor path) left for future work.
+**Regression refinement** (`refine_it2_regressor_antecedents`) is the same
+coordinate descent, but unlike the classifier, `it2_regressor`'s consequents
+are not something the fitness can ignore: they were solved once, at
+conversion time, from the base Type-1 fit's antecedents, so evaluating a
+*candidate* set of antecedents against those same fixed consequents scores a
+mismatched pair -- consequents fit for a different footprint of uncertainty
+than the one being tried. Every fitness evaluation therefore re-solves the
+consequents in closed form for the candidate antecedents first (the
+"consequent solving" this module now does for regression), the same
+`Phi^T Phi` ridge normal-equations solve `regression.solve_tsk_consequents`
+uses, before scoring held-out MSE through the full Karnik-Mendel prediction
+path (`it2_kernel.karnik_mendel_tsk`) -- mirroring the bilevel structure of
+`refine.py`'s Type-1 regressor coordinate descent (antecedents outer, LSE-fit
+consequents inner), just with a finite-difference-driven L-BFGS-B search on
+the outer loop rather than the Type-1 path's analytic gradient (KM's
+switch-point search isn't differentiable in closed form -- see above).
+The consequent re-solve uses each rule's *midpoint* firing strength,
+``0.5 * (firing_upper + firing_lower)``, as its ridge design weight: this is
+the natural "Type-1-equivalent" firing-strength matrix for a candidate whose
+uncertainty is otherwise expressed only as an interval, and it collapses to
+the base Type-1 model's own firing strengths exactly when the footprint of
+uncertainty vanishes.
 """
 
 import numpy as np
@@ -43,7 +57,10 @@ from .gauss_data import (
     IT2GaussianMixtureModel, IT2FeatureModel, IT2LabelModel, IT2GaussianMembership,
     GaussianMembership, NormPair,
 )
-from .it2_kernel import it2_firing_strengths
+from .gauss_math import tsk_firing_strengths
+from .it2_kernel import it2_firing_strengths, karnik_mendel_tsk, _extract_upper_model, _extract_lower_model
+from .refine import _make_folds, _prepare_folds
+from .regression import solve_tsk_consequents_from_firing, rule_consequent_values, _mse
 
 
 def _iter_it2_gaussian_slots(model: IT2GaussianMixtureModel):
@@ -218,7 +235,7 @@ def refine_it2_antecedents(
         trust region), preventing any single slot from taking an unbounded
         step off of a nearly-flat direction in the loss.
     n_sweeps : int, default=3
-        Number of full passes over every Gaussian sub-membership.
+        Number of full passes over every IT2 Gaussian membership.
     sub_maxfun : int, default=25
         Function-evaluation budget for each slot's L-BFGS-B sub-problem.
     sigma_min_frac : float, default=0.02
@@ -266,7 +283,7 @@ def refine_it2_antecedents(
     init_loss = best_loss
 
     if verbose:
-        print(f"\nIT2 coordinate-descent antecedent refinement: {len(slots)} Gaussian "
+        print(f"\nIT2 classifier coordinate-descent antecedent refinement: {len(slots)} Gaussian "
               f"memberships, init loss={init_loss:.4f}")
 
     for sweep in range(n_sweeps):
@@ -305,3 +322,260 @@ def refine_it2_antecedents(
               f"({100 * (init_loss - best_loss) / max(init_loss, 1e-12):.1f}% lower)")
 
     return best_model
+
+
+# ---------------------------------------------------------------------------
+# Regression: antecedent refinement with a per-candidate consequent re-solve.
+# ---------------------------------------------------------------------------
+
+def _it2_rule_firing(
+    it2_model: IT2GaussianMixtureModel,
+    X: pd.DataFrame,
+    top_n_todo: list,
+    norms: NormPair,
+    feature_arrays: dict[str, np.ndarray] | None = None,
+):
+    """(firing_upper, firing_lower, labels) for every rule, from the IT2
+    antecedents directly -- the regressor analogue of `it2_firing_strengths`,
+    kept separate because the regressor refiner never wants that function's
+    per-rule *crisp* reduction (see `it2_kernel`'s module docstring: that
+    reduction is the wrong one for combining rules, which is exactly the
+    problem being solved here)."""
+    upper_model = _extract_upper_model(it2_model)
+    lower_model = _extract_lower_model(it2_model)
+    firing_upper, labels = tsk_firing_strengths(
+        X[top_n_todo], upper_model, norms=norms, feature_arrays=feature_arrays
+    )
+    firing_lower, _ = tsk_firing_strengths(
+        X[top_n_todo], lower_model, norms=norms, feature_arrays=feature_arrays
+    )
+    return firing_upper, firing_lower, labels
+
+
+def _solve_it2_consequents(
+    it2_model: IT2GaussianMixtureModel,
+    X: pd.DataFrame,
+    y_df: pd.DataFrame,
+    top_n_todo: list,
+    norms: NormPair,
+    order: str,
+    l2_reg: float,
+    basis: str,
+    cross_pairs: list[tuple[int, int]] | None,
+    feature_arrays: dict[str, np.ndarray] | None = None,
+) -> tuple[np.ndarray, np.ndarray, list]:
+    """Re-solve TSK consequents in closed form for `it2_model`'s *current*
+    antecedents, weighting each rule's ridge design block by its midpoint
+    firing strength (see module docstring). Returns
+    ``(corr_terms, y_bucket_mean, labels)``.
+    """
+    firing_upper, firing_lower, labels = _it2_rule_firing(
+        it2_model, X, top_n_todo, norms, feature_arrays=feature_arrays
+    )
+    midpoint = 0.5 * (firing_upper + firing_lower)
+    corr_terms, y_bucket_mean = solve_tsk_consequents_from_firing(
+        midpoint, labels, X, top_n_todo, None, y_df,
+        order=order, l2_reg=l2_reg, basis=basis, cross_pairs=cross_pairs,
+        pin_extremes=False, verbose=False, feature_arrays=feature_arrays,
+    )
+    return corr_terms, y_bucket_mean, labels
+
+
+def _it2_regressor_fold_mse(
+    it2_model: IT2GaussianMixtureModel,
+    X_tr: pd.DataFrame, y_tr_df: pd.DataFrame, fa_tr: dict,
+    X_val: pd.DataFrame, y_val_true: np.ndarray, fa_val: dict,
+    top_n_todo: list, norms: NormPair,
+    order: str, l2_reg: float, basis: str, cross_pairs: list[tuple[int, int]] | None,
+    km_iterations: int,
+) -> float:
+    """Held-out MSE for one fold: re-solve consequents on the training split,
+    then predict the validation split through the full Karnik-Mendel path.
+    """
+    corr_terms, y_bucket_mean, labels = _solve_it2_consequents(
+        it2_model, X_tr, y_tr_df, top_n_todo, norms, order, l2_reg, basis, cross_pairs,
+        feature_arrays=fa_tr,
+    )
+    firing_upper_val, firing_lower_val, _ = _it2_rule_firing(
+        it2_model, X_val, top_n_todo, norms, feature_arrays=fa_val
+    )
+    rule_values_val = rule_consequent_values(
+        X_val, top_n_todo, labels, y_bucket_mean, corr_terms,
+        order=order, basis=basis, cross_pairs=cross_pairs, feature_arrays=fa_val,
+    )
+    y_l, y_r = karnik_mendel_tsk(
+        rule_values_val, firing_lower_val, firing_upper_val, max_iterations=km_iterations
+    )
+    return _mse(y_val_true, 0.5 * (y_l + y_r))
+
+
+def _it2_regressor_cv_fitness(
+    it2_model: IT2GaussianMixtureModel,
+    prepared: list,
+    top_n_todo: list, norms: NormPair,
+    order: str, l2_reg: float, basis: str, cross_pairs: list[tuple[int, int]] | None,
+    km_iterations: int,
+) -> float:
+    """Mean held-out MSE over `prepared`'s folds (see `refine._prepare_folds`) --
+    the regressor's coordinate-descent fitness, analogous to
+    `refine._make_kfold_fitness` for Type-1."""
+    total, n = 0.0, 0
+    for X_tr, y_tr_df, fa_tr, X_val, y_val_true, fa_val in prepared:
+        try:
+            mse = _it2_regressor_fold_mse(
+                it2_model, X_tr, y_tr_df, fa_tr, X_val, y_val_true, fa_val,
+                top_n_todo, norms, order, l2_reg, basis, cross_pairs, km_iterations,
+            )
+        except Exception:
+            return 1e6
+        total += mse
+        n += 1
+    return total / max(n, 1)
+
+
+def refine_it2_regressor_antecedents(
+    X: pd.DataFrame,
+    y: np.ndarray,
+    it2_model: IT2GaussianMixtureModel,
+    norms: NormPair,
+    top_n_todo: list,
+    order: str = "1st",
+    l2_reg: float = 1e-6,
+    basis: str = "raw",
+    cross_pairs: list[tuple[int, int]] | None = None,
+    km_iterations: int = 15,
+    method: str = "coordinate",
+    n_sweeps: int = 3,
+    sub_maxfun: int = 20,
+    sigma_min_frac: float = 0.02,
+    tol: float = 1e-6,
+    val_fraction: float = 0.2,
+    n_folds: int = 3,
+    seed: int = 42,
+    verbose: bool = True,
+) -> tuple[IT2GaussianMixtureModel, np.ndarray, np.ndarray, dict]:
+    """Refine IT2 Gaussian antecedents against held-out regression MSE,
+    re-solving TSK consequents in closed form for every candidate.
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Training feature data (only the `top_n_todo` columns are used).
+    y : np.ndarray
+        Training target values, one per row of `X`.
+    it2_model : IT2GaussianMixtureModel
+        The IT2 model to refine (already converted from a fitted Type-1 base).
+    norms : NormPair
+        (t-norm, t-conorm) pair for inference.
+    top_n_todo : list
+        The base regressor's selected feature names/order (`top_features_`).
+    order, l2_reg, basis, cross_pairs : as in `regression.solve_tsk_consequents`
+        -- must match the base regressor's own settings (`tsk_order`, `l2_reg`,
+        `consequent_basis`, `cross_pairs_`) for the re-solved consequents to be
+        directly comparable to the ones already in use.
+    km_iterations : int, default=15
+        Karnik-Mendel iterations for the loss evaluated during refinement
+        (independent of whatever the caller predicts with afterward).
+    method : str, default="coordinate"
+        "coordinate" (block coordinate descent, the only implemented method)
+        or "none"/`None` (skip the antecedent search but still re-solve
+        consequents once against the *unchanged* antecedents, so the returned
+        consequents are never stale relative to `it2_model`).
+    n_sweeps, sub_maxfun, sigma_min_frac, tol : as in
+        `refine_it2_antecedents` (the classifier's coordinate descent).
+    val_fraction, n_folds, seed : cross-validation split, reusing
+        `refine._make_folds`/`refine._prepare_folds` (same convention as
+        `refine.py`'s Type-1 regressor coordinate descent).
+    verbose : bool, default=True
+        Print per-sweep progress.
+
+    Returns
+    -------
+    (refined_model, corr_terms, y_bucket_mean, info) : the best antecedents
+        found (never worse, on cross-validated MSE, than `it2_model`'s own),
+        together with consequents re-solved on the *full* training set for
+        those antecedents (the per-fold re-solves inside the search are for
+        scoring candidates only -- the final consequents handed back are
+        fit once, on all of `X`, the same way the base Type-1 regressor's are).
+        `info` holds `init_val_mse`/`val_mse` for the CV objective actually
+        searched.
+    """
+    y_df = pd.DataFrame({"y_value": np.asarray(y, dtype=float)})
+
+    if method not in (None, "none", "coordinate"):
+        raise ValueError(f"Unknown refinement method: {method!r}")
+
+    if method in (None, "none"):
+        corr_terms, y_bucket_mean, _ = _solve_it2_consequents(
+            it2_model, X, y_df, top_n_todo, norms, order, l2_reg, basis, cross_pairs,
+        )
+        return it2_model, corr_terms, y_bucket_mean, {"init_val_mse": None, "val_mse": None}
+
+    slots = list(_iter_it2_gaussian_slots(it2_model))
+    if not slots:
+        corr_terms, y_bucket_mean, _ = _solve_it2_consequents(
+            it2_model, X, y_df, top_n_todo, norms, order, l2_reg, basis, cross_pairs,
+        )
+        return it2_model, corr_terms, y_bucket_mean, {"init_val_mse": None, "val_mse": None}
+
+    feature_bounds: dict[str, tuple[float, float, float]] = {}
+    for fname in {s[0] for s in slots}:
+        col = X[fname].to_numpy(dtype=float)
+        lo, hi = float(np.min(col)), float(np.max(col))
+        rng = hi - lo if hi > lo else 1.0
+        feature_bounds[fname] = (lo, hi, rng)
+
+    folds = _make_folds(len(X), n_folds, val_fraction, seed)
+    prepared = _prepare_folds(X, y_df, folds)
+
+    def cv_fitness(model):
+        return _it2_regressor_cv_fitness(
+            model, prepared, top_n_todo, norms, order, l2_reg, basis, cross_pairs, km_iterations
+        )
+
+    current = it2_model
+    best_model = it2_model
+    best_loss = cv_fitness(it2_model)
+    init_loss = best_loss
+
+    if verbose:
+        print(f"\nIT2 regressor coordinate-descent antecedent refinement: {len(slots)} "
+              f"Gaussian memberships, {n_folds}-fold init val MSE={init_loss:.5f}")
+
+    for sweep in range(n_sweeps):
+        sweep_start_loss = best_loss
+        for fname, label, idx, it2_mf in _iter_it2_gaussian_slots(current):
+            lo, hi, rng = feature_bounds[fname]
+            x0, bounds = _slot_x0_and_bounds(it2_mf, lo, hi, rng, sigma_min_frac)
+            upper_id, lower_id = it2_mf.upper_mf.id, it2_mf.lower_mf.id
+
+            def fitness(v, fname=fname, label=label, idx=idx, upper_id=upper_id, lower_id=lower_id):
+                new_it2_mf = _apply_slot_params(v, upper_id, lower_id)
+                trial = _replace_slot(current, fname, label, idx, new_it2_mf)
+                return cv_fitness(trial)
+
+            res = minimize(
+                fitness, x0, method="L-BFGS-B", bounds=bounds,
+                options={"maxfun": sub_maxfun, "maxiter": sub_maxfun},
+            )
+
+            candidate = _replace_slot(current, fname, label, idx, _apply_slot_params(res.x, upper_id, lower_id))
+            candidate_loss = cv_fitness(candidate)
+            if candidate_loss < best_loss - 1e-12:
+                current = candidate
+                best_model = candidate
+                best_loss = candidate_loss
+
+        if verbose:
+            print(f"  sweep {sweep + 1}/{n_sweeps}: val MSE={best_loss:.5f}")
+        if sweep_start_loss - best_loss < tol:
+            break
+
+    if verbose:
+        print(f"  IT2 regressor refinement done: val MSE {init_loss:.5f} -> {best_loss:.5f} "
+              f"({100 * (init_loss - best_loss) / max(init_loss, 1e-12):.1f}% lower)")
+
+    corr_terms, y_bucket_mean, _ = _solve_it2_consequents(
+        best_model, X, y_df, top_n_todo, norms, order, l2_reg, basis, cross_pairs,
+    )
+    return best_model, corr_terms, y_bucket_mean, {"init_val_mse": init_loss, "val_mse": best_loss}
