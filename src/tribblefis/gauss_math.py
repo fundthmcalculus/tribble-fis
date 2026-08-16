@@ -11,23 +11,13 @@ from .gauss_data import *  # noqa: F401, F403
 from .stats_numba import norm_fit, norm_pdf, jensenshannon_distance, wasserstein_distance, silhouette_score, kmeans_1d
 
 
-#: Variance floor used when scoring a candidate mixture, as a fraction of the
-#: column's own variance. Plays the role of scikit-learn's ``reg_covar``, but
-#: scale-relative rather than absolute: these columns are raw features, so a
-#: fixed 1e-6 is a hard floor on a millivolt column and a rounding error on a
-#: currency one. Without a floor, a component that lands on a single point has
-#: zero variance, infinite likelihood, and always wins the selection.
+#: Variance floor for BIC scoring: scale-relative (fraction of feature variance)
+#: to avoid hard floors on different units. Prevents single-point components.
 BIC_VARIANCE_FLOOR_FRAC = 1e-6
 
 
 def _hard_partition_gaussians(data: np.ndarray, labels: np.ndarray, n_clusters: int):
-    """(mu, sigma, weight) per non-empty cluster.
-
-    This *is* the maximum-likelihood Gaussian mixture for the partition k-means
-    produced: with hard assignments the mixture likelihood separates, so each
-    component's MLE is just the mean and standard deviation of its own points
-    and its weight is its share of them. There is nothing left to iterate.
-    """
+    """MLE Gaussian mixture from hard k-means partition: (mu, sigma, weight) per cluster."""
     n = len(data)
     out = []
     for i in range(n_clusters):
@@ -71,44 +61,38 @@ def fit_gaussian_mixture_1d(
     max_gaussians: int = 4,
     random_state: int = 42,
 ) -> tuple[list, int]:
-    """Place 1-D Gaussians by k-means, choosing the component count by BIC.
+    """Fit 1-D Gaussian mixture by BIC-selected k-means.
 
-    Returns ``(memberships, n_selected)``.
+    Parameters
+    ----------
+    data : array-like
+        1-D data to fit.
+    n_gaussians : int
+        Force this many components (0 = auto-select by BIC).
+    max_gaussians : int
+        Maximum components to try when auto-selecting.
+    random_state : int
+        RNG seed for k-means.
 
-    The point of returning both is that the caller no longer has to refit. The
-    previous arrangement asked :func:`find_optimal_gaussians` for a count --
-    which it obtained by fitting a full EM mixture at every candidate k and
-    throwing all of them away -- and then ran a k-means at the winning k to get
-    the placement it had just discarded. That is between five and nine fits to
-    keep one, and on the datasets in the accompanying study it accounted for
-    82-91% of identification time.
+    Returns
+    -------
+    memberships : list[GaussianMembership]
+        Fitted Gaussian components.
+    n_selected : int
+        Number of components selected.
 
-    Here each candidate k is scored from the k-means partition it implies, using
-    the closed-form MLE of the corresponding hard-assignment mixture, and the
-    winner's components *are* the returned memberships. One k-means per
-    candidate, none discarded, and k = 1 needs no clustering at all.
-
-    The selection criterion is the same BIC, but read at the hard-assignment
-    optimum rather than the soft one, so the two can disagree at the margin --
-    typically where the BIC curve is nearly flat and the choice barely matters.
-    Pass ``n_gaussians > 0`` to skip selection entirely.
+    Notes
+    -----
+    Returns both components and count to avoid refitting k-means after BIC selection.
     """
     data = np.asarray(data, dtype=float).ravel()
     if len(data) == 0:
         return [], 0
 
     var_floor = BIC_VARIANCE_FLOOR_FRAC * max(float(data.var()), np.finfo(float).tiny)
-
-    # A column with v distinct values supports at most v clusters. Asking for
-    # more gets a ConvergenceWarning, an empty cluster, and a k-means run whose
-    # result is thrown away -- and on a dataset with binary or low-cardinality
-    # features that is most of the candidates.
-    n_distinct = len(np.unique(data))
+    n_distinct = len(np.unique(data))  # Limit clusters to distinct values.
 
     if n_gaussians > 0:
-        # Same cap as the automatic branch below, and for the same reason: a
-        # column with v distinct values cannot support more than v clusters,
-        # requested explicitly or not.
         k = min(n_gaussians, len(data), n_distinct)
         components = _hard_partition_gaussians(data, _kmeans_labels_1d(data, k, random_state), k)
     elif len(data) < 2:
