@@ -10,6 +10,9 @@ from . import kernel
 from .gauss_data import *  # noqa: F401, F403
 from .stats_numba import norm_fit, norm_pdf, jensenshannon_distance, wasserstein_distance, silhouette_score, kmeans_1d
 
+# Numeric thresholds for numerical stability
+_SIGMA_FLOOR = 1e-6  # Minimum variance/sigma to avoid numerical issues
+_SMALL_THRESHOLD = 1e-12  # Threshold for near-zero denominators in norm calculations
 
 #: Variance floor for BIC scoring: scale-relative (fraction of feature variance)
 #: to avoid hard floors on different units. Prevents single-point components.
@@ -448,7 +451,7 @@ def calculate_interaction_scores(
         zi, zj, y_common = zi.loc[common], zj.loc[common], y.loc[common]
 
         std_i, std_j = zi.std(), zj.std()
-        if std_i <= 1e-12 or std_j <= 1e-12:
+        if std_i <= _SMALL_THRESHOLD or std_j <= _SMALL_THRESHOLD:
             continue  # a constant feature has no interaction to offer
         product = zi * zj
 
@@ -598,7 +601,7 @@ def t_norm(x, y, selected_norm: NormConorm | None = None):
     elif selected_norm == "hamacher":
         den = x + y - x * y
         out = np.zeros_like(np.asarray(x, dtype=float))
-        ok = np.abs(den) > 1e-12
+        ok = np.abs(den) > _SMALL_THRESHOLD
         np.divide(x * y, den, out=out, where=ok)
         return out
     elif selected_norm == "einstein":
@@ -635,7 +638,7 @@ def t_conorm(x, y, selected_norm: NormConorm | None = None):
         num = x + y - 2.0 * x * y
         den = 1.0 - x * y
         out = np.ones_like(np.asarray(x, dtype=float))
-        ok = np.abs(den) > 1e-12
+        ok = np.abs(den) > _SMALL_THRESHOLD
         np.divide(num, den, out=out, where=ok)
         return out
     else:
@@ -650,7 +653,7 @@ def t_complement(x):
 def membership(x, mu, sigma, default_member: MemberFunction | None = None):
     member_fn: MemberFunction = default_member or DefaultMemberFunction
     # Add a small epsilon to sigma to avoid division by zero
-    sigma = max(sigma, 1e-6)
+    sigma = max(sigma, _SIGMA_FLOOR)
     """Membership function for fuzzy logic operations."""
     if member_fn == "gaussian":
         return np.exp(-0.5 * ((x - mu) / sigma) ** 2)
