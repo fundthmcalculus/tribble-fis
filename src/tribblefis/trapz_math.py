@@ -366,6 +366,7 @@ def _em_m_step_params(
     data_min: float,
     data_max: float,
     shape: Shape = "trapezoid",
+    width_reg: float = 0.0,
 ) -> list[tuple[float, float, float, float]]:
     """M-step for trapezoid (or triangle) parameters using constrained optimization.
 
@@ -405,10 +406,15 @@ def _em_m_step_params(
         coeff_k = responsibilities[:, k] * bin_counts
 
         if shape == "triangle":
-            def objective(params, _coeff=coeff_k):
+            _tot = float(coeff_k.sum())
+
+            def objective(params, _coeff=coeff_k, _tot=_tot):
                 a, apex, d = params
                 pdf_vals = np.maximum(trapz_pdf(bin_centers, a, apex, apex, d), 1e-10)
-                return -np.dot(_coeff, np.log(pdf_vals))
+                nll = -np.dot(_coeff, np.log(pdf_vals))
+                if width_reg:
+                    nll -= width_reg * _tot * np.log(max(d - a, 1e-6))
+                return nll
 
             x0 = np.array([a_k, b_k, d_k])  # b_k == c_k already, one apex value
             init_obj = objective(x0)
@@ -418,10 +424,15 @@ def _em_m_step_params(
             new_params.append((a_new, apex_new, apex_new, d_new))
             continue
 
-        def objective(params, _coeff=coeff_k):
+        _tot = float(coeff_k.sum())
+
+        def objective(params, _coeff=coeff_k, _tot=_tot):
             a, b, c, d = params
             pdf_vals = np.maximum(trapz_pdf(bin_centers, a, b, c, d), 1e-10)
-            return -np.dot(_coeff, np.log(pdf_vals))
+            nll = -np.dot(_coeff, np.log(pdf_vals))
+            if width_reg:
+                nll -= width_reg * _tot * np.log(max(d - a, 1e-6))
+            return nll
 
         # Initial guess
         x0 = np.array([a_k, b_k, c_k, d_k])
@@ -447,6 +458,7 @@ def fit_trapezoids_em(
     tol: float = 1e-4,
     random_state: Optional[int] = None,
     shape: Shape = "trapezoid",
+    width_reg: float = 0.0,
 ) -> "tuple[list, np.ndarray, float]":
     """Run EM to fit a mixture of trapezoids -- or triangles -- to 1D data.
 
@@ -511,7 +523,7 @@ def fit_trapezoids_em(
 
         # M-step (parameters)
         params_list = _em_m_step_params(
-            bin_centers, bin_counts, responsibilities, params_list, data_min, data_max, shape=shape
+            bin_centers, bin_counts, responsibilities, params_list, data_min, data_max, shape=shape, width_reg=width_reg
         )
 
         # Compute log-likelihood
@@ -552,6 +564,7 @@ def fit_trapezoid_mixture_1d(
     max_components: int = 4,
     n_bins: int = 50,
     shape: Shape = "trapezoid",
+    width_reg: float = 0.0,
 ) -> "tuple[list, int]":
     """Fit a 1-D trapezoid (or triangle) mixture, choosing the component count by BIC.
 
@@ -570,7 +583,7 @@ def fit_trapezoid_mixture_1d(
 
     if n_trapezoids > 0:
         memberships, _weights, _ll = fit_trapezoids_em(
-            data_1d, n_components=n_trapezoids, n_bins=n_bins, max_iter=100, tol=1e-4, shape=shape
+            data_1d, n_components=n_trapezoids, n_bins=n_bins, max_iter=100, tol=1e-4, shape=shape, width_reg=width_reg
         )
         return memberships, n_trapezoids
 
@@ -578,7 +591,7 @@ def fit_trapezoid_mixture_1d(
     best = (np.inf, [], 0)
     for k in range(1, max_components + 1):
         memberships, _weights, ll = fit_trapezoids_em(
-            data_1d, n_components=k, n_bins=n_bins, max_iter=100, shape=shape
+            data_1d, n_components=k, n_bins=n_bins, max_iter=100, shape=shape, width_reg=width_reg
         )
         bic = ((params_per_component + 1) * k - 1) * np.log(N) - 2 * ll
         if bic < best[0]:
@@ -592,6 +605,7 @@ def find_optimal_trapezoids(
     max_components: int = 4,
     n_bins: int = 50,
     shape: Shape = "trapezoid",
+    width_reg: float = 0.0,
 ) -> int:
     """Number of trapezoid (or triangle) components the data supports, by BIC.
 
@@ -600,7 +614,7 @@ def find_optimal_trapezoids(
     from rather than discarding it.
     """
     return fit_trapezoid_mixture_1d(
-        data_1d, n_trapezoids=0, max_components=max_components, n_bins=n_bins, shape=shape
+        data_1d, n_trapezoids=0, max_components=max_components, n_bins=n_bins, shape=shape, width_reg=width_reg
     )[1]
 
 
@@ -614,6 +628,7 @@ def fit_trapezoids(
     random_state: int = 42,
     verbose: bool = False,
     shape: Shape = "trapezoid",
+    width_reg: float = 0.0,
 ) -> list:
     """Fit multiple trapezoidal (or triangular) MFs to a single variable filtered by label.
 
@@ -648,7 +663,7 @@ def fit_trapezoids(
         return []
 
     memberships, n_selected = fit_trapezoid_mixture_1d(
-        data, n_trapezoids=n_trapezoids, max_components=4, shape=shape
+        data, n_trapezoids=n_trapezoids, max_components=4, shape=shape, width_reg=width_reg
     )
     if verbose and n_trapezoids <= 0:
         noun = "triangles" if shape == "triangle" else "trapezoids"
@@ -666,6 +681,7 @@ def create_trapz_membership_dict(
     random_state: int = 42,
     verbose: bool = False,
     shape: Shape = "trapezoid",
+    width_reg: float = 0.0,
 ) -> "GaussianMixtureModel":
     """Create a trapezoid (or triangle) membership model for top-n variables
     across all class labels.
@@ -687,6 +703,11 @@ def create_trapz_membership_dict(
         random_state: Seeds the subsample draw.
         verbose: Print each automatically-selected component count.
         shape: "trapezoid" (default) or "triangle" -- see :func:`fit_trapezoids_em`.
+        width_reg: Support-width regularization for the EM M-step. 0 (default)
+            is pure maximum-likelihood, which for a normalized bounded-support
+            PDF collapses the support onto the data mode -- a poor antecedent
+            partition (issue #163). Values > 0 reward wider support
+            (partition-friendly MFs); ~1.0 is a reasonable start.
 
     Returns:
         GaussianMixtureModel containing fitted trapezoid/triangle MFs
@@ -723,6 +744,7 @@ def create_trapz_membership_dict(
                 random_state=random_state,
                 verbose=verbose,
                 shape=shape,
+                width_reg=width_reg,
             )
             label_models[label_value] = LabelModel(memberships=trapz_params)
 
