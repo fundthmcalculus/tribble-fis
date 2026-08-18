@@ -1,0 +1,74 @@
+[
+  {
+    "coverage": 1.0,
+    "rmse": 2.1174670310440282,
+    "r2": 0.8281377415981162,
+    "n_rules": 2,
+    "fit_s": 0.063,
+    "dataset": "friedman1",
+    "membership": "gaussian"
+  },
+  {
+    "coverage": 0.988,
+    "rmse": 2.8218452688755913,
+    "r2": 0.6947795749558778,
+    "n_rules": 2,
+    "fit_s": 0.011,
+    "dataset": "friedman1",
+    "membership": "trap-fast"
+  },
+  {
+    "coverage": 0.946,
+    "rmse": 3.8697687725777503,
+    "r2": 0.42599294307414814,
+    "n_rules": 2,
+    "fit_s": 17.748,
+    "dataset": "friedman1",
+    "membership": "trap-em"
+  },
+  {
+    "coverage": 0.975,
+    "rmse": 3.2398522989976666,
+    "r2": 0.5976559125371643,
+    "n_rules": 2,
+    "fit_s": 11.682,
+    "dataset": "friedman1",
+    "membership": "triangular"
+  },
+  {
+    "coverage": 1.0,
+    "rmse": 53.51309422855652,
+    "r2": 0.43866391030902063,
+    "n_rules": 2,
+    "fit_s": 0.047,
+    "dataset": "diabetes",
+    "membership": "gaussian"
+  },
+  {
+    "coverage": 0.0,
+    "rmse": 168.0946296324728,
+    "r2": -4.538734087732571,
+    "n_rules": 2,
+    "fit_s": 0.013,
+    "dataset": "diabetes",
+    "membership": "trap-fast"
+  },
+  {
+    "coverage": 0.0,
+    "rmse": 168.0946296324728,
+    "r2": -4.538734087732571,
+    "n_rules": 2,
+    "fit_s": 24.305,
+    "dataset": "diabetes",
+    "membership": "trap-em"
+  },
+  {
+    "coverage": 0.0,
+    "rmse": 168.0946296324728,
+    "r2": -4.538734087732571,
+    "n_rules": 2,
+    "fit_s": 12.742,
+    "dataset": "diabetes",
+    "membership": "triangular"
+  }
+]
