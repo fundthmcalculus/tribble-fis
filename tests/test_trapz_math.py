@@ -593,3 +593,21 @@ class TestShapeParameterUnification(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_width_reg_widens_em_support():
+    """width_reg > 0 counters the density-MLE support collapse in the EM M-step,
+    producing wider, partition-friendly trapezoids. Backward compatible:
+    width_reg=0 (default) is unchanged. See issue #163."""
+    rng = np.random.default_rng(0)
+    data = np.concatenate([rng.normal(-2.0, 0.4, 400), rng.normal(2.0, 0.4, 400)])
+
+    def mean_support(width_reg):
+        mfs, _w, _ll = fit_trapezoids_em(
+            data, n_components=2, n_bins=50, random_state=42, width_reg=width_reg
+        )
+        return float(np.mean([mf.d - mf.a for mf in mfs]))
+
+    base = mean_support(0.0)
+    wide = mean_support(1.0)
+    assert wide > base * 1.1, f"expected wider support, got base={base:.2f} wide={wide:.2f}"
