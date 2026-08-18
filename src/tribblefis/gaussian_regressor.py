@@ -47,6 +47,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         allow_mixed_norms=False,
         member_function="gaussian",
         trapz_method="fast",
+        trapz_width_reg=0.0,
         random_state=42,
         max_samples=None,
         detect_interactions=False,
@@ -96,6 +97,11 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                 trapezoid), or "triangular" (special case of trap) -- same
                 semantics as `TribbleClassifier`'s parameter of the same name.
             trapz_method: "fast" (histogram-based) or "em" (EM algorithm).
+            trapz_width_reg: EM-only support-width regularization (see
+                tribblefis.trapz_math and issue #163). 0.0 (default) is pure
+                maximum-likelihood, which collapses trapezoid support onto the
+                data mode -- a poor antecedent partition. Values > 0 (~1.0)
+                reward wider support. No effect for trapz_method="fast".
                 Ignored for "triangular" and "gaussian".
             random_state: Seed for reproducibility.
             max_samples: Cap on the rows used per (feature, label-bucket) when
@@ -160,6 +166,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self.allow_mixed_norms = allow_mixed_norms
         self.member_function = member_function
         self.trapz_method = trapz_method
+        self.trapz_width_reg = trapz_width_reg
         self.random_state = random_state
         self.max_samples = max_samples
         self.detect_interactions = detect_interactions
@@ -286,6 +293,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                 self.model_ = create_trapz_membership_dict(
                     X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_, n_trapezoids=self.n_gaussians,
                     max_samples=self.max_samples, random_state=self.random_state,
+                    width_reg=self.trapz_width_reg,
                 )
             else:
                 raise ValueError(f"Unknown trapz_method: {self.trapz_method}")
@@ -295,6 +303,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             self.model_ = create_trapz_membership_dict(
                 X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_, n_trapezoids=self.n_gaussians,
                 max_samples=self.max_samples, random_state=self.random_state, shape="triangle",
+                width_reg=self.trapz_width_reg,
             )
         else:
             raise ValueError(f"Unknown member_function: {self.member_function}")

@@ -618,3 +618,39 @@ class TestAntecedentRefinement(unittest.TestCase):
 
 if __name__ == "__main__":
     test_gaussian_mixture_regression_2d()
+
+def test_trapz_width_reg_widens_em_support():
+    """trapz_width_reg (EM only) widens the fitted trapezoid antecedent support,
+    reachable end-to-end from the regressor. Counters the density-MLE support
+    collapse; default 0.0 is unchanged. See issues #163/#167."""
+    # Heavy-tailed feature: max-likelihood shrinks the trapezoid onto the dense
+    # core, so the width regularizer has a large, unambiguous effect.
+    rng = np.random.default_rng(0)
+    x = rng.standard_t(df=2.0, size=1000)
+    X = x.reshape(-1, 1)
+    y = x + 0.1 * rng.normal(size=1000)
+
+    def mean_support(width_reg):
+        reg = TribbleRegressor(
+            member_function="trap",
+            trapz_method="em",
+            trapz_width_reg=width_reg,
+            tsk_order="1st",
+            top_n=1,
+            random_state=42,
+        )
+        reg.fit(X, y)
+        return float(
+            np.mean(
+                [
+                    mf.d - mf.a
+                    for fm in reg.model_.feature_models.values()
+                    for lm in fm.label_models.values()
+                    for mf in lm.memberships
+                ]
+            )
+        )
+
+    base = mean_support(0.0)
+    wide = mean_support(1.0)
+    assert wide > base * 1.1, f"expected wider support, base={base:.2f} wide={wide:.2f}"
