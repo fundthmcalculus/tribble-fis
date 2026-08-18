@@ -606,3 +606,50 @@ class TestAntecedentRefinement(unittest.TestCase):
 
 if __name__ == "__main__":
     test_gaussian_mixture_regression_2d()
+
+def test_member_function_choices():
+    """member_function selects the antecedent MF family, mirroring
+    TribbleClassifier. Trapezoid/triangular reuse the same GaussianMixtureModel
+    container, so fit/predict must work end-to-end for each. See #164."""
+    from tribblefis.gauss_data import (
+        GaussianMembership,
+        TrapezoidMembership,
+        TriangularMembership,
+    )
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(300, 4))
+    y = X[:, 0] * 2.0 - X[:, 1] ** 2
+
+    expected = {
+        "gaussian": GaussianMembership,
+        "trap": TrapezoidMembership,
+        "triangular": TriangularMembership,
+    }
+    for mf, cls in expected.items():
+        reg = TribbleRegressor(
+            member_function=mf,
+            tsk_order="1st",
+            top_p=0.99,
+            l2_reg=0.01,
+            random_state=42,
+        )
+        reg.fit(X, y)
+        y_pred = reg.predict(X)
+        assert len(y_pred) == len(y)
+        assert np.all(np.isfinite(y_pred))
+        # the fitted antecedents are of the requested family
+        feature_model = next(iter(reg.model_.feature_models.values()))
+        label_model = next(iter(feature_model.label_models.values()))
+        assert isinstance(label_model.memberships[0], cls)
+
+
+def test_unknown_member_function_raises():
+    """An unrecognised member_function is rejected. See #164."""
+    import pytest
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(50, 3))
+    y = X[:, 0]
+    with pytest.raises(ValueError):
+        TribbleRegressor(member_function="bogus").fit(X, y)

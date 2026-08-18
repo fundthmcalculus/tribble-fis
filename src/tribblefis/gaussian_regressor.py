@@ -53,6 +53,9 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         rbf_n_centers=3,
         rbf_gamma=1.0,
         rbf_radius=None,
+        member_function="gaussian",
+        trapz_method="fast",
+        trapz_n_bins=50,
     ):
         """
         Initialize the TribbleRegressor.
@@ -159,6 +162,9 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self.rbf_n_centers = rbf_n_centers
         self.rbf_gamma = rbf_gamma
         self.rbf_radius = rbf_radius
+        self.member_function = member_function
+        self.trapz_method = trapz_method
+        self.trapz_n_bins = trapz_n_bins
 
     def _norms(self) -> NormPair:
         """Resolved (t-norm, t-conorm) for this estimator.
@@ -260,11 +266,38 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                     stacklevel=2,
                 )
 
-        # Create Gaussian membership model
-        self.model_ = create_gaussian_membership_dict(
-            X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians,
-            max_samples=self.max_samples, random_state=self.random_state,
-        )
+        # Create the antecedent membership model. Gaussian by default;
+        # trapezoid / triangular MFs use the same GaussianMixtureModel
+        # container, so the TSK solve and predict paths are unchanged.
+        if self.member_function == "gaussian":
+            self.model_ = create_gaussian_membership_dict(
+                X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_,
+                n_gaussians=self.n_gaussians, max_samples=self.max_samples,
+                random_state=self.random_state,
+            )
+        elif self.member_function in ("trap", "trapezoid"):
+            if self.trapz_method == "fast":
+                from .trapz_math_fast import create_trapz_membership_dict_fast
+                self.model_ = create_trapz_membership_dict_fast(
+                    X_df, y_partitioned["y_bucket"],
+                    top_n_var_names=self.top_features_, n_bins=self.trapz_n_bins,
+                )
+            else:  # "em"
+                from .trapz_math import create_trapz_membership_dict
+                self.model_ = create_trapz_membership_dict(
+                    X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_,
+                    n_trapezoids=self.n_gaussians, max_samples=self.max_samples,
+                    random_state=self.random_state, shape="trapezoid",
+                )
+        elif self.member_function == "triangular":
+            from .trapz_math import create_trapz_membership_dict
+            self.model_ = create_trapz_membership_dict(
+                X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_,
+                n_trapezoids=self.n_gaussians, max_samples=self.max_samples,
+                random_state=self.random_state, shape="triangle",
+            )
+        else:
+            raise ValueError(f"Unknown member_function: {self.member_function!r}")
 
         self.n_rules_ = self.model_.n_rules
 
