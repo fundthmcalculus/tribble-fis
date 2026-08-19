@@ -28,6 +28,7 @@ from tribblefis.trapz_math import (
 )
 from tribblefis.trapz_math_fast import (
     fit_trapezoids_fast,
+    create_trapz_membership_dict_fast,
     trapz_pdf_fast,
 )
 from tribblefis.gauss_data import TrapezoidMembership, TriangularMembership, GaussianMixtureModel
@@ -442,15 +443,87 @@ class TestFastHistogramMethod(unittest.TestCase):
         self.assertEqual(len(weights), 0)
 
     def test_fast_method_single_value(self):
-        """Test fast method when all data is identical."""
+        """Test fast method when all data is identical.
+
+        Asserts the repeated value has full membership and sits inside the
+        plateau. It used to assert ``a == d == 5.0``, i.e. that the *support*
+        collapsed onto the value -- which is where the endpoint defect came from:
+        `TrapezoidMembership.evaluate` returns 0 at ``x == a``, so the only value
+        in the data got zero membership from the only term fitted to it.
+        """
         data = np.ones(100) * 5.0
         trapezoids, weights = fit_trapezoids_fast(data, n_bins=50)
 
         self.assertGreaterEqual(len(trapezoids), 1)
-        # Trapezoid should be centered at the single value
         trapz = trapezoids[0]
-        self.assertAlmostEqual(trapz.a, 5.0, places=1)
-        self.assertAlmostEqual(trapz.d, 5.0, places=1)
+        # The value is in the plateau, so its membership is exactly 1.
+        self.assertLessEqual(trapz.b, 5.0)
+        self.assertGreaterEqual(trapz.c, 5.0)
+        self.assertAlmostEqual(float(trapz.evaluate(np.array([5.0]))[0]), 1.0)
+        # The support brackets it strictly, and stays close to it.
+        self.assertLess(trapz.a, 5.0)
+        self.assertGreater(trapz.d, 5.0)
+        self.assertAlmostEqual(trapz.a, 5.0, places=0)
+        self.assertAlmostEqual(trapz.d, 5.0, places=0)
+
+    def test_fast_method_covers_its_own_data_minimum(self):
+        """The defect this geometry fixes: the data minimum had zero membership.
+
+        The fitter takes its histogram over the data it is given, so the region's
+        left edge is ``min(data)``. With the plateau inset, that edge was ``a`` --
+        and `evaluate` is exactly 0 at ``a``. Any column with a mass point at its
+        minimum (zero-inflated counts, censored readings, indicator-like columns)
+        therefore lost every one of those rows, and under the ``min`` t-norm one
+        such column zeroes a rule everywhere.
+        """
+        rng = np.random.default_rng(0)
+        # Half the mass sitting exactly on the minimum, like a zero-inflated column.
+        data = np.concatenate([np.zeros(200), rng.uniform(0.1, 1.0, 200)])
+        trapezoids, _ = fit_trapezoids_fast(data)
+
+        best = max(float(t.evaluate(np.array([0.0]))[0]) for t in trapezoids)
+        self.assertAlmostEqual(best, 1.0, msg="the data minimum has no membership")
+        # Every observed value keeps nonzero membership from some term.
+        envelope = np.max([t.evaluate(data) for t in trapezoids], axis=0)
+        self.assertTrue(np.all(envelope > 0.0))
+
+    def test_fast_method_plateau_spans_the_data_and_ramps_fall_outside(self):
+        """The geometry, stated directly: plateau on the data, shoulders beyond it."""
+        data = np.linspace(2.0, 3.0, 500)
+        trapezoids, _ = fit_trapezoids_fast(data, n_bins=10)
+
+        self.assertGreaterEqual(len(trapezoids), 1)
+        lo = min(t.b for t in trapezoids)
+        hi = max(t.c for t in trapezoids)
+        # The plateaux together cover the observed range...
+        self.assertLessEqual(lo, data.min())
+        self.assertGreaterEqual(hi, data.max())
+        # ...and every support extends strictly beyond its own plateau.
+        for t in trapezoids:
+            self.assertLess(t.a, t.b)
+            self.assertGreater(t.d, t.c)
+        # Membership still reaches 0: the terms remain compactly supported, which
+        # is the point of using trapezoids rather than Gaussians.
+        widest = max(trapezoids, key=lambda t: t.d)
+        self.assertEqual(float(widest.evaluate(np.array([widest.d + 1e-9]))[0]), 0.0)
+
+    def test_fast_method_ramp_never_collapses_to_zero_width(self):
+        """A zero-width shoulder would put `a` back on the data and re-open the bug."""
+        for data in (np.ones(50) * 7.0,
+                     np.concatenate([np.zeros(50), np.ones(50) * 1e-9])):
+            trapezoids, _ = fit_trapezoids_fast(data)
+            for t in trapezoids:
+                self.assertGreater(t.b - t.a, 0.0)
+                self.assertGreater(t.d - t.c, 0.0)
+
+    def test_fast_method_default_bin_count_is_ten(self):
+        """The default is part of the contract: 50 bins over few samples fragments a mode."""
+        import inspect
+
+        sig = inspect.signature(fit_trapezoids_fast)
+        self.assertEqual(sig.parameters["n_bins"].default, 10)
+        sig_dict = inspect.signature(create_trapz_membership_dict_fast)
+        self.assertEqual(sig_dict.parameters["n_bins"].default, 10)
 
 
 class TestPerformanceComparison(unittest.TestCase):
