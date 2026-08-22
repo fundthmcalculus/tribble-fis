@@ -605,7 +605,20 @@ def create_gaussian_membership_dict(
     """
     import os
 
+    # Taken from the ORIGINAL y, before the conversion below. These become the
+    # task list, so their order decides the order the label models are built in
+    # -- and therefore the order the membership functions reach the dedup scan,
+    # which is order-sensitive. Converting first would be a silent behaviour
+    # change dressed as a speedup.
     unique_labels = y.unique()
+
+    # `fit_gaussians` slices with `X[column][y == label_value]` once per
+    # (feature, label) pair -- 902 comparisons on RT-IOT2022's 82 features and 11
+    # labels. On a string dtype each costs ~2.9 ms against ~0.02 ms categorical,
+    # so this is the same masking cost already removed from
+    # `calculate_gaussian_correlation`, in the other function that pays it.
+    if not isinstance(y.dtype, pd.CategoricalDtype):
+        y = y.astype("category")
 
     def process_feature_label_pair(args):
         """Process a single (feature, label) pair and fit Gaussians"""
