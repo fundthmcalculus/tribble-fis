@@ -23,7 +23,10 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from tribblefis.gauss_math import calculate_gaussian_correlation
+from tribblefis.gauss_math import (
+    calculate_gaussian_correlation,
+    create_gaussian_membership_dict,
+)
 
 METHODS = ("wasserstein", "bhattacharyya", "composite")
 
@@ -107,6 +110,50 @@ class TestLabelDtypeInvariance(unittest.TestCase):
         one = pd.Series(["only"] * len(X))
         got = calculate_gaussian_correlation(X, one, method="wasserstein")
         self.assertLessEqual(len(got), X.shape[1])
+
+
+def _fingerprint(model):
+    """Every fitted component, in the order the model stores them.
+
+    Order is part of the fingerprint on purpose: it decides the order membership
+    functions reach the dedup scan, which is order-sensitive, so a change that
+    preserved the parameters but reordered them would still be a behaviour
+    change and should fail here.
+    """
+    out = []
+    for feature_name, feature_model in model.feature_models.items():
+        for label, label_model in feature_model.label_models.items():
+            for mf in label_model.memberships:
+                out.append((str(feature_name), str(label), float(mf.mu), float(mf.sigma)))
+    return out
+
+
+class TestMembershipDictLabelDtypeInvariance(unittest.TestCase):
+    """`create_gaussian_membership_dict` slices with `X[col][y == label]` once per
+    (feature, label) pair, so it pays the same masking cost as the screen and
+    takes the same conversion. Same invariant, same reason to pin it."""
+
+    def test_fitted_components_identical_across_label_dtypes(self):
+        X, y = _dataset()
+        order = list(X.columns)
+        models = {
+            name: create_gaussian_membership_dict(X, yy, top_n_var_names=order)
+            for name, yy in {
+                "str": y.astype("str"),
+                "object": y.astype(object),
+                "category": y.astype("category"),
+            }.items()
+        }
+        base = _fingerprint(models["str"])
+        self.assertGreater(len(base), 0, "fixture produced no components")
+        for name, model in models.items():
+            self.assertEqual(_fingerprint(model), base, f"{name}: fitted components changed")
+
+    def test_numeric_labels_still_work(self):
+        X, y = _dataset()
+        numeric = y.map({"alpha": 0, "beta": 1, "gamma": 2})
+        model = create_gaussian_membership_dict(X, numeric, top_n_var_names=list(X.columns))
+        self.assertGreater(len(_fingerprint(model)), 0)
 
 
 if __name__ == "__main__":
