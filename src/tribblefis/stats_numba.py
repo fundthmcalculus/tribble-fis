@@ -170,14 +170,22 @@ def _wasserstein_distance_jit(u_sorted: np.ndarray, v_sorted: np.ndarray) -> flo
 
 
 def wasserstein_distance(u: np.ndarray, v: np.ndarray) -> float:
-    """Compute the Wasserstein distance between two 1-D distributions.
+    r"""Compute the 1-D Wasserstein distance between two samples.
+
+    .. math::
+        W_1(u, v) = \int \left| F_u(x) - F_v(x) \right| \, dx
+
+    The integral is taken **with respect to x**, so each gap between the CDFs is
+    weighted by the width of the interval it spans. That weighting is what makes
+    the result a distance in the units of the data: scale the samples by `k` and
+    the distance scales by `k`.
 
     Args:
         u: First sample of observations
         v: Second sample of observations
 
     Returns:
-        Wasserstein distance
+        Wasserstein distance, in the units of the input.
     """
     u = np.asarray(u, dtype=float).ravel()
     v = np.asarray(v, dtype=float).ravel()
@@ -191,14 +199,19 @@ def wasserstein_distance(u: np.ndarray, v: np.ndarray) -> float:
     n_u = len(u_sorted)
     n_v = len(v_sorted)
 
-    u_cdf = np.arange(1, n_u + 1, dtype=float) / n_u
-    v_cdf = np.arange(1, n_v + 1, dtype=float) / n_v
-
+    # Distinct support points, in order. Both CDFs are constant on each interval
+    # between consecutive points, so the integral is an exact finite sum over
+    # them -- no quadrature error, and nothing outside [q_0, q_m] contributes
+    # (below q_0 both CDFs are 0, above q_m both are 1).
     all_quantiles = np.union1d(u_sorted, v_sorted)
-    u_quantile_vals = np.searchsorted(u_sorted, all_quantiles, side='right') / n_u
-    v_quantile_vals = np.searchsorted(v_sorted, all_quantiles, side='right') / n_v
+    if len(all_quantiles) < 2:
+        return 0.0
 
-    return float(np.sum(np.abs(u_quantile_vals - v_quantile_vals)) / len(all_quantiles))
+    u_cdf = np.searchsorted(u_sorted, all_quantiles[:-1], side="right") / n_u
+    v_cdf = np.searchsorted(v_sorted, all_quantiles[:-1], side="right") / n_v
+    widths = np.diff(all_quantiles)
+
+    return float(np.sum(np.abs(u_cdf - v_cdf) * widths))
 
 
 @jit(nopython=True, parallel=True)
