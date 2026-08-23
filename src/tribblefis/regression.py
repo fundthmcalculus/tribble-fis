@@ -773,6 +773,38 @@ def _normalize_firing_strengths(firing_strengths: ndarray) -> ndarray:
     return norm
 
 
+def apply_firing_exponent(
+    firing_strengths: ndarray, exponent: float = 1.0
+) -> ndarray:
+    """Raise firing strengths to ``exponent`` before the row-normalization in
+    :func:`_normalize_firing_strengths` -- a blend-concentration knob.
+
+    ``exponent == 1.0`` is the default and an exact no-op (the shipped TSK
+    weighting). ``exponent > 1`` concentrates the blend toward the strongest
+    rule (``-> inf`` is winner-take-all); ``exponent < 1`` flattens it toward a
+    uniform average. It must be applied identically wherever firing strengths
+    are normalized -- the solve and predict paths both go through this function
+    -- or fit and evaluation silently disagree (the exact failure mode
+    :func:`_normalize_firing_strengths`' docstring warns about).
+
+    Each row is divided by its own maximum before the exponent. The downstream
+    normalization is scale-invariant, so this is mathematically inert but keeps
+    a large exponent from underflowing a whole row to zero -- which would trip
+    the all-zero / no-rule-fires convention and silently predict 0. Rows already
+    below the zero-firing floor are left untouched, preserving that convention.
+
+    Derived from the overlap-modeling study (grad-school #121), where
+    ``exponent < 1`` (a flatter blend) was the measured accuracy win.
+    """
+    if exponent == 1.0:
+        return firing_strengths
+    out = np.clip(firing_strengths, 0.0, None)
+    row_max = out.max(axis=1)
+    live = out.sum(axis=1) > ZERO_FIRING_THRESHOLD
+    scale = np.where(live & (row_max > 0.0), row_max, 1.0)
+    return np.power(out / scale[:, np.newaxis], exponent) * live[:, np.newaxis]
+
+
 def conformal_calibration_margin(
     y_calib: pd.Series | ndarray,
     y_lower_calib: ndarray,
@@ -821,6 +853,7 @@ def solve_tsk_consequents(
     rbf_centers: ndarray | None = None,
     rbf_gamma: float = 1.0,
     rbf_radius: float | None = None,
+    firing_exponent: float = 1.0,
 ) -> tuple[ndarray, ndarray]:
     """Solve for the globally optimal TSK consequent coefficients in closed form.
 
@@ -854,7 +887,7 @@ def solve_tsk_consequents(
         firing_strengths_train, labels_train, X_train, top_n_todo, y_bucket_mean, y_train,
         order=order, l2_reg=l2_reg, basis=basis, cross_pairs=cross_pairs, pin_extremes=pin_extremes,
         verbose=verbose, feature_arrays=feature_arrays, rbf_centers=rbf_centers,
-        rbf_gamma=rbf_gamma, rbf_radius=rbf_radius,
+        rbf_gamma=rbf_gamma, rbf_radius=rbf_radius, firing_exponent=firing_exponent,
     )
 
 
@@ -875,6 +908,7 @@ def solve_tsk_consequents_from_firing(
     rbf_centers: ndarray | None = None,
     rbf_gamma: float = 1.0,
     rbf_radius: float | None = None,
+    firing_exponent: float = 1.0,
 ) -> tuple[ndarray, ndarray]:
     """`solve_tsk_consequents`'s ridge solve, given firing strengths directly.
 
@@ -898,7 +932,9 @@ def solve_tsk_consequents_from_firing(
     Returns (corr_terms_opt, y_bucket_mean_opt), matching
     `optimize_tsk_coefficients`.
     """
-    norm_fs = _normalize_firing_strengths(firing_strengths_train)
+    norm_fs = _normalize_firing_strengths(
+        apply_firing_exponent(firing_strengths_train, firing_exponent)
+    )
     n_rules = norm_fs.shape[1]
 
     if feature_arrays is not None:
@@ -1009,6 +1045,7 @@ def predict_tsk(
     rbf_centers: ndarray | None = None,
     rbf_gamma: float = 1.0,
     rbf_radius: float | None = None,
+    firing_exponent: float = 1.0,
 ) -> ndarray:
     """Shared TSK prediction path used by the solver's callers and CV.
 
@@ -1027,6 +1064,7 @@ def predict_tsk(
         order=order, basis=basis, cross_pairs=cross_pairs,
         feature_arrays=feature_arrays,
         rbf_centers=rbf_centers, rbf_gamma=rbf_gamma, rbf_radius=rbf_radius,
+        firing_exponent=firing_exponent,
     )
 
 
@@ -1085,6 +1123,7 @@ def apply_tsk_consequents(
     rbf_centers: ndarray | None = None,
     rbf_gamma: float = 1.0,
     rbf_radius: float | None = None,
+    firing_exponent: float = 1.0,
 ) -> ndarray:
     """Evaluate TSK consequents against *supplied* firing strengths.
 
@@ -1095,7 +1134,9 @@ def apply_tsk_consequents(
     reimplementing it. Sharing this is the point: the IT2 regressor previously
     had its own `predict`, and it silently diverged (see `it2_regressor`).
     """
-    norm_fs = _normalize_firing_strengths(firing_strengths)
+    norm_fs = _normalize_firing_strengths(
+        apply_firing_exponent(firing_strengths, firing_exponent)
+    )
     rule_vals = rule_consequent_values(
         X, top_n_todo, labels, y_bucket_mean, corr_terms, order=order, basis=basis,
         cross_pairs=cross_pairs, feature_arrays=feature_arrays,
