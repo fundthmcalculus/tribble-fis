@@ -750,7 +750,11 @@ class RuspiniFuzzyClassifier(BaseEstimator, ClassifierMixin):
             self.feature_names_in_ = [f"feature_{i}" for i in range(np.asarray(X).shape[1])]
             X_df = pd.DataFrame(np.asarray(X), columns=self.feature_names_in_)
         y_arr = np.asarray(y)
-        self.classes_ = np.unique(y_arr)
+        vals, counts = np.unique(y_arr, return_counts=True)
+        self.classes_ = vals
+        # Training-majority class, used as the fallback for test rows where no rule
+        # fires (their proba comes back uniform; see predict).
+        self._majority_class_ = vals[int(np.argmax(counts))]
 
         base = TribbleClassifier(
             top_n=self.top_n, top_p=self.top_p, n_gaussians=self.n_gaussians,
@@ -785,7 +789,17 @@ class RuspiniFuzzyClassifier(BaseEstimator, ClassifierMixin):
         return pd.DataFrame(np.asarray(X), columns=self.feature_names_in_)
 
     def predict(self, X):
-        return self.ruspini_model_.predict(self._prep(X))
+        proba, labels = self.ruspini_model_.class_proba(self._prep(X))
+        preds = np.array([labels[i] for i in np.argmax(proba, axis=1)])
+        # Rows where no rule fires come back as uniform proba, so a plain argmax
+        # would silently label them all with the first class. Route them to the
+        # training-majority class (the sensible prior) instead.
+        majority = getattr(self, "_majority_class_", None)
+        if majority is not None and len(proba):
+            no_fire = np.ptp(proba, axis=1) == 0.0
+            if np.any(no_fire):
+                preds[no_fire] = majority
+        return preds
 
     @property
     def simple_model_(self) -> SimpleGaussianClassifierModel:
