@@ -1161,14 +1161,26 @@ def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierMode
     np.ndarray
         Predicted class labels for each sample.
     """
+    anomaly_details = model.anomaly_params
+    norms = anomaly_details.norms() if anomaly_details else resolve_norm_pair()
+
+    rule_firing, unique_labels = _class_rule_firing(X, model, norms)
+    return _anomaly_argmax(rule_firing, unique_labels, anomaly_details, norms)
+
+
+def _class_rule_firing(X, model, norms):
+    """The theta-independent half of prediction: each class rule's firing.
+
+    Returns ``(rule_firing, unique_labels)`` where ``rule_firing`` is
+    ``(n_samples, n_rules)`` with a trailing all-ones column reserved for the
+    anomaly rule when one is configured -- so ``_anomaly_argmax`` can fill it
+    without resizing. Nothing here depends on the anomaly threshold, which is why
+    it can be computed once and reused across a theta sweep.
+    """
     n_samples = len(X)
     n_rules = len(model.rules)
 
     anomaly_details = model.anomaly_params
-    norms = anomaly_details.norms() if anomaly_details else resolve_norm_pair()
-    member_fcn = anomaly_details.member_function if anomaly_details else DefaultMemberFunction
-
-
     if anomaly_details and anomaly_details.include_anomaly:
         n_rules += 1
     rule_firing = np.ones((n_samples, n_rules))
@@ -1179,27 +1191,65 @@ def simple_gaussian_predict(X: pd.DataFrame, model: SimpleGaussianClassifierMode
                 continue
             matched_mfs = model.get_mfs(mf_ids)
             local_vals = np.zeros(n_samples)
-            for j, mf in enumerate(matched_mfs):
+            for mf in matched_mfs:
                 local_vals = t_conorm(local_vals, mf.evaluate(X[feature_name].values), norms.t_conorm)
             rule_firing[:, i] = t_norm(local_vals, rule_firing[:, i], norms.t_norm)
 
-    # Aggregate rule firing strengths by consequent label
     unique_labels = [rule.consequent for rule in model.rules]
-
     if anomaly_details and anomaly_details.include_anomaly:
         unique_labels.append(anomaly_details.label)
+    return rule_firing, unique_labels
 
+
+def _anomaly_argmax(rule_firing, unique_labels, anomaly_details, norms, threshold=None):
+    """The theta-dependent half: fill the anomaly column, then argmax to labels.
+
+    ``threshold`` overrides ``anomaly_details.threshold`` (used by the sweep). The
+    class firing is not mutated -- the anomaly column is written into a copy -- so
+    the same ``rule_firing`` can be reused for another threshold.
+    """
     if anomaly_details and anomaly_details.include_anomaly:
-        # Anomaly is the complement of the conorm of all other class firings
-        # We use a similar hack as in tsk_firing_strengths
-        boosted = np.clip(rule_firing[:,:-1] + anomaly_details.threshold, 0.0, 1.0)
-        rule_firing[:, -1] = t_complement(
-            t_conorm(boosted, None, norms.t_conorm)
-        )
+        rule_firing = rule_firing.copy()
+        th = anomaly_details.threshold if threshold is None else threshold
+        # Anomaly is the complement of the conorm of all other class firings.
+        boosted = np.clip(rule_firing[:, :-1] + th, 0.0, 1.0)
+        rule_firing[:, -1] = t_complement(t_conorm(boosted, None, norms.t_conorm))
 
     predictions_idx = np.argmax(rule_firing, axis=1)
-    
     return np.array([unique_labels[rule_idx] for rule_idx in predictions_idx])
+
+
+def simple_gaussian_predict_sweep(X, model, thresholds):
+    """Predict at each anomaly threshold, reusing one class rule_firing.
+
+    Bit-identical to calling :func:`simple_gaussian_predict` once per threshold
+    with that threshold swapped into ``model.anomaly_params`` -- it runs the same
+    two helpers -- but the theta-independent class firing (the expensive per-rule,
+    per-feature, per-MF loop) is computed once instead of once per threshold. This
+    is the operating-curve / theta-sweep path; a single threshold gains nothing.
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Feature data.
+    model : SimpleGaussianClassifierModel
+        Fitted classifier; must carry an enabled anomaly rule for the threshold
+        to matter (otherwise every entry is the same class prediction).
+    thresholds : Iterable[float]
+        Anomaly boost values to evaluate.
+
+    Returns
+    -------
+    dict[float, np.ndarray]
+        Threshold -> predicted labels for each sample.
+    """
+    anomaly_details = model.anomaly_params
+    norms = anomaly_details.norms() if anomaly_details else resolve_norm_pair()
+    rule_firing, unique_labels = _class_rule_firing(X, model, norms)
+    return {
+        th: _anomaly_argmax(rule_firing, unique_labels, anomaly_details, norms, threshold=th)
+        for th in thresholds
+    }
 
 
 def take_top_features(
