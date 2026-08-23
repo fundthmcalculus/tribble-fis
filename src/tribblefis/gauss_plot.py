@@ -78,7 +78,13 @@ def plot_var_gauss_dist(X: pd.DataFrame, y, features_to_plot: list[str] | None =
         for gf_idx, column in enumerate(features_to_plot):
             ax = axes[gf_idx]
             data = X[column].dropna()
-            data_label = data[y == y_value] if y is not None else data
+            if y is not None:
+                # Align y to the NaN-dropped index; a full-length boolean built on
+                # X's original index cannot index the shortened Series.
+                y_ser = y if hasattr(y, "reindex") else pd.Series(np.asarray(y), index=X.index)
+                data_label = data[y_ser.reindex(data.index) == y_value]
+            else:
+                data_label = data
 
             # Plot histogram
             ax.hist(data_label, bins=100, density=True, alpha=0.4, edgecolor="black", label=f"$y={y_value}$")
@@ -336,8 +342,8 @@ def plot_top_k_accuracy(top_k_accuracies: dict[int, float], title: str = "Top-k 
 
     # Add random guessing baseline
     if n_classes is not None:
-        k = np.r_[1 : n_classes + 1]
-        random_probs = 1.0 - np.cumprod(n_classes - k) / n_classes**k
+        # Under uniform random ranking, top-k accuracy is exactly k / n_classes.
+        random_probs = np.arange(1, n_classes + 1) / n_classes
         plt.plot(ks, random_probs[: len(ks)], "r--", linewidth=2, label="Random Guessing", marker="o")
         plt.legend()
 

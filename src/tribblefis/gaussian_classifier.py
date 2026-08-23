@@ -76,17 +76,23 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         self.t_conorm = t_conorm
         self.allow_mixed_norms = allow_mixed_norms
         self.max_samples = max_samples
-        self.anomaly_params = AnomalyParameters(
+        self.refine = refine
+        self.refine_method = refine_method
+        self.refine_l2_shrink = refine_l2_shrink
+        self.refine_info_: dict | None = None
+
+    def _anomaly_params(self) -> AnomalyParameters:
+        # Resolved on demand from the current norm settings, NOT cached in
+        # __init__: sklearn clone/set_params (as GridSearchCV does) rewrites
+        # norm_conorm/t_norm/t_conorm without touching a cached attribute, so a
+        # cached copy would make any norm grid search a silent no-op.
+        return AnomalyParameters(
             include_anomaly=False,
             norm_conorm=self.norm_conorm,
             t_norm=self.t_norm,
             t_conorm=self.t_conorm,
             allow_mixed_norms=self.allow_mixed_norms,
         )
-        self.refine = refine
-        self.refine_method = refine_method
-        self.refine_l2_shrink = refine_l2_shrink
-        self.refine_info_: dict | None = None
 
     def fit(self, X, y):
         """Fit the Gaussian Mixture model.
@@ -170,7 +176,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
                 method=self.refine_method,
                 l2_shrink=self.refine_l2_shrink,
                 # Refine against user's chosen norms, not default.
-                norms=self.anomaly_params.norms(),
+                norms=self._anomaly_params().norms(),
                 seed=self.random_state,
                 verbose=False,
             )
@@ -198,7 +204,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         else:
             X_df = pd.DataFrame(X, columns=self.feature_names_in_)
 
-        return tsk_predict(X_df, self.model_, self.anomaly_params)
+        return tsk_predict(X_df, self.model_, self._anomaly_params())
 
     def predict_proba(self, X):
         """Predict class probabilities.
@@ -220,7 +226,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         else:
             X_df = pd.DataFrame(X, columns=self.feature_names_in_)
 
-        firing_strengths, labels = tsk_firing_strengths(X_df, self.model_, self.anomaly_params)
+        firing_strengths, labels = tsk_firing_strengths(X_df, self.model_, self._anomaly_params())
 
         row_sums = firing_strengths.sum(axis=1, keepdims=True)
         probabilities = np.zeros_like(firing_strengths)
@@ -324,7 +330,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
                 see `deduplicate` for what these tradeoff.
         """
         check_is_fitted(self)
-        return self.model_.to_simple_model(self.anomaly_params, rtol=rtol, atol=atol)
+        return self.model_.to_simple_model(self._anomaly_params(), rtol=rtol, atol=atol)
 
 
 class TribbleSequenceClassifier(BaseEstimator, ClassifierMixin):
