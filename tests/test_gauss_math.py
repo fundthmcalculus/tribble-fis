@@ -165,5 +165,54 @@ class TestFitGaussiansMaxSamples(unittest.TestCase):
         self.assertEqual(g1[0].mu, g2[0].mu)
 
 
+class TestBICSelectionTieStability(unittest.TestCase):
+    """A larger k that ties or sub-ULP-beats the best BIC must not be selected.
+
+    Degenerate higher-k fits routinely tie the best BIC (a redundant component
+    lands on a duplicate value / empty cluster and collapses back). A bare
+    `bic < best_bic` argmin is then decided by sub-ULP noise, which flips the
+    selected integer k across CPUs/BLAS/numba builds. See the cross-platform
+    reproducibility investigation. `_bic_improves` resolves such ties to the
+    smaller, parsimonious k deterministically.
+    """
+
+    def test_exact_tie_rejected(self):
+        from tribblefis.gauss_math import _bic_improves
+
+        self.assertFalse(_bic_improves(5.0, 5.0))
+        self.assertFalse(_bic_improves(-2000.44, -2000.44))
+
+    def test_sub_margin_improvement_rejected(self):
+        # This is the case a plain `bic < best_bic` would WRONGLY accept, flipping
+        # k on nothing but float noise. best=5.0, candidate 5e-7 lower (< 1e-6 rel).
+        from tribblefis.gauss_math import _bic_improves
+
+        self.assertLess(5.0 - 4.9999995, 5.0 * 1e-6)   # confirm it is within margin
+        self.assertFalse(_bic_improves(4.9999995, 5.0))
+
+    def test_clear_improvement_accepted(self):
+        from tribblefis.gauss_math import _bic_improves
+
+        self.assertTrue(_bic_improves(2.0, 5.0))       # genuine gain
+        self.assertTrue(_bic_improves(5.0, np.inf))    # first candidate always wins
+
+    def test_negative_best_bic_margin_has_right_sign(self):
+        # With a negative best BIC the margin must still make acceptance HARDER,
+        # not easier (abs() guards the sign).
+        from tribblefis.gauss_math import _bic_improves
+
+        self.assertFalse(_bic_improves(-100.0, -100.0))
+        self.assertFalse(_bic_improves(-100.00001, -100.0))  # within 1e-6 rel margin
+        self.assertTrue(_bic_improves(-101.0, -100.0))       # clear improvement
+
+    def test_degenerate_larger_k_not_selected_end_to_end(self):
+        # 3 well-separated clusters + a near-duplicate point: n_distinct >= 4 so k=4
+        # is tried, but the data supports only 3 clusters, so the k=4 candidate is
+        # degenerate and ties k=3. Selection must return 3.
+        data = np.array([0.0] * 30 + [100.0] * 30 + [200.0] * 30 + [200.0000001])
+        _, n_selected = fit_gaussian_mixture_1d(data, n_gaussians=0, max_gaussians=4)
+        self.assertEqual(n_selected, 3)
+
+
 if __name__ == "__main__":
     unittest.main()
