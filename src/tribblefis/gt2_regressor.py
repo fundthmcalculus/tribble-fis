@@ -233,6 +233,7 @@ class GT2TribbleRegressor(BaseEstimator, RegressorMixin):
                     cross_pairs=base.cross_pairs_,
                     n_alpha_planes=self.n_alpha_planes, km_iterations=km_iterations_for_refine,
                     n_sweeps=self.refine_gt2_n_sweeps, n_folds=self.refine_gt2_n_folds,
+                    seed=self.random_state,
                     verbose=False,
                 )
             )

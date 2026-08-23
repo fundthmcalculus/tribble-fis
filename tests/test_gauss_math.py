@@ -214,5 +214,35 @@ class TestBICSelectionTieStability(unittest.TestCase):
         self.assertEqual(n_selected, 3)
 
 
+class TestSyntheticDataDeterminism(unittest.TestCase):
+    """generate_synthetic_data must be reproducible given random_state."""
+
+    def _fit(self):
+        from tribblefis.gauss_math import (
+            create_gaussian_membership_dict, calculate_gaussian_correlation, take_top_features,
+        )
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame({"a": rng.normal(0, 1, 60), "b": rng.normal(0, 1, 60)})
+        y = pd.Series([0] * 45 + [1] * 15)
+        diffs = calculate_gaussian_correlation(X, y)
+        _, tv = take_top_features(diffs, top_n=2)
+        return X, y, create_gaussian_membership_dict(X, y, top_n_var_names=tv, n_gaussians=-1)
+
+    def test_same_seed_reproduces(self):
+        from tribblefis.gauss_math import generate_synthetic_data
+        X, y, memb = self._fit()
+        Xa, ya = generate_synthetic_data(X, y, memb, random_state=7)
+        Xb, yb = generate_synthetic_data(X, y, memb, random_state=7)
+        self.assertTrue(np.allclose(Xa.values, Xb.values))
+        self.assertEqual(list(ya), list(yb))
+
+    def test_different_seed_differs(self):
+        from tribblefis.gauss_math import generate_synthetic_data
+        X, y, memb = self._fit()
+        Xa, _ = generate_synthetic_data(X, y, memb, random_state=1)
+        Xb, _ = generate_synthetic_data(X, y, memb, random_state=2)
+        self.assertFalse(np.allclose(Xa.values, Xb.values))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -239,7 +239,7 @@ def create_trapz_membership_dict_fast(
     for feature_name in top_n_var_names:
         label_models = {}
 
-        for label_value in y.unique():
+        for label_value in sorted(y.unique()):
             # Get data for this label
             mask = y == label_value
             feature_data = X[feature_name][mask].values
