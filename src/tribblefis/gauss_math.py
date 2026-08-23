@@ -18,6 +18,30 @@ _SMALL_THRESHOLD = 1e-12  # Threshold for near-zero denominators in norm calcula
 #: to avoid hard floors on different units. Prevents single-point components.
 BIC_VARIANCE_FLOOR_FRAC = 1e-6
 
+# A larger component count is accepted only when it improves BIC by more than this
+# relative margin. Degenerate higher-k fits routinely tie the best BIC to machine
+# precision (a redundant component lands on a duplicate value under the variance
+# floor), so a plain strict-argmin selection is decided by sub-ULP noise -- which
+# flips the selected integer k across CPUs/BLAS/numba builds and, through a fragile
+# downstream partition, moves a whole model. Requiring a clear margin resolves ties
+# to the smaller, more parsimonious k deterministically. The genuine "prefer more
+# components" decisions clear this margin by orders of magnitude. See tribble-fis
+# reproducibility issue on cross-platform BIC tie flips.
+BIC_SELECTION_REL_MARGIN = 1e-6
+
+
+def _bic_improves(bic: float, best_bic: float) -> bool:
+    """Whether a candidate BIC is a clear enough improvement to be selected.
+
+    `k` ascends in the selection loop, so this is only ever asked of an equal-or-
+    larger component count than the running best. A tie or near-tie within
+    ``BIC_SELECTION_REL_MARGIN`` is rejected, so the smaller (parsimonious) k wins
+    deterministically rather than on sub-ULP float noise. See BIC_SELECTION_REL_MARGIN.
+    """
+    if not np.isfinite(best_bic):
+        return True
+    return bic < best_bic - abs(best_bic) * BIC_SELECTION_REL_MARGIN
+
 
 def _hard_partition_gaussians(data: np.ndarray, labels: np.ndarray, n_clusters: int):
     """MLE Gaussian mixture from hard k-means partition: (mu, sigma, weight) per cluster.
@@ -149,7 +173,11 @@ def fit_gaussian_mixture_1d(
         for k in range(1, min(max_gaussians, n_distinct) + 1):
             candidate = _hard_partition_gaussians(data, _kmeans_labels_1d(data, k, random_state), k)
             bic = _mixture_bic(data, candidate, var_floor)
-            if bic < best_bic:
+            # Accept a larger k only on a clear improvement (see _bic_improves):
+            # a bare `bic < best_bic` is decided by sub-ULP noise on the frequent
+            # ties, which flips the chosen k across platforms. k ascends, so ties
+            # keep the smaller (already-selected) k.
+            if _bic_improves(bic, best_bic):
                 best_bic, components = bic, candidate
 
     return (
