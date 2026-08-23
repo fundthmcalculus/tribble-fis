@@ -56,6 +56,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         rbf_n_centers=3,
         rbf_gamma=1.0,
         rbf_radius=None,
+        firing_exponent=1.0,
     ):
         """
         Initialize the TribbleRegressor.
@@ -132,6 +133,12 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             rbf_radius: Compact support radius for RBF basis. RBFs are exactly zero
                 outside this radius. If None (default), RBFs have infinite support.
                 Typical values: 0.5-1.0 in normalized feature space.
+            firing_exponent: Blend-concentration exponent applied to the rule
+                firing strengths before normalization, in the solve and at
+                predict time alike. 1.0 (default) is the shipped TSK weighting
+                (an exact no-op); >1 concentrates the blend toward the strongest
+                rule, <1 flattens it toward a uniform average. See
+                `regression.apply_firing_exponent`.
         """
         self.is_fitted_ = False
         self.model_ = None
@@ -175,6 +182,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self.rbf_n_centers = rbf_n_centers
         self.rbf_gamma = rbf_gamma
         self.rbf_radius = rbf_radius
+        self.firing_exponent = firing_exponent
 
     def _norms(self) -> NormPair:
         """Resolved (t-norm, t-conorm) for this estimator.
@@ -344,6 +352,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             verbose=False,
             rbf_centers=self.rbf_centers_, rbf_gamma=self.rbf_gamma,
             rbf_radius=self.rbf_radius,
+            firing_exponent=self.firing_exponent,
         )
 
         self.is_fitted_ = True
@@ -376,6 +385,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             cross_pairs=self.cross_pairs_,
             rbf_centers=self.rbf_centers_, rbf_gamma=self.rbf_gamma,
             rbf_radius=self.rbf_radius,
+            firing_exponent=self.firing_exponent,
         )
 
 
