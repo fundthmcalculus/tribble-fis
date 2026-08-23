@@ -220,7 +220,8 @@ class BSPFuzzyTreeClassifier(BaseEstimator, ClassifierMixin):
         for node in {id(l): l for l in leaves}.values():
             mask = np.array([leaves[i] is node for i in range(len(X_df))])
             preds[mask] = node.model.predict(X_df[mask])
-        return preds
+        # Cast off the object dtype so accuracy_score/score can type the labels.
+        return preds.astype(self.classes_.dtype, copy=False)
 
     @property
     def n_leaves_(self) -> int:

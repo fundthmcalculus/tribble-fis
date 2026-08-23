@@ -24,7 +24,7 @@ def print_membership_details(model: GaussianMixtureModel):
             for feature_name, feature_model in model.feature_models.items()
         }
         print(
-            f"Total possible rules for label={label}: {np.prod(np.array(list(per_var_membership_fcns_for_label.values())))}"
+            f"Total possible rules for label={label}: {np.prod(np.array(list(per_var_membership_fcns_for_label.values())), dtype=float)}"
         )
     print("Membership functions:", per_var_membership_fcns)
 
