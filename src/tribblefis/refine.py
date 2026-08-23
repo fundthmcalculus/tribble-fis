@@ -365,15 +365,26 @@ def _fold_mse_and_grad(
     y = np.asarray(y_tr["y_value"].values, dtype=float)
     penalty = np.ones(n_rules * n_coeffs)
     penalty[::n_coeffs] = 0.0  # never penalize each rule's intercept/bucket-mean column
-    if l2_reg > 0:
-        sqrt_pen = np.sqrt(l2_reg * penalty)
-        beta = np.linalg.lstsq(
-            np.vstack([design_tr, np.diag(sqrt_pen)]), np.hstack([y, np.zeros_like(sqrt_pen)]), rcond=None
-        )[0]
-    else:
-        beta = np.linalg.lstsq(design_tr, y, rcond=None)[0]
-    resid = y - design_tr @ beta
+
+    # beta*, dbeta*/dmu and dbeta*/dsigma are three ridge solves against the SAME
+    # normal-equation matrix A = Phi^T Phi + l2_reg * D. Solve them against A with
+    # np.linalg.solve (LU) rather than a fresh SVD-lstsq each; the beta solve also
+    # drops the (N+p) x p augmented matrix the old ridge path assembled. On a
+    # singular fold (e.g. rank-deficient unpenalized intercept columns) LU raises
+    # and we fall back to the exact previous lstsq behaviour, so degenerate folds
+    # are unchanged. numpy-only by design (no scipy); see issue #177.
     A = design_tr.T @ design_tr + l2_reg * np.diag(penalty)
+    try:
+        beta = np.linalg.solve(A, design_tr.T @ y)
+    except np.linalg.LinAlgError:
+        if l2_reg > 0:
+            sqrt_pen = np.sqrt(l2_reg * penalty)
+            beta = np.linalg.lstsq(
+                np.vstack([design_tr, np.diag(sqrt_pen)]), np.hstack([y, np.zeros_like(sqrt_pen)]), rcond=None
+            )[0]
+        else:
+            beta = np.linalg.lstsq(design_tr, y, rcond=None)[0]
+    resid = y - design_tr @ beta
 
     F_val, _, dF_val_mu, dF_val_sigma = firing_strengths_and_mf_grad(
         fa_val, candidate, target_feature, target_label, target_mf_index
@@ -384,14 +395,24 @@ def _fold_mse_and_grad(
         raise FloatingPointError("non-finite prediction")
     mse = float(np.mean((y_val_true - y_hat_val) ** 2))
 
-    grads = []
+    # Both gradient components solve against the same A, so assemble their
+    # right-hand sides first and solve the pair in one factorization.
+    rhs_cols, dPhi_val_cols = [], []
     for dF_tr, dF_val in ((dF_tr_mu, dF_val_mu), (dF_tr_sigma, dF_val_sigma)):
         dPhi_tr = (_norm_fs_grad(F_tr, r0, dF_tr)[:, :, np.newaxis] * phi_tr[:, np.newaxis, :]).reshape(design_tr.shape)
-        rhs = dPhi_tr.T @ resid - design_tr.T @ (dPhi_tr @ beta)
+        rhs_cols.append(dPhi_tr.T @ resid - design_tr.T @ (dPhi_tr @ beta))
+        dPhi_val_cols.append(
+            (_norm_fs_grad(F_val, r0, dF_val)[:, :, np.newaxis] * phi_val[:, np.newaxis, :]).reshape(design_val.shape)
+        )
+    rhs = np.column_stack(rhs_cols)
+    try:
+        dbeta = np.linalg.solve(A, rhs)
+    except np.linalg.LinAlgError:
         dbeta = np.linalg.lstsq(A, rhs, rcond=None)[0]
 
-        dPhi_val = (_norm_fs_grad(F_val, r0, dF_val)[:, :, np.newaxis] * phi_val[:, np.newaxis, :]).reshape(design_val.shape)
-        dyhat = dPhi_val @ beta + design_val @ dbeta
+    grads = []
+    for k, dPhi_val in enumerate(dPhi_val_cols):
+        dyhat = dPhi_val @ beta + design_val @ dbeta[:, k]
         grads.append(float(np.mean(2.0 * (y_hat_val - y_val_true) * dyhat)))
 
     return mse, np.array(grads)
@@ -524,6 +545,13 @@ def refine_antecedents_coordinate(
                         return fitness(trial)
 
                     res = _optimizers_sub_solve(f_sub, x[idx], sub_bounds)
+                # This accept-on-strict-improvement test is sensitive to sub-1e-12
+                # noise in `res.fun`: a solver change that shifts a fitness by even
+                # 1e-13 can flip one accept/reject here, and the trajectory then
+                # diverges to a different local optimum (final R^2 drift up to ~1e-3
+                # observed when the ridge solve in `_fold_mse_and_grad` moved from
+                # SVD-lstsq to LU). The refinement is therefore reproducible only
+                # against a fixed numerical stack (BLAS, numpy, hardware); see #177.
                 if res.fun < cur - 1e-12:
                     x[idx] = np.clip(res.x, lo[idx], hi[idx])
                     cur = float(res.fun)
