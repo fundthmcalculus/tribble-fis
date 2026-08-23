@@ -84,14 +84,17 @@ class BaggedFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.top_p = top_p
         self.random_state = random_state
 
-    def _make_member(self):
+    def _make_member(self, seed):
+        # Each member gets a distinct seed so their k-means starts (and thus the
+        # members) decorrelate; an identical seed makes members converge to the
+        # same fit on overlapping bootstraps, defeating the ensemble.
         if self.base == "calibrated":
             return CalibratedGaussianFuzzyClassifier(
-                n_gaussians=self.n_gaussians, top_p=self.top_p, random_state=self.random_state
+                n_gaussians=self.n_gaussians, top_p=self.top_p, random_state=seed
             )
         return TribbleClassifier(
             n_gaussians=self.n_gaussians, top_p=self.top_p,
-            norm_conorm="probability", random_state=self.random_state,
+            norm_conorm="probability", random_state=seed,
         )
 
     def _n_features_to_draw(self, n_features: int) -> int:
@@ -122,7 +125,7 @@ class BaggedFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.estimator_features_ = []
         usage = {f: 0 for f in self.feature_names_in_}
 
-        for _ in range(self.n_estimators):
+        for i in range(self.n_estimators):
             rows = rng.randint(0, n, size=n_boot)
             feats = list(rng.choice(self.feature_names_in_, size=n_draw, replace=False))
             y_boot = y_series.iloc[rows]
@@ -132,7 +135,8 @@ class BaggedFuzzyClassifier(BaseEstimator, ClassifierMixin):
                 rows = rng.randint(0, n, size=n_boot)
                 y_boot = y_series.iloc[rows]
                 tries += 1
-            member = self._make_member()
+            member_seed = None if self.random_state is None else self.random_state + i
+            member = self._make_member(member_seed)
             member.fit(X_df.iloc[rows][feats].reset_index(drop=True),
                        y_boot.reset_index(drop=True))
             self.estimators_.append(member)

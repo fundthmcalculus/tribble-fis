@@ -414,7 +414,7 @@ class SimpleGaussianClassifierModel(NamedTuple):
 
     @property
     def all_features(self) -> list[str]:
-        return list(set().union(*[rule.antecedents.keys() for rule in self.rules]))
+        return sorted(set().union(*[rule.antecedents.keys() for rule in self.rules]))
 
     @property
     def n_features(self) -> int:
@@ -424,7 +424,7 @@ class SimpleGaussianClassifierModel(NamedTuple):
         return [mf for mf in self.input_mfs if mf.id in ids]
 
     def get_mfs_for_feature(self, feature_name: str) -> list[AnyMembership]:
-        return list(set([mf for rule in self.rules for mf in self.get_mfs(rule.antecedents.get(feature_name, []))]))
+        return list(dict.fromkeys(mf for rule in self.rules for mf in self.get_mfs(rule.antecedents.get(feature_name, []))))
 
 
 class LabelModel(NamedTuple):
@@ -506,7 +506,7 @@ class GaussianMixtureModel(NamedTuple):
 
     @property
     def all_output_labels(self) -> list[int]:
-        return list(set([label for label_model in self.feature_models.values() for label in label_model.ordered_keys]))
+        return sorted(set(label for label_model in self.feature_models.values() for label in label_model.ordered_keys))
 
     def identify_duplicate_membership_fcns(
         self, rtol: float = DEFAULT_DEDUP_RTOL, atol: float = DEFAULT_DEDUP_ATOL
@@ -826,7 +826,7 @@ class IT2GaussianMixtureModel(NamedTuple):
 
     @property
     def all_output_labels(self) -> list[int]:
-        return list(set([label for fm in self.feature_models.values() for label in fm.ordered_keys]))
+        return sorted(set(label for fm in self.feature_models.values() for label in fm.ordered_keys))
 
     @property
     def n_classes(self) -> int:
@@ -1098,7 +1098,7 @@ class GT2GaussianMixtureModel(NamedTuple):
 
     @property
     def all_output_labels(self) -> list[int]:
-        return list(set([label for fm in self.feature_models.values() for label in fm.ordered_keys]))
+        return sorted(set(label for fm in self.feature_models.values() for label in fm.ordered_keys))
 
     @property
     def n_classes(self) -> int:

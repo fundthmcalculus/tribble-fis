@@ -136,38 +136,6 @@ def _kl_divergence(p: np.ndarray, q: np.ndarray) -> float:
     return float(np.sum(p * (np.log(p) - np.log(q))))
 
 
-@jit(nopython=True)
-def _wasserstein_distance_jit(u_sorted: np.ndarray, v_sorted: np.ndarray) -> float:
-    """Wasserstein distance for 1D distributions (numba-jitted).
-
-    Assumes both inputs are sorted in ascending order.
-    """
-    n_u = len(u_sorted)
-    n_v = len(v_sorted)
-    u_idx = 0
-    v_idx = 0
-    u_cdf = 0.0
-    v_cdf = 0.0
-    distance = 0.0
-
-    while u_idx < n_u and v_idx < n_v:
-        u_val = u_sorted[u_idx]
-        v_val = v_sorted[v_idx]
-        u_next_cdf = (u_idx + 1.0) / n_u
-        v_next_cdf = (v_idx + 1.0) / n_v
-
-        if u_val <= v_val:
-            distance += abs(v_cdf - u_next_cdf) * (u_val - max(u_sorted[u_idx - 1] if u_idx > 0 else u_val, v_sorted[v_idx - 1] if v_idx > 0 else v_val))
-            u_cdf = u_next_cdf
-            u_idx += 1
-        else:
-            distance += abs(u_cdf - v_next_cdf) * (v_val - max(u_sorted[u_idx - 1] if u_idx > 0 else u_val, v_sorted[v_idx - 1] if v_idx > 0 else v_val))
-            v_cdf = v_next_cdf
-            v_idx += 1
-
-    distance += abs(v_cdf - u_cdf)
-    return distance
-
 
 def wasserstein_distance(u: np.ndarray, v: np.ndarray) -> float:
     r"""Compute the 1-D Wasserstein distance between two samples.

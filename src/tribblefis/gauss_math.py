@@ -1388,8 +1388,10 @@ def calculate_top_k_accuracy(y_true, firing_strengths, labels, max_k: int = 5):
     """
     max_k = min(max_k, len(labels))
 
-    # Sort indices by firing strength in descending order
-    sorted_indices = np.argsort(firing_strengths, axis=1)[:, ::-1]
+    # Sort indices by firing strength in descending order. Stable sort so tied
+    # firing strengths (common with bounded-support MFs saturating at 1.0) give a
+    # platform- and version-independent top-k ordering.
+    sorted_indices = np.argsort(firing_strengths, axis=1, kind="stable")[:, ::-1]
 
     # Map labels to their index
     label_to_idx = {label: i for i, label in enumerate(labels)}
@@ -1410,6 +1412,7 @@ def generate_synthetic_data(
     model: GaussianMixtureModel,
     target_count: int = -1,
     classes_to_augment: list[Any] | None = None,
+    random_state: int = 42,
 ) -> tuple[pd.DataFrame, pd.Series]:
     """Generate synthetic data to improve parity for underrepresented classes.
 
@@ -1431,6 +1434,7 @@ def generate_synthetic_data(
     tuple[pd.DataFrame, pd.Series]
         Augmented feature data and labels.
     """
+    rng = np.random.default_rng(random_state)
     counts = y.value_counts()
     if target_count == -1:
         target_count = int(counts.mean())
@@ -1473,7 +1477,7 @@ def generate_synthetic_data(
                 continue
 
             # Sample from the mixture of Gaussians
-            choices = np.random.choice(len(memberships), size=n_to_generate)
+            choices = rng.integers(len(memberships), size=n_to_generate)
 
             feature_values = np.zeros(n_to_generate)
             for i, g in enumerate(memberships):
@@ -1482,7 +1486,7 @@ def generate_synthetic_data(
                     n_samples_g = np.sum(mask)
                     # Use a small epsilon for sigma if it's 0 to allow some variation
                     safe_sigma = max(g.sigma, 1e-9)
-                    feature_values[mask] = np.random.normal(g.mu, safe_sigma, size=n_samples_g)
+                    feature_values[mask] = rng.normal(g.mu, safe_sigma, size=n_samples_g)
 
             label_samples[feature_name] = feature_values
 

@@ -29,6 +29,7 @@ import pandas as pd
 
 from .gauss_data import (
     GaussianMembership, LabelModel, FeatureModel, GaussianMixtureModel, NormPair, resolve_norm_pair,
+    ZERO_FIRING_THRESHOLD,
 )
 from .gauss_math import tsk_firing_strengths, firing_strengths_and_mf_grad
 from .kernel import (
@@ -333,7 +334,7 @@ def _norm_fs_grad(F: np.ndarray, r0: int, dF_r0: np.ndarray) -> np.ndarray:
     `_normalize_firing_strengths` (their derivative is likewise zero).
     """
     row_sums = F.sum(axis=1)
-    valid = row_sums > 1e-6
+    valid = row_sums > ZERO_FIRING_THRESHOLD
     safe_s = np.where(row_sums > 0, row_sums, 1.0)
     d_norm = -F * dF_r0[:, np.newaxis] / safe_s[:, np.newaxis] ** 2
     d_norm[:, r0] += dF_r0 / safe_s
