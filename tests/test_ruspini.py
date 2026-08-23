@@ -270,5 +270,23 @@ class TestRuspiniClassifierAndRefine(unittest.TestCase):
         self.assertEqual(len(clf.predict(X)), len(y))
 
 
+class TestRuspiniNoFireFallback(unittest.TestCase):
+    """Rows where no rule fires must fall back to the training-majority class,
+    not silently to the first class via a uniform-proba argmax."""
+
+    def test_no_fire_rows_route_to_majority(self):
+        from tribblefis.ruspini import RuspiniFuzzyClassifier
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame({"a": np.r_[rng.normal(0, 0.3, 20), rng.normal(10, 0.3, 60)]})
+        y = pd.Series([0] * 20 + [1] * 60)  # class 1 is the majority
+        clf = RuspiniFuzzyClassifier().fit(X, y)
+        far = pd.DataFrame({"a": [1e6, -1e6]})  # outside every MF support -> no rule fires
+        self.assertTrue(all(p == 1 for p in clf.predict(far)))
+        # in-range points are unaffected
+        inr = clf.predict(pd.DataFrame({"a": [0.0, 10.0]}))
+        self.assertEqual(inr[0], 0)
+        self.assertEqual(inr[1], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

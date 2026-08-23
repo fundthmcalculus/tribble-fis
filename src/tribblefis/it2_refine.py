@@ -530,7 +530,10 @@ def _it2_regressor_cv_fitness(
                 it2_model, X_tr, y_tr_df, fa_tr, X_val, y_val_true, fa_val,
                 top_n_todo, norms, order, l2_reg, basis, cross_pairs, km_iterations,
             )
-        except Exception:
+        except (np.linalg.LinAlgError, ValueError, FloatingPointError, ZeroDivisionError):
+            # Narrowed from bare Exception: swallow only the numerical failures a bad
+            # candidate can legitimately cause; let real bugs surface instead of
+            # silently rejecting the step and "stopping improvement".
             return 1e6
         total += mse
         n += 1
@@ -549,6 +552,7 @@ def refine_it2_regressor_antecedents(
     cross_pairs: list[tuple[int, int]] | None = None,
     km_iterations: int = 15,
     method: str = "coordinate",
+    l2_shrink: float = 0.0,
     n_sweeps: int = 3,
     sub_maxfun: int = 20,
     sigma_min_frac: float = 0.02,
@@ -652,10 +656,14 @@ def refine_it2_regressor_antecedents(
             lo, hi, rng = feature_bounds[fname]
             x0, bounds = _slot_x0_and_bounds(it2_mf, lo, hi, rng, sigma_min_frac)
 
-            def fitness(v, fname=fname, label=label, idx=idx, it2_mf=it2_mf):
+            def fitness(v, fname=fname, label=label, idx=idx, it2_mf=it2_mf, x0=x0):
                 new_it2_mf = _apply_slot_params(it2_mf, v)
                 trial = _replace_slot(current, fname, label, idx, new_it2_mf)
-                return cv_fitness(trial)
+                # L2 pull-back toward the heuristic start, mirroring the classifier
+                # path so a flat CV direction cannot take a large, barely-helping
+                # step. Defaults to 0.0 (no change) and is opt-in for the regressor.
+                penalty = l2_shrink * float(np.sum((v - x0) ** 2))
+                return cv_fitness(trial) + penalty
 
             res = _optimizers_sub_solve(fitness, x0, bounds)
 

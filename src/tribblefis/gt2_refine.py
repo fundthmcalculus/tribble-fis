@@ -458,7 +458,10 @@ def _gt2_regressor_cv_fitness(
                 top_n_todo, norms, order, l2_reg, basis, cross_pairs,
                 n_alpha_planes, km_iterations,
             )
-        except Exception:
+        except (np.linalg.LinAlgError, ValueError, FloatingPointError, ZeroDivisionError):
+            # Narrowed from bare Exception: swallow only the numerical failures a bad
+            # candidate can legitimately cause; let real bugs surface instead of
+            # silently rejecting the step and "stopping improvement".
             return 1e6
         total += mse
         n += 1
