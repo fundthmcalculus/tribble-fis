@@ -21,6 +21,7 @@ import warnings
 import matplotlib
 
 matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score
@@ -128,9 +129,13 @@ def main():
     print(render_hme_text(hme))
 
     tree_png = os.path.join(os.path.dirname(__file__), "phishing_tree.png")
-    plot_fuzzy_tree(tree, title="Phishing URL detection: fuzzy tree").savefig(tree_png, dpi=120)
+    tree_fig = plot_fuzzy_tree(tree, title="Phishing URL detection: fuzzy tree")
+    tree_fig.savefig(tree_png, dpi=120)
+    plt.close(tree_fig)
     hme_png = os.path.join(os.path.dirname(__file__), "phishing_hme.png")
-    plot_hme(hme, title="Phishing: hierarchical fuzzy experts").savefig(hme_png, dpi=120)
+    hme_fig = plot_hme(hme, title="Phishing: hierarchical fuzzy experts")
+    hme_fig.savefig(hme_png, dpi=120)
+    plt.close(hme_fig)
     print(f"\nSaved diagrams to {tree_png} and {hme_png}")
 
 

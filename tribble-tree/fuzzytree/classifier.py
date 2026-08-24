@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.utils.validation import check_is_fitted
+from sklearn.utils.validation import check_is_fitted, check_X_y
 
 from tribblefis.gauss_math import calculate_gaussian_correlation, take_top_features
 from tribblefis.regression import _normalize_firing_strengths
@@ -69,9 +69,11 @@ class FuzzyClassificationTree(BaseEstimator, ClassifierMixin):
         else:
             self.feature_names_in_ = [f"feature_{i}" for i in range(X.shape[1])]
             X = pd.DataFrame(X, columns=self.feature_names_in_)
-        X_df = X.reset_index(drop=True)
 
         y_arr = np.asarray(y).flatten()
+        X_array, y_arr = check_X_y(X, y_arr, multi_output=False)
+        X_df = pd.DataFrame(X_array, columns=self.feature_names_in_).reset_index(drop=True)
+
         self.classes_ = np.unique(y_arr)
         class_to_idx = {c: i for i, c in enumerate(self.classes_)}
         y_idx = np.array([class_to_idx[c] for c in y_arr])

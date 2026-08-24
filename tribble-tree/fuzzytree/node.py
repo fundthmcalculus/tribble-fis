@@ -108,11 +108,3 @@ class FuzzyTreeNode(NamedTuple):
     @property
     def n_leaves(self) -> int:
         return sum(1 for _ in self.iter_leaves())
-
-    def rule_text(self) -> str:
-        """Render this node's path as a human-readable antecedent, e.g.
-        ``Cement is Low AND Age is High``. Reconstructing the conjuncts
-        requires the split variable at each level, which lives on the ancestor
-        nodes; this helper only has the branch *labels*, so it returns the label
-        chain. The full renderer in ``render.py`` pairs labels with variables."""
-        return " AND ".join(self.path) if self.path else "(root)"
