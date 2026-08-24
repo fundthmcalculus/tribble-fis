@@ -4,7 +4,6 @@ import typing
 import numpy as np
 import pandas as pd
 from itertools import combinations
-from matplotlib import pyplot as plt
 from numpy import ndarray
 from numpy.linalg import LinAlgError
 from scipy.optimize import minimize
@@ -21,6 +20,10 @@ def plot_tsk_order_comparison(
     y_test_pred: list[ndarray],
     order_names: list[str] | None = None,
 ):
+    # matplotlib is a dev-only dependency; import here so importing this module
+    # doesn't require it outside of plotting.
+    from matplotlib import pyplot as plt
+
     # Plot comparison of actual vs predicted values
     fig, axes = plt.subplots(int(np.ceil(len(r2) / 2)), 2, figsize=(8, 3 * len(r2)))
 
@@ -67,23 +70,69 @@ def _mae(y_t: pd.Series | np.ndarray, y_p: pd.Series | np.ndarray) -> float:
     return float(np.mean(np.abs(y_t - y_p)))
 
 
+def _bucket_r2(y_true_bucket: pd.Series | np.ndarray, y_pred_bucket: pd.Series | np.ndarray) -> float:
+    """R^2 of a single bucket's rows against that bucket's own y-mean.
+
+    Used to decide whether a rule/region needs further splitting: it measures how
+    well the current model explains the variation *within* that bucket, not
+    against the global target range. A near-constant or singleton bucket has
+    ~0 total variance and is reported as a perfect fit (1.0) rather than
+    dividing by ~0 -- it's already resolved, not a further-split candidate.
+    """
+    y_true_bucket = np.asarray(y_true_bucket, dtype=float)
+    y_pred_bucket = np.asarray(y_pred_bucket, dtype=float)
+    ss_tot = np.sum((y_true_bucket - y_true_bucket.mean()) ** 2)
+    if ss_tot <= 1e-12:
+        return 1.0
+    ss_res = np.sum((y_true_bucket - y_pred_bucket) ** 2)
+    return 1.0 - ss_res / ss_tot
+
+
+def _bucket_means(y_raw: pd.Series, y_part: pd.Series, n_buckets: int) -> np.ndarray:
+    """Per-bucket mean of y_raw, indexed by bucket label 0..n_buckets-1.
+
+    groupby silently drops empty buckets, so reconstruct with correct label
+    alignment and fill any gaps via linear interpolation so downstream indexing
+    by rule_id is safe. The extreme (first/last) buckets are then pinned to the
+    observed min/max so the model's output range always reaches the target's.
+    """
+    grouped = y_raw.groupby(y_part).mean()
+    y_bucket_mean = np.full(n_buckets, np.nan)
+    for label, val in grouped.items():
+        y_bucket_mean[int(label)] = val
+    y_bucket_mean = pd.Series(y_bucket_mean).interpolate(method='linear', limit_direction='both').values.copy()
+    y_bucket_mean[0] = float(y_raw.min())
+    y_bucket_mean[-1] = float(y_raw.max())
+    return y_bucket_mean
+
+
 def partition_output(
     n_output_buckets: int, y_raw: pd.Series | pd.DataFrame | typing.Any
 ) -> tuple[pd.DataFrame, typing.Any]:
     # Partition y into n_output_buckets, but ensure one bucket is essentially at each end of the range.
     y_part = pd.qcut(y_raw, q=n_output_buckets, labels=False)
     y_part.name = "y_bucket"
-    # Build a full-length array indexed by bucket label (0..n_output_buckets-1).
-    # groupby silently drops empty buckets, so reconstruct with correct label alignment
-    # and fill any gaps via linear interpolation so downstream indexing by rule_id is safe.
-    grouped = y_raw.groupby(y_part).mean()
-    y_bucket_mean = np.full(n_output_buckets, np.nan)
-    for label, val in grouped.items():
-        y_bucket_mean[int(label)] = val
-    y_bucket_mean = pd.Series(y_bucket_mean).interpolate(method='linear', limit_direction='both').values.copy()
-    # For the extreme endpoint buckets, use the min and max
-    y_bucket_mean[0] = float(y_raw.min())
-    y_bucket_mean[-1] = float(y_raw.max())
+    y_bucket_mean = _bucket_means(y_raw, y_part, n_output_buckets)
+
+    y = pd.concat([y_part, y_raw], axis=1)
+    return y, y_bucket_mean
+
+
+def partition_output_by_edges(
+    y_raw: pd.Series | pd.DataFrame | typing.Any, edges: list[float]
+) -> tuple[pd.DataFrame, typing.Any]:
+    """Partition y via explicit interior breakpoints instead of quantiles.
+
+    `n_buckets = len(edges) + 1`; bucket labels are assigned in ascending y
+    order. Unlike `qcut`, `pd.cut` never raises when a resulting bin is
+    single-valued or a bucket ends up degenerate, which `grow_adaptive_partition`
+    relies on (it starts from zero edges -- a single bucket holding every row).
+    """
+    n_buckets = len(edges) + 1
+    bins = [-np.inf, *sorted(edges), np.inf]
+    y_part = pd.cut(y_raw, bins=bins, labels=False)
+    y_part.name = "y_bucket"
+    y_bucket_mean = _bucket_means(y_raw, y_part, n_buckets)
 
     y = pd.concat([y_part, y_raw], axis=1)
     return y, y_bucket_mean

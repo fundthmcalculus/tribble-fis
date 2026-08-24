@@ -27,7 +27,12 @@ def standard_transform(X: pd.DataFrame | pd.Series, column: str | list[str] = ""
     return X
 
 
-def detect_and_apply_log_transform(X: pd.DataFrame, min_dynamic_range: float= 3.0) -> tuple[pd.DataFrame, list[str]]:
+def detect_and_apply_log_transform(
+    X: pd.DataFrame,
+    min_dynamic_range: float = 3.0,
+    already_fitted: bool = False,
+    fitted_features: dict[str, float] | None = None,
+) -> tuple[pd.DataFrame, dict[str, float]]:
     """
     Detect and apply log transformation to features with dynamic range
 
@@ -37,11 +42,30 @@ def detect_and_apply_log_transform(X: pd.DataFrame, min_dynamic_range: float= 3.
     Args:
         X: DataFrame of features
         min_dynamic_range: Dynamic range threshold for log transformation
+        already_fitted: If True, skip detection and instead apply log1p to
+            exactly the features in `fitted_features`, each shifted by its
+            stored fit-time offset -- so a predict-time call reproduces the
+            same transform fit-time chose, rather than re-detecting (and
+            potentially disagreeing) on new data.
+        fitted_features: Required when `already_fitted` is True: a dict
+            mapping feature name -> the offset subtracted before `log1p` at
+            fit time. Ignored otherwise.
 
     Returns:
-        Tuple of (transformed_X, features_to_transform)
+        Tuple of (transformed_X, features_transformed), where
+        features_transformed maps each transformed feature name to the offset
+        used. Pass it back in as `fitted_features` (with `already_fitted=True`)
+        to reproduce the same transform on new data.
     """
-    features_to_transform = []
+    if already_fitted:
+        features_transformed = {}
+        for col, offset in (fitted_features or {}).items():
+            if col in X.columns:
+                X[col] = np.log1p(X[col] - offset)
+                features_transformed[col] = offset
+        return X, features_transformed
+
+    features_transformed = {}
     for col in X.columns:
         vals = X[col].dropna()
         if len(vals) == 0:
@@ -57,12 +81,38 @@ def detect_and_apply_log_transform(X: pd.DataFrame, min_dynamic_range: float= 3.
 
         dynamic_range = np.log10(max_abs / min_abs)
         if dynamic_range >= min_dynamic_range:
-            features_to_transform.append(col)
+            offset = float(vals.min())
             print(f"  Suggesting log-transform for feature '{col}' (dynamic range: {dynamic_range:.2f})")
             # Offset by minimum value to avoid log(0)
-            X[col] = np.log1p(X[col] - vals.min())
+            X[col] = np.log1p(X[col] - offset)
+            features_transformed[col] = offset
 
-    return X, features_to_transform
+    return X, features_transformed
+
+
+class LogTransformMixin:
+    """Shared fit/predict-consistent optional log-transform for the Gaussian
+    regressor and classifier estimators.
+
+    Requires the including class to set ``self.log_transform`` (bool),
+    ``self.is_fitted_`` (bool), and ``self.log_transformed_features_`` (dict,
+    typically initialized to ``{}`` in ``__init__``) before calling
+    ``_apply_log_transform``.
+    """
+
+    def _apply_log_transform(self, X):
+        """Check if features need log-transformation and apply it."""
+        if not self.log_transform:
+            return X
+
+        X_transformed, features = detect_and_apply_log_transform(
+            X, already_fitted=self.is_fitted_, fitted_features=self.log_transformed_features_
+        )
+
+        if not self.is_fitted_:
+            self.log_transformed_features_ = features
+
+        return X_transformed
 
 
 def find_optimal_gaussians(data, max_gaussians: int = 4):

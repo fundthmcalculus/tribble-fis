@@ -1,3 +1,4 @@
+import warnings
 from typing import Any
 
 import numpy as np
@@ -14,9 +15,10 @@ from .gauss_math import (
     create_gaussian_membership_dict,
     tsk_predict,
     tsk_firing_strengths,
+    LogTransformMixin,
 )
 
-class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
+class MixtureOfGaussiansFuzzyClassifier(LogTransformMixin, BaseEstimator, ClassifierMixin):
     """
     Gaussian Mixture Classifier that wraps the TSK-based Gaussian Mixture model.
     It follows scikit-learn's ClassifierMixin interface.
@@ -57,9 +59,11 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.feature_differentiators_: list[tuple[Any, Any]] = []
         self.classes_ = None
         self.feature_names_in_: list[str] = []
+        self.log_transformed_features_: dict = {}
         self.top_n = top_n
         self.top_p = top_p
         self.n_gaussians = n_gaussians
+        self.log_transform = log_transform
         self.member_function = member_function
         self.trapz_method = trapz_method
         self.random_state = random_state
@@ -78,20 +82,6 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         self.refine_method = refine_method
         self.refine_l2_shrink = refine_l2_shrink
         self.refine_info_: dict | None = None
-
-    def _apply_log_transform(self, X):
-        """Check if features need log-transformation and apply it."""
-        if not self.log_transform:
-            return X
-
-        X_transformed, features = detect_and_apply_log_transform(
-            X, already_fitted=self.is_fitted_, fitted_features=self.log_transformed_features_
-        )
-
-        if not self.is_fitted_:
-            self.log_transformed_features_ = features
-
-        return X_transformed
 
     def fit(self, X, y):
         """
@@ -118,6 +108,8 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         # We need X as DataFrame for the internal functions
         X_df = pd.DataFrame(X_array, columns=self.feature_names_in_)
         y_series = pd.Series(y_array)
+
+        X_df = self._apply_log_transform(X_df)
 
         # 1. Calculate feature differentiators
         self.feature_differentiators_ = calculate_gaussian_correlation(X_df, y_series)
@@ -181,6 +173,8 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
         else:
             X_df = pd.DataFrame(X, columns=self.feature_names_in_)
 
+        X_df = self._apply_log_transform(X_df)
+
         return tsk_predict(X_df, self.model_, self.anomaly_params)
 
     def predict_proba(self, X):
@@ -196,6 +190,8 @@ class MixtureOfGaussiansFuzzyClassifier(BaseEstimator, ClassifierMixin):
             X_df = X.copy()
         else:
             X_df = pd.DataFrame(X, columns=self.feature_names_in_)
+
+        X_df = self._apply_log_transform(X_df)
 
         firing_strengths, labels = tsk_firing_strengths(X_df, self.model_, self.anomaly_params)
 
@@ -455,8 +451,14 @@ class MixtureOfGaussiansFuzzySequenceClassifier(BaseEstimator, ClassifierMixin):
                 )
                 oof = cross_val_predict(clone(self._make_layer()), X_df, y_series, cv=skf)
                 return np.asarray(oof, dtype=object)
-            except Exception:
-                pass
+            except Exception as exc:
+                warnings.warn(
+                    f"Out-of-fold cross-validation failed ({exc!r}); falling back to "
+                    "in-sample predictions for confusion estimation, which can "
+                    "overstate confidence.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
         # Fallback: in-sample predictions from the already-fit base model.
         return np.asarray(self.layers_[0].predict(X_df), dtype=object)
 

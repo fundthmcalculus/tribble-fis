@@ -8,13 +8,16 @@ from tribblefis.gaussian_regressor import MixtureOfGaussiansFuzzyRegressor
 from tribblefis.gauss_math import create_gaussian_membership_dict
 from tribblefis.regression import (
     partition_output,
+    partition_output_by_edges,
     build_consequent_features,
     solve_tsk_consequents,
     predict_tsk,
     compute_first_order_corrections,
     optimize_tsk_coefficients,
     _mse,
+    _rsquared,
 )
+from tribblefis.adaptive_partition import grow_adaptive_partition
 
 
 
@@ -439,6 +442,118 @@ class TestAntecedentRefinement(unittest.TestCase):
         # final CV fitness can never exceed the heuristic start's.
         self.assertLessEqual(info["val_mse"], info["init_val_mse"] + 1e-9)
         self.assertIn("n_eval", info)
+
+
+class TestAdaptivePartition(unittest.TestCase):
+    """Unit tests for error-driven adaptive rule partitioning (adaptive_partition.py)."""
+
+    def _make_noisy_region_data(self, n=2000, seed=0):
+        """An easy, near-noiseless population plus a separate noisy cluster,
+        with non-overlapping y-ranges by construction.
+
+        y = a for a in [0, 0.5) (tight noise, y stays in ~[0, 0.5]); y = 0.75 +
+        noise for a in [0.5, 1) (noise std 0.05, y stays in ~[0.6, 0.9] -- a
+        >=4-sigma gap from the easy population's range). The gap matters: if the
+        noisy cluster's y-values could spill into the easy population's range,
+        a y-space bucket split can't cleanly separate the two without first
+        absorbing some contamination, which confounds "does splitting
+        concentrate resolution in the hard region" with "how much of the hard
+        region leaked into the easy bucket."
+        """
+        rng = np.random.default_rng(seed)
+        n_easy = 3 * n // 4
+        n_hard = n - n_easy
+        a_easy = rng.uniform(0.0, 0.5, n_easy)
+        y_easy = a_easy + rng.normal(0.0, 0.005, n_easy)
+        a_hard = rng.uniform(0.5, 1.0, n_hard)
+        y_hard = 0.75 + rng.normal(0.0, 0.05, n_hard)
+        a = np.concatenate([a_easy, a_hard])
+        y_vals = np.concatenate([y_easy, y_hard])
+        order = rng.permutation(n)
+        X = pd.DataFrame({"a": a[order]})
+        y = pd.Series(y_vals[order], name="y_value")
+        return X, y
+
+    def test_partition_output_by_edges_single_bucket(self):
+        y = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0], name="y_value")
+        y_part, y_bucket_mean = partition_output_by_edges(y, [])
+        self.assertTrue((y_part["y_bucket"] == 0).all())
+        self.assertEqual(len(y_bucket_mean), 1)
+        # Single-bucket mean is pinned to the observed min *then* max in sequence,
+        # so with one bucket the max pin wins -- matches partition_output's own
+        # behavior at n_output_buckets=1 (same _bucket_means helper).
+        self.assertAlmostEqual(y_bucket_mean[0], float(y.max()))
+
+    def test_partition_output_by_edges_matches_qcut_means(self):
+        rng = np.random.default_rng(1)
+        y = pd.Series(rng.uniform(0, 1, 500), name="y_value")
+        y_part_q, means_q = partition_output(4, y)
+        edges = [float(y_part_q.loc[y_part_q["y_bucket"] == k, "y_value"].max()) for k in range(3)]
+        y_part_e, means_e = partition_output_by_edges(y, edges)
+        np.testing.assert_allclose(means_e[0], means_q[0])
+        np.testing.assert_allclose(means_e[-1], means_q[-1])
+        self.assertEqual(len(means_e), len(means_q))
+
+    def test_max_rules_one_returns_immediately(self):
+        X, y = self._make_noisy_region_data(n=300)
+        result = grow_adaptive_partition(
+            X, y, ["a"], n_gaussians=1, tsk_order="0th", max_rules=1, verbose=False,
+        )
+        self.assertEqual(result.edges, [])
+        self.assertEqual(len(result.history), 1)
+        self.assertEqual(result.history[0]["n_rules"], 1)
+
+    def test_grows_and_concentrates_resolution_in_noisy_region(self):
+        X, y = self._make_noisy_region_data(n=2000)
+        result = grow_adaptive_partition(
+            X, y, ["a"], n_gaussians=2, tsk_order="0th",
+            max_rules=6, r2_threshold=0.9, min_bucket_samples=30, verbose=False,
+        )
+        self.assertGreater(len(result.edges), 0)
+        self.assertGreater(len(result.history), 1)
+        # At least one breakpoint should land at or near the noisy sub-range,
+        # i.e. resolution was added where the error was, not spread uniformly.
+        self.assertTrue(any(0.5 <= e <= 0.9 for e in result.edges), result.edges)
+
+    def test_sse_split_isolates_noisy_region_tighter_than_median(self):
+        """The CART-style SSE split should bracket the noisy cluster more
+        precisely than median bisection, since it picks the threshold that
+        actually minimizes child SSE instead of just splitting by count."""
+        X, y = self._make_noisy_region_data(n=2000)
+        result = grow_adaptive_partition(
+            X, y, ["a"], n_gaussians=2, tsk_order="0th",
+            max_rules=6, r2_threshold=0.9, min_bucket_samples=30,
+            split_method="sse", verbose=False,
+        )
+        self.assertGreater(len(result.edges), 0)
+        # Expect an edge close to the easy/hard boundary at 0.5, and none of
+        # the edges should land deep inside the easy region's tight cluster.
+        self.assertTrue(any(0.45 <= e <= 0.65 for e in result.edges), result.edges)
+
+    def test_regressor_adaptive_strategy_end_to_end(self):
+        """Mechanical regression test only: fit/predict must succeed and produce
+        finite output with more than one grown rule.
+
+        Not asserted: a held-out R^2 floor. Empirically (here and on the Concrete
+        eval script), median-split-the-globally-worst-bucket keeps re-splitting
+        the same sub-region into ever-narrower rules -- each with few training
+        points -- which can generalize far worse than the training-fit growth
+        criterion suggests. That's a real property of this splitting heuristic,
+        not something to paper over with a lucky seed/threshold.
+        """
+        X, y = self._make_noisy_region_data(n=2000, seed=2)
+        X_train, y_train = X.iloc[:1600], y.iloc[:1600]
+        X_test, y_test = X.iloc[1600:], y.iloc[1600:]
+
+        reg = MixtureOfGaussiansFuzzyRegressor(
+            tsk_order="0th", bucket_strategy="adaptive",
+            max_rules=6, bucket_r2_threshold=0.9, min_bucket_samples=30,
+        )
+        reg.fit(X_train, y_train)
+        y_pred = reg.predict(X_test)
+
+        self.assertGreater(reg.n_rules_, 1)
+        self.assertTrue(np.all(np.isfinite(y_pred)))
 
 
 if __name__ == "__main__":
