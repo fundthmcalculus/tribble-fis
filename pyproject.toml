@@ -11,6 +11,8 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.4.6",
     "numba",
+    "pandas",
+    "scikit-learn",
     "tribble-clustering>=0.1.8",
     "matplotlib",
     "ucimlrepo>=0.0.7",
@@ -39,7 +41,6 @@ dev = [
     "pytest>=7.0",
     "pytest-cov",
     "pytest-xdist>=3.8.0",
-    "scikit-learn",
 ]
 docs = [
     "sympy>=1.14.0",

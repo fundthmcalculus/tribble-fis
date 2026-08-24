@@ -1149,6 +1149,8 @@ dependencies = [
     { name = "numba" },
     { name = "numpy" },
     { name = "optimizers" },
+    { name = "pandas" },
+    { name = "scikit-learn" },
     { name = "tribble-clustering" },
     { name = "ucimlrepo" },
 ]
@@ -1158,7 +1160,6 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-xdist" },
-    { name = "scikit-learn" },
 ]
 docs = [
     { name = "sympy" },
@@ -1170,10 +1171,11 @@ requires-dist = [
     { name = "numba" },
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "optimizers", git = "https://github.com/fundthmcalculus/optimizers.git" },
+    { name = "pandas" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.8.0" },
-    { name = "scikit-learn", marker = "extra == 'dev'" },
+    { name = "scikit-learn" },
     { name = "sympy", marker = "extra == 'docs'", specifier = ">=1.14.0" },
     { name = "tribble-clustering", git = "https://github.com/fundthmcalculus/clustering.git" },
     { name = "ucimlrepo", specifier = ">=0.0.7" },
