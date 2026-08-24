@@ -38,7 +38,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
-from sklearn.utils.validation import check_is_fitted
+from sklearn.utils.validation import check_is_fitted, check_X_y
 
 from tribblefis.gauss_math import calculate_gaussian_correlation, take_top_features
 from tribblefis.gaussian_classifier import TribbleClassifier
@@ -194,14 +194,23 @@ class _BaseHierarchicalExperts(BaseEstimator):
             term_style=self.gate_style,
         )
 
-    def _prepare(self, X):
+    def _prepare(self, X, y=None, y_numeric=False):
+        """Set feature_names_in_ and, when `y` is given, validate (X, y) via
+        sklearn's check_X_y (catches NaNs, mismatched lengths, non-numeric X)
+        and return the validated y alongside X_df."""
         if isinstance(X, pd.DataFrame):
             self.feature_names_in_ = X.columns.tolist()
-            X_df = X.reset_index(drop=True).copy()
         else:
             self.feature_names_in_ = [f"feature_{i}" for i in range(X.shape[1])]
-            X_df = pd.DataFrame(X, columns=self.feature_names_in_)
-        return X_df
+            X = pd.DataFrame(X, columns=self.feature_names_in_)
+
+        if y is None:
+            return X.reset_index(drop=True).copy()
+
+        y_arr = np.asarray(y).flatten()
+        X_array, y_arr = check_X_y(X, y_arr, multi_output=False, y_numeric=y_numeric)
+        X_df = pd.DataFrame(X_array, columns=self.feature_names_in_).reset_index(drop=True)
+        return X_df, y_arr
 
     def _build_gate_structure(self, X_df, y_value, y_bucket):
         """Select routing (gate) features and infer the gate tree via build_tree.
@@ -249,8 +258,7 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
     """
 
     def fit(self, X, y):
-        X_df = self._prepare(X)
-        y_value = np.asarray(y, dtype=float).flatten()
+        X_df, y_value = self._prepare(X, y, y_numeric=True)
 
         y_part, _ = partition_output(self.n_score_buckets, pd.Series(y_value, name="y_value"))
         y_bucket = y_part["y_bucket"].to_numpy()
@@ -322,8 +330,7 @@ class HierarchicalFuzzyExpertsClassifier(_BaseHierarchicalExperts, ClassifierMix
         super().__init__(*args, criterion=criterion, **kwargs)
 
     def fit(self, X, y):
-        X_df = self._prepare(X)
-        y_arr = np.asarray(y).flatten()
+        X_df, y_arr = self._prepare(X, y)
         self.classes_ = np.unique(y_arr)
         class_to_idx = {c: i for i, c in enumerate(self.classes_)}
         y_idx = np.array([class_to_idx[c] for c in y_arr])
