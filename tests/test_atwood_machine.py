@@ -209,17 +209,25 @@ def train_and_evaluate_rollout(X_train, y_train, initial_states_test, pendulum, 
     y_train_r = y_train[:, 0] if y_train.ndim > 1 else y_train
     y_train_theta = y_train[:, 1] if y_train.ndim > 1 else y_train
 
+    # rollout_predict() only ever has [r_dot, r_ddot, omega, alpha] available at
+    # each step (r/theta themselves are what it's trying to predict), so the
+    # model must be trained on that same 4-feature subset of X_train -- fitting
+    # on the full INPUT_FEATURES set here mismatches rollout_predict's 4-column
+    # input at inference time.
+    rollout_feature_idx = [INPUT_FEATURES.index(f) for f in ("r_dot", "r_ddot", "omega", "alpha")]
+    X_train_rollout = X_train[:, rollout_feature_idx]
+
     regressor_r = MixtureOfGaussiansFuzzyRegressor(
         n_output_buckets=N_BINS, tsk_order="1st", optimize_coefficients=True,
         random_state=42
     )
-    regressor_r.fit(X_train, y_train_r)
+    regressor_r.fit(X_train_rollout, y_train_r)
 
     regressor_theta = MixtureOfGaussiansFuzzyRegressor(
         n_output_buckets=N_BINS, tsk_order="1st", optimize_coefficients=True,
         random_state=42
     )
-    regressor_theta.fit(X_train, y_train_theta)
+    regressor_theta.fit(X_train_rollout, y_train_theta)
 
     # Perform roll-out predictions on test initial conditions
     rollout_trajectories = []
@@ -476,7 +484,7 @@ class TestAtwoodMachineFuzzyPrediction(unittest.TestCase):
         print("="*60)
 
         print("\nPlot 1: Scatter and Residual Comparison")
-        fig1 = plot_prediction_comparison(results_single, results_window)
+        fig1 = plot_prediction_comparison(OUTPUT_FEATURES, results_single, results_window)
         plot_file_1 = test_dir / "prediction_comparison.png"
         fig1.savefig(plot_file_1, dpi=200, bbox_inches='tight')
         print(f"  Saved to: {plot_file_1}")
@@ -490,7 +498,7 @@ class TestAtwoodMachineFuzzyPrediction(unittest.TestCase):
         plt.close(fig2)
 
         print("\nPlot 3: Second Pendulum Position Over Time")
-        fig3 = plot_second_pendulum_position(results_single, results_window)
+        fig3 = plot_second_pendulum_position(OUTPUT_FEATURES, results_single, results_window)
         plot_file_3 = test_dir / "second_pendulum_position.png"
         fig3.savefig(plot_file_3, dpi=200, bbox_inches='tight')
         print(f"  Saved to: {plot_file_3}")

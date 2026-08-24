@@ -27,7 +27,7 @@ def angles_to_xy(theta1, theta2, l1, l2):
     return x1, y1, x2, y2
 
 
-def load_and_prepare_data(trajectories: list[pd.DataFrame], input_features: list[str], output_features:list[str], window_size=1,file_glob: str = 'simulation_0*.csv'):
+def load_and_prepare_data(trajectories: list[pd.DataFrame] | str | Path, input_features: list[str], output_features:list[str], window_size=1,file_glob: str = 'simulation_0*.csv'):
     """
     Load all simulation files and prepare data for prediction.
 
@@ -35,15 +35,20 @@ def load_and_prepare_data(trajectories: list[pd.DataFrame], input_features: list
     For window_size>1: features are last n timesteps, target is next state.
 
     Args:
-        trajectories: list of simulation trajectories
+        trajectories: list of simulation trajectories, or a directory path to
+            load them from (each CSV matching `file_glob` becomes one trajectory).
         input_features: list of input features to use
         output_features: list of output features to use
         window_size: number of past timesteps to use as features
-        file_glob: For picking the existing simulation data.
+        file_glob: When `trajectories` is a directory, the glob pattern used to
+            pick which simulation CSVs to load.
 
     Returns:
         tuple: (X, y) where X is features and y is target
     """
+    if isinstance(trajectories, (str, Path)):
+        trajectories = [pd.read_csv(f) for f in sorted(Path(trajectories).glob(file_glob))]
+
     print(f"Loading {len(trajectories)} simulation files...")
 
     all_X = []
