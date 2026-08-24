@@ -41,6 +41,9 @@ dev = [
     "pytest-xdist>=3.8.0",
     "scikit-learn",
 ]
+docs = [
+    "sympy>=1.14.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tribblefis"]
