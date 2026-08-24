@@ -53,8 +53,11 @@ def trapz_pdf(x: np.ndarray, a: float, b: float, c: float, d: float) -> np.ndarr
 
     # Compute area (normalization constant)
     area = (b - a) / 2 + (c - b) + (d - c) / 2
-    if area > 0:
-        y = y / area
+    if area <= 0:
+        # Degenerate (zero-width) trapezoid: density is undefined rather than a
+        # spike of unnormalized height 1 at the single point b==c.
+        return np.zeros_like(x, dtype=float)
+    y = y / area
 
     return y
 
