@@ -39,3 +39,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: heavy ODE-simulation/training tests excluded from the default run (run explicitly with `pytest -m slow`)",
+]

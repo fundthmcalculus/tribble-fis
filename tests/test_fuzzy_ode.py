@@ -3,6 +3,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pytest
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from pandas import DataFrame
@@ -144,6 +145,7 @@ class DoublePendulumDamped(OdeSystem):
         return [omega1, alpha1, omega2, alpha2]
 
 
+@pytest.mark.slow
 def test_tribble_ode():
     """Test ODE system with fuzzy regression model."""
     # 1) Create the simulation data for various initial conditions.

@@ -9,6 +9,7 @@ transitions, and evaluates prediction accuracy on continuous outputs.
 import unittest
 import numpy as np
 import pandas as pd
+import pytest
 from pathlib import Path
 import matplotlib.pyplot as plt
 from scipy.integrate import odeint
@@ -372,6 +373,7 @@ def plot_trace_comparison(results_single, results_window):
     return fig
 
 
+@pytest.mark.slow
 class TestAtwoodMachineFuzzyPrediction(unittest.TestCase):
     """Integration test for double pendulum fuzzy regression."""
 

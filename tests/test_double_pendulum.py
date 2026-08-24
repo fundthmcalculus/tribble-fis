@@ -9,6 +9,7 @@ Includes MIMO full-state prediction and iterative rollout with GIF animation.
 import unittest
 import sys
 import time
+import pytest
 from argparse import ArgumentError
 from collections import namedtuple
 from contextlib import contextmanager
@@ -553,6 +554,7 @@ def plot_mimo_state_trajectories(actual_df, predicted_df, dt=0.01):
     return fig
 
 
+@pytest.mark.slow
 class TestDoublePendulumFuzzyPrediction(unittest.TestCase):
     """Integration test for double pendulum fuzzy regression with MIMO."""
 
