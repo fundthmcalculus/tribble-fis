@@ -1132,11 +1132,11 @@ source = { editable = "." }
 dependencies = [
     { name = "numpy" },
     { name = "optimizers" },
+    { name = "pandas" },
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "seaborn" },
     { name = "tribble-clustering" },
-    { name = "ucimlrepo" },
 ]
 
 [package.optional-dependencies]
@@ -1145,6 +1145,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "scipy" },
+    { name = "ucimlrepo" },
 ]
 
 [package.metadata]
@@ -1152,6 +1153,7 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'dev'" },
     { name = "numpy" },
     { name = "optimizers", git = "https://github.com/fundthmcalculus/optimizers.git" },
+    { name = "pandas" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "scikit-learn" },
@@ -1159,7 +1161,7 @@ requires-dist = [
     { name = "scipy", marker = "extra == 'dev'" },
     { name = "seaborn" },
     { name = "tribble-clustering", specifier = ">=0.1.8" },
-    { name = "ucimlrepo", specifier = ">=0.0.7" },
+    { name = "ucimlrepo", marker = "extra == 'dev'", specifier = ">=0.0.7" },
 ]
 provides-extras = ["dev"]
 

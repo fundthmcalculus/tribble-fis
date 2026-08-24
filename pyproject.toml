@@ -10,12 +10,12 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "numpy",
+    "pandas",
     "tribble-clustering>=0.1.8",
     # TODO - Reduce the number of dependencies?
     "scikit-learn",
     "scipy",
     "seaborn",
-    "ucimlrepo>=0.0.7",
     "optimizers",
 ]
 
@@ -27,7 +27,8 @@ dev = [
     "pytest>=7.0",
     "pytest-cov",
     "matplotlib",
-    "scipy"
+    "scipy",
+    "ucimlrepo>=0.0.7",
 ]
 
 [tool.hatch.build.targets.wheel]
