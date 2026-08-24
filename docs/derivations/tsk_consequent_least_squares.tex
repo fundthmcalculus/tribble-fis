@@ -1,0 +1,39 @@
+% Part 1a: TSK prediction for fixed firing strengths
+\[
+{\hat{y}}_{i} = \sum_{r=0}^{R - 1} {w}_{i,r} \sum_{k=0}^{K} {\Phi}_{i,k} {\beta}_{r,k}
+\]
+
+% Part 1b: firing-weighted MSE objective (ridge on k>=1 only)
+\[
+J = \lambda \sum_{\substack{1 \leq k \leq K\\0 \leq r \leq R - 1}} {\beta}_{r,k}^{2} + \sum_{i=0}^{N - 1} \left(- {\hat{y}}_{i} + {y}_{i}\right)^{2}
+\]
+
+% Part 2a: J(beta) expanded for a generic 3x2 instance (proof scaffold)
+\[
+J = \Psi_{00}^{2} \beta_{0}^{2} + 2 \Psi_{00} \Psi_{01} \beta_{0} \beta_{1} - 2 \Psi_{00} \beta_{0} y_{0} + \Psi_{01}^{2} \beta_{1}^{2} - 2 \Psi_{01} \beta_{1} y_{0} + \Psi_{10}^{2} \beta_{0}^{2} + 2 \Psi_{10} \Psi_{11} \beta_{0} \beta_{1} - 2 \Psi_{10} \beta_{0} y_{1} + \Psi_{11}^{2} \beta_{1}^{2} - 2 \Psi_{11} \beta_{1} y_{1} + \Psi_{20}^{2} \beta_{0}^{2} + 2 \Psi_{20} \Psi_{21} \beta_{0} \beta_{1} - 2 \Psi_{20} \beta_{0} y_{2} + \Psi_{21}^{2} \beta_{1}^{2} - 2 \Psi_{21} \beta_{1} y_{2} + \beta_{0}^{2} d_{0} + \beta_{1}^{2} d_{1} + y_{0}^{2} + y_{1}^{2} + y_{2}^{2}
+\]
+
+% Part 2b: stationarity condition, verified true term-by-term above
+\[
+\left(2 D + 2 \Psi^{T} \Psi\right) \beta - 2 \Psi^{T} y = 0
+\]
+
+% Part 2c: normal equations solved by the code's linear solve
+\[
+\left(D + \Psi^{T} \Psi\right) \beta = \Psi^{T} y
+\]
+
+% Part 3: augmented system solved by lstsq, equal to the ridge objective
+\[
+J(\beta) = \left\lVert y - \Psi\beta \right\rVert_2^2 + \beta^T D \beta = \left\lVert \begin{bmatrix} y \\ 0 \end{bmatrix} - \begin{bmatrix} \Psi \\ \sqrt{D} \end{bmatrix} \beta \right\rVert_2^2
+\]
+
+% Part 4a: unconstrained ridge solve on the 6-sample/2-rule instance
+\[
+\beta = \left[\begin{matrix}\frac{11354}{5757}\\\frac{60}{707}\\\frac{146978}{40299}\\\frac{2320}{707}\end{matrix}\right]
+\]
+
+% Part 4b: pin_extremes solve (substitution == full KKT), same instance
+\[
+\beta = \left[\begin{matrix}1\\\frac{13787}{19552}\\13\\- \frac{8421}{19552}\end{matrix}\right]
+\]
