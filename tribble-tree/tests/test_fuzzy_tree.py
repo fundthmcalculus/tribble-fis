@@ -1,12 +1,14 @@
 """Tests for the fuzzy tree module (unittest, run via pytest)."""
 
 import unittest
+import warnings
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, r2_score
 
 from fuzzytree import (
+    AUTO,
     FuzzyClassificationTree,
     FuzzyRegressionTree,
     HierarchicalFuzzyExpertsClassifier,
@@ -19,6 +21,7 @@ from fuzzytree import (
 )
 from fuzzytree.firing import compute_leaf_firing
 from fuzzytree.hme import compute_responsibilities
+from fuzzytree.plan import resolve_split_variable
 from fuzzytree.terms import build_split_terms
 
 
@@ -184,6 +187,98 @@ class TestClassification(unittest.TestCase):
         )
         proba = clf.predict_proba(self.X)
         np.testing.assert_allclose(proba.sum(axis=1), 1.0, rtol=1e-6)
+
+    def test_info_gain_classifier(self):
+        # Fits and predicts without error; a much looser bound than the
+        # "ambiguity"/default criterion since info_gain picks split *thresholds*
+        # by fuzzy entropy reduction rather than the ambiguity criterion this
+        # dataset was tuned against (observed ~0.73 on this fixture).
+        clf = FuzzyClassificationTree(
+            criterion="info_gain", max_depth=2, n_terms=2, min_soft_count=10
+        ).fit(self.X, self.y)
+        self.assertGreater(accuracy_score(self.y, clf.predict(self.X)), 0.6)
+
+    def test_differentiation_classifier(self):
+        # "differentiation" scores variable *relevance*, not partition quality
+        # (see its docstring: "a prefilter, not a sole splitter"), so as the
+        # sole split criterion it's expected to underperform ambiguity/info_gain
+        # here (observed ~0.52, vs. 0.25 random-chance baseline for 4 classes).
+        clf = FuzzyClassificationTree(
+            criterion="differentiation", max_depth=2, n_terms=2, min_soft_count=10
+        ).fit(self.X, self.y)
+        self.assertGreater(accuracy_score(self.y, clf.predict(self.X)), 0.4)
+
+
+class TestVariablePlanSerialization(unittest.TestCase):
+    """`VariablePlan.to_dict`/`from_dict` round-trip, used by config-file
+    front ends per the class docstring."""
+
+    def test_round_trip_default_plan(self):
+        plan = VariablePlan()
+        restored = VariablePlan.from_dict(plan.to_dict())
+        self.assertEqual(restored, plan)
+
+    def test_round_trip_with_pins_and_overrides(self):
+        plan = VariablePlan(
+            level_order=("a", None, "b"),
+            pins=(NodePin(path=("Low",), variable="b", n_terms=2),),
+            criterion="ambiguity",
+            exclude=frozenset({"c", "d"}),
+            max_depth=4,
+            default_n_terms=4,
+            max_terms_per_var=5,
+            term_labels=("Lo", "Hi"),
+            no_reuse_on_path=True,
+            term_style="gaussian",
+        )
+        restored = VariablePlan.from_dict(plan.to_dict())
+        self.assertEqual(restored, plan)
+
+    def test_from_dict_fills_defaults_for_missing_keys(self):
+        restored = VariablePlan.from_dict({})
+        self.assertEqual(restored, VariablePlan())
+
+
+class TestResolveSplitVariableFallbacks(unittest.TestCase):
+    """`resolve_split_variable`'s three warn-and-fall-back-to-auto branches:
+    a pin naming an excluded variable, a pin naming an unavailable variable,
+    and a level_order slot naming an unavailable variable."""
+
+    def test_pin_naming_excluded_variable_falls_back_to_auto(self):
+        plan = VariablePlan(
+            pins=(NodePin(path=(), variable="b"),), exclude=frozenset({"b"})
+        )
+        with self.assertWarns(UserWarning):
+            decision, _ = resolve_split_variable(
+                plan, path=(), depth=0, available_vars=["a", "b"], var_by_path={}
+            )
+        self.assertEqual(decision, AUTO)
+
+    def test_pin_naming_unavailable_variable_falls_back_to_auto(self):
+        plan = VariablePlan(pins=(NodePin(path=(), variable="c"),))
+        with self.assertWarns(UserWarning):
+            decision, _ = resolve_split_variable(
+                plan, path=(), depth=0, available_vars=["a", "b"], var_by_path={}
+            )
+        self.assertEqual(decision, AUTO)
+
+    def test_level_order_naming_unavailable_variable_falls_back_to_auto(self):
+        plan = VariablePlan(level_order=("c",))
+        with self.assertWarns(UserWarning):
+            decision, _ = resolve_split_variable(
+                plan, path=(), depth=0, available_vars=["a", "b"], var_by_path={}
+            )
+        self.assertEqual(decision, AUTO)
+
+    def test_valid_pin_is_honored_without_warning(self):
+        plan = VariablePlan(pins=(NodePin(path=(), variable="b", n_terms=2),))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            decision, n_terms = resolve_split_variable(
+                plan, path=(), depth=0, available_vars=["a", "b"], var_by_path={}
+            )
+        self.assertEqual(decision, "b")
+        self.assertEqual(n_terms, 2)
 
 
 class TestMimoAndRender(unittest.TestCase):
