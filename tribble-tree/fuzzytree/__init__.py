@@ -24,7 +24,7 @@ from .render import (
     plot_deconstructed_tree,
 )
 from .topology import TopologyNode, parse_topology
-from .deconstruct import DeconstructedHierarchicalRegressor
+from .deconstruct import DeconstructedHierarchicalRegressor, DeconstructedHierarchicalClassifier
 
 __all__ = [
     "VariablePlan",
@@ -46,4 +46,5 @@ __all__ = [
     "TopologyNode",
     "parse_topology",
     "DeconstructedHierarchicalRegressor",
+    "DeconstructedHierarchicalClassifier",
 ]
