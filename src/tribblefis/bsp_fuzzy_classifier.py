@@ -46,6 +46,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.preprocessing import LabelEncoder
 from sklearn.utils.validation import check_is_fitted
 
 from .calibrated_fuzzy_classifier import CalibratedGaussianFuzzyClassifier
@@ -175,12 +176,8 @@ class BSPFuzzyTreeClassifier(BaseEstimator, ClassifierMixin):
             y_series[~left_mask].reset_index(drop=True), depth + 1)
         return node
 
-    # TODO(sklearn-review): candidate for sklearn.preprocessing.LabelEncoder
-    # now that scikit-learn is a core dependency -- self.classes_ is already
-    # computed via np.unique matching sklearn convention, and LabelEncoder
-    # stores its own .classes_, so this is close to a drop-in.
     def _encode(self, labels):
-        return np.array([self._cls_to_code[l] for l in labels], dtype=int)
+        return self._label_encoder.transform(labels)
 
     def fit(self, X, y):
         X_df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
@@ -189,9 +186,9 @@ class BSPFuzzyTreeClassifier(BaseEstimator, ClassifierMixin):
         y_series = y_series.reset_index(drop=True)
 
         self.feature_names_in_ = X_df.columns.tolist()
-        self.classes_ = np.unique(y_series.values)
+        self._label_encoder = LabelEncoder().fit(y_series.values)
+        self.classes_ = self._label_encoder.classes_
         self.n_classes_ = len(self.classes_)
-        self._cls_to_code = {c: i for i, c in enumerate(self.classes_)}
 
         self.root_ = self._build(X_df, y_series, depth=0)
         self.is_fitted_ = True

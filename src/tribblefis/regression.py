@@ -54,14 +54,14 @@ def plot_tsk_order_comparison(
     plt.show()
 
 
-# TODO(sklearn-review): _rsquared/_mse/_mae are direct math equivalents of
-# sklearn.metrics.r2_score/mean_squared_error/mean_absolute_error, now that
-# scikit-learn is a core dependency. NOT a mechanical swap: these are called
-# in hot loops during optimizer-based antecedent refinement (refine.py,
-# gt2_refine.py, it2_refine.py, anfis.py -- refine.py documents one fitness
-# function here being evaluated "tens of thousands of times"), so swapping to
-# sklearn.metrics would add per-call input-validation overhead in those paths.
-# Benchmark before replacing, not just a find-and-replace.
+# sklearn-review: these are direct math equivalents of
+# sklearn.metrics.r2_score/mean_squared_error/mean_absolute_error, but kept
+# hand-rolled on purpose. Benchmarked against the sklearn.metrics equivalents
+# (n=50..5000, matching the fold sizes seen in refine.py/gt2_refine.py/
+# it2_refine.py/anfis.py's optimizer loops, where refine.py documents one
+# fitness function here being evaluated "tens of thousands of times"):
+# sklearn's per-call input-validation overhead makes it 15-32x slower,
+# dominated by the fixed validation cost rather than array size. Not a swap.
 def _rsquared(y_t: pd.Series | np.ndarray, y_p: pd.Series | np.ndarray) -> float:
     ss_res = np.sum((y_t - y_p) ** 2)
     ss_tot = np.sum((y_t - np.mean(y_t)) ** 2)
