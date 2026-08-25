@@ -13,6 +13,14 @@ import numpy as np
 from numba import jit, prange
 
 
+# TODO(sklearn-review): candidate for sklearn.cluster.KMeans now that
+# scikit-learn is a core dependency, used by gauss_math._kmeans_labels_1d to
+# seed a BIC-selected Gaussian-mixture fit. NOT a mechanical swap: this uses
+# random-sample initialization (sorted) rather than k-means++, which affects
+# which local optimum is found and thus the exact BIC/selected-k on
+# borderline cases; would need explicit init="random", n_init=1 to
+# approximate current behavior, and existing mixture-output tests (e.g.
+# tests/test_gauss_math.py) checked for brittleness before swapping.
 def kmeans_1d(data: np.ndarray, n_clusters: int, random_state: int = 42, max_iter: int = 100) -> np.ndarray:
     """Simple k-means clustering for 1-D data.
 
@@ -244,6 +252,13 @@ def _silhouette_sample_jit(
     return silhouette
 
 
+# TODO(sklearn-review): hand-rolled reimplementation of
+# sklearn.metrics.silhouette_score, written when this module's docstring goal
+# was avoiding a hard sklearn dependency. scikit-learn is now a core
+# dependency (needed transitively by `optimizers`), and this function has no
+# remaining call sites anywhere in the repo (only imported, unused, by
+# gauss_math.py) -- candidate for outright deletion, or a straight swap to
+# sklearn.metrics.silhouette_score if a caller reappears.
 def silhouette_score(X: np.ndarray, labels: np.ndarray, metric: str = 'euclidean') -> float:
     """Compute the mean silhouette coefficient for all samples.
 
