@@ -17,6 +17,8 @@ from .hme import (
 )
 from .em import refine_em_classifier, refine_em_regressor
 from .render import render_tree_text, plot_fuzzy_tree, render_hme_text, plot_hme
+from .topology import TopologyNode, parse_topology
+from .deconstruct import DeconstructedHierarchicalRegressor
 
 __all__ = [
     "VariablePlan",
@@ -34,4 +36,7 @@ __all__ = [
     "plot_fuzzy_tree",
     "render_hme_text",
     "plot_hme",
+    "TopologyNode",
+    "parse_topology",
+    "DeconstructedHierarchicalRegressor",
 ]
