@@ -17,6 +17,7 @@ import unittest
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from tribblefis.trapz_math import (
     triangle_pdf,
@@ -562,6 +563,7 @@ class TestNumericalStability(unittest.TestCase):
             self.assertLessEqual(tri.b, tri.c)
 
 
+@pytest.mark.performance
 class TestTrianglePerformance(unittest.TestCase):
     """Sanity checks on fit cost -- not strict speed requirements, just a
     guard against a pathological blow-up (e.g. an accidental O(n^2) pass or a

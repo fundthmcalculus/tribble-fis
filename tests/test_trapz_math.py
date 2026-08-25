@@ -17,6 +17,7 @@ import unittest
 import time
 import numpy as np
 import pandas as pd
+import pytest
 from tribblefis.trapz_math import (
     trapz_pdf,
     TrapzMixtureModel,
@@ -529,6 +530,7 @@ class TestFastHistogramMethod(unittest.TestCase):
 class TestPerformanceComparison(unittest.TestCase):
     """Performance benchmark comparing EM vs Fast methods."""
 
+    @pytest.mark.performance
     def test_performance_speedup_unimodal(self):
         """Verify fast method is significantly faster on unimodal data."""
         np.random.seed(42)
@@ -550,6 +552,7 @@ class TestPerformanceComparison(unittest.TestCase):
         # Print for informational purposes
         print(f"\nUnimodal Speedup: {speedup:.1f}x (EM: {em_time:.4f}s, Fast: {fast_time:.6f}s)")
 
+    @pytest.mark.performance
     def test_performance_speedup_bimodal(self):
         """Verify fast method is significantly faster on bimodal data."""
         np.random.seed(42)
