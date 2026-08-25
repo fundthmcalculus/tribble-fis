@@ -175,6 +175,10 @@ class BSPFuzzyTreeClassifier(BaseEstimator, ClassifierMixin):
             y_series[~left_mask].reset_index(drop=True), depth + 1)
         return node
 
+    # TODO(sklearn-review): candidate for sklearn.preprocessing.LabelEncoder
+    # now that scikit-learn is a core dependency -- self.classes_ is already
+    # computed via np.unique matching sklearn convention, and LabelEncoder
+    # stores its own .classes_, so this is close to a drop-in.
     def _encode(self, labels):
         return np.array([self._cls_to_code[l] for l in labels], dtype=int)
 

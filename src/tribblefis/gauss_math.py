@@ -399,6 +399,11 @@ def _differentiation_score(data: pd.Series, y: pd.Series, unique_labels, method:
     return score
 
 
+# TODO(sklearn-review): candidate for sklearn.preprocessing.LabelEncoder/
+# OrdinalEncoder now that scikit-learn is a core dependency -- this is an
+# isolated private helper with no fuzzy-specific logic beyond the numeric
+# passthrough branch, which would need to stay as a guard around the sklearn
+# call.
 def _encode_if_categorical(series: pd.Series, full_column: pd.Series) -> pd.Series:
     """Map a categorical/string/integer column to integer codes; pass numeric data through.
 
