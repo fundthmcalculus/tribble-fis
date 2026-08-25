@@ -1,14 +1,18 @@
+import warnings
 from concurrent.futures.thread import ThreadPoolExecutor
 from itertools import combinations
 from typing import Any
 
 import numpy as np
 import pandas as pd
+from sklearn.cluster import KMeans
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.preprocessing import LabelEncoder
 from tribbleclustering import IVATMeans, FuzzyCMeans
 
 from . import kernel
 from .gauss_data import *  # noqa: F401, F403
-from .stats_numba import norm_fit, norm_pdf, jensenshannon_distance, wasserstein_distance, silhouette_score, kmeans_1d
+from .stats_numba import norm_fit, norm_pdf, jensenshannon_distance, wasserstein_distance
 
 # Numeric thresholds for numerical stability
 _SIGMA_FLOOR = 1e-6  # Minimum variance/sigma to avoid numerical issues
@@ -122,8 +126,20 @@ def _kmeans_labels_1d(data: np.ndarray, k: int, random_state: int) -> np.ndarray
     -------
     np.ndarray
         Cluster labels (0 to k-1) for each data point.
+
+    Notes
+    -----
+    ``k`` is only capped to the number of *distinct* data values by the caller,
+    not to the number of distinct values KMeans actually converges to -- e.g.
+    three tight, well-separated groups plus one near-duplicate point are 4
+    distinct values but only 3 real clusters. KMeans handles that gracefully
+    (returns fewer effective clusters) and the degenerate candidate is then
+    rejected by the caller's BIC comparison, so the ConvergenceWarning it
+    raises here is expected noise, not a fit failure -- suppressed accordingly.
     """
-    return kmeans_1d(data, k, random_state=random_state)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=ConvergenceWarning)
+        return KMeans(n_clusters=k, n_init="auto", random_state=random_state).fit_predict(data.reshape(-1, 1))
 
 
 def fit_gaussian_mixture_1d(
@@ -399,11 +415,6 @@ def _differentiation_score(data: pd.Series, y: pd.Series, unique_labels, method:
     return score
 
 
-# TODO(sklearn-review): candidate for sklearn.preprocessing.LabelEncoder/
-# OrdinalEncoder now that scikit-learn is a core dependency -- this is an
-# isolated private helper with no fuzzy-specific logic beyond the numeric
-# passthrough branch, which would need to stay as a guard around the sklearn
-# call.
 def _encode_if_categorical(series: pd.Series, full_column: pd.Series) -> pd.Series:
     """Map a categorical/string/integer column to integer codes; pass numeric data through.
 
@@ -424,9 +435,8 @@ def _encode_if_categorical(series: pd.Series, full_column: pd.Series) -> pd.Seri
         or pd.api.types.is_string_dtype(series.dtype)
         or pd.api.types.is_integer_dtype(series.dtype)
     ):
-        unique_values = sorted(full_column.unique())
-        value_to_index = {val: i for i, val in enumerate(unique_values)}
-        return series.map(value_to_index)
+        codes = LabelEncoder().fit(full_column).transform(series)
+        return pd.Series(codes, index=series.index)
     return series
 
 
