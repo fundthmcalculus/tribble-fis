@@ -68,8 +68,14 @@ a redundant check.
 `N-CMAPSS_DS02-006.h5`. Topology: `RUL -> {HP, LP} -> component -> flow/eff
 leaf -> sensors`, exactly matching the second whiteboard photo, with sensors
 assigned to components by turbofan station number (a domain-informed
-starting proposal — see the caveat in the script's docstring and the sensor
-assignment section below).
+starting proposal — see the caveat in the sensor assignment section below).
+
+**Inputs are the 18 REAL, physically-measured channels only** — the 14 `X_s`
+sensors plus the 4 `W` flight-condition channels. The 14 `X_v` *virtual*
+sensors (model-derived/estimated quantities, not actual instrumentation —
+e.g. unmeasured internal flows and stall margins) are excluded on purpose:
+a deployed system wouldn't have them either, and (see the channel-set note
+below) they were also quietly propping up the earlier numbers.
 
 **Fold 1 (sensor → leaf specificity)** — each leaf vs. its own true
 (normally-unobservable) health-parameter column:
@@ -77,65 +83,77 @@ assignment section below).
 | Leaf | Test R² |
 |---|---|
 | FAN_flow, FAN_eff, LPC_flow, LPC_eff, HPC_flow, HPC_eff | **1.000** |
-| HPT_flow | 0.711 |
-| HPT_eff | 0.733 |
-| LPT_flow | 0.711 |
-| LPT_eff | **0.345** |
+| HPT_flow | 1.000 |
+| HPT_eff | 0.751 |
+| LPT_eff | 0.683 |
+| LPT_flow | **0.297** |
 
-Six of ten leaves recover their true health parameter essentially exactly.
-HPT and LPT are visibly harder — LPT_eff in particular is a weak fit,
-suggesting either the LPT-side sensor grouping needs revisiting or LPT
-efficiency degradation genuinely leaves a fainter sensor signature in this
-station region than the other four component/mode combinations.
+Seven of ten leaves recover their true health parameter essentially exactly.
+LPT is now the clear weak point — LPT_flow in particular is a poor fit with
+only `T50, P50` to work with, suggesting the LPT leaf needs a better
+real-sensor grouping (or that LPT flow degradation genuinely leaves a
+fainter signature in the 2 real channels assigned to it than elsewhere).
 
 **Fold 2 (leaf → root RUL)**:
 
 | Model | Test R² | Test RMSE |
 |---|---|---|
-| Flat `TribbleRegressor` on all 32 sensors | **-0.063** | 19.40 |
-| HME (auto topology) | 0.191 | 16.93 |
-| Deconstructed tree, leaves supervised only on RUL | **0.628** | 11.48 |
-| Deconstructed tree, leaves supervised on true health params | 0.607 | 11.79 |
+| Flat `TribbleRegressor` on all 18 real channels | 0.370 | 14.94 |
+| HME (auto topology) | 0.405 | 14.52 |
+| Deconstructed tree, leaves supervised only on RUL | **0.593** | 12.01 |
+| Deconstructed tree, leaves supervised on true health params | **0.594** | 12.00 |
 
-This is the headline result: giving the model the real physical topology
-and deconstructing one flat fit into it beats both baselines by a wide
-margin on the actual task — not a small improvement, a qualitative one (the
-flat model doesn't even beat predicting the mean). Skipping the
-intermediate health-parameter supervision (leaves trained directly toward
-RUL) came out slightly ahead of the "oracle" leaves (0.628 vs. 0.607) — a
-mild edge, not a decisive one at this sample size, but it does NOT support
-the assumption that physically-motivated intermediate targets are free
-wins; asking a leaf to match an unobservable label that is itself only
-loosely coupled to RUL can cost a little accuracy on the thing that
-actually matters.
+Restricting to real channels only is still the headline result: the
+deconstructed tree beats both baselines by a wide margin (≈0.19 R² over
+HME, ≈0.22 over flat). Skipping the intermediate health-parameter
+supervision made effectively no difference here (0.593 vs. 0.594) — with
+the virtual channels gone, the earlier "skipping supervision helps a
+little" edge disappeared along with them.
 
-A plausible mechanism for why flat collapses so badly here: several of the
-32 raw sensor/flight columns are near-duplicates in this dataset (e.g.
-`W22`/`W25`/`W31`/`W32` carried identical differentiation scores across
-every bucket in the diagnostic output), and fitting one global antecedent
-structure across all of them at once is exactly the degenerate-firing regime
+### Channel-set ablation: real-only vs. all 32 channels
+
+An earlier pass (including the 14 `X_v` virtual sensors, 32 channels total)
+found flat and HME collapsing much harder:
+
+| Model | R², 32 channels (real+virtual) | R², 18 channels (real only) |
+|---|---|---|
+| Flat `TribbleRegressor` | **-0.063** | **0.370** |
+| HME (auto topology) | 0.191 | 0.405 |
+| Deconstructed tree (RUL-only leaves) | 0.628 | 0.593 |
+
+Dropping the virtual channels is a large, direct win for both baselines
+(flat: +0.43 R²; HME: +0.21 R²) and confirms the mechanism suspected
+earlier: several virtual columns are near-duplicates of each other
+(`W22`/`W25`/`W31`/`W32` carried identical differentiation scores in the
+diagnostic output), and fitting one global antecedent structure across all
+of them at once landed in exactly the degenerate-firing regime
 `ZERO_FIRING_THRESHOLD`/normalization code elsewhere in this repo already
-has to guard against. Splitting the same sensors into 5-6-feature
-per-component groups, each fit and solved independently, sidesteps that
-collapse — which is the whole premise of the whiteboard's design, now with
-a concrete real-data example of it mattering.
+guards against. The deconstructed tree, which never fits one global
+antecedent block over all channels at once, was far less exposed to this in
+the first place — its own real-channel-only number (0.593) is close to its
+32-channel number (0.628), a small give, not a collapse. Net effect:
+removing the collinear virtual channels closes most but not all of the gap
+to the baselines — the deconstructed tree still leads by a wide margin, but
+this ablation shows part of its earlier edge really was "baselines tripping
+over degenerate collinear inputs" rather than purely "structure helps,"
+and that distinction matters for how strong a claim to make going forward.
 
 ### Sensor → component assignment (starting proposal, not verified)
 
 ```
-FAN: P2, P15, P21, Nf, SmFan, W21
-LPC: T24, P24, W22, W25, SmLPC
-HPC: T30, Ps30, P30, Nc, W31, SmHPC
-HPT: T48, T40, Wf, W32, P40
-LPT: P50, T50, P45, W48, W50, phi
+FAN: P2, P15, P21, Nf
+LPC: T24, P24
+HPC: T30, Ps30, Nc
+HPT: T48, Wf, P40
+LPT: T50, P50
 ```
-from turbofan station numbers, with flight-condition columns (`alt, Mach,
-TRA, T2`) fed into every leaf as shared covariates. Several of these sit at
-component boundaries (`P40`/`T40`/`W32` near the HPC/HPT interface,
-`P45`/`W48` near HPT/LPT) and were assigned by judgment call, not
-verified against N-CMAPSS's own documentation/model description. The weak
-LPT_eff Fold-1 result is the first place to look if this grouping gets
-revisited.
+14 real `X_s` sensors, one component each, from turbofan station numbers,
+with flight-condition columns (`alt, Mach, TRA, T2`) fed into every leaf as
+shared covariates. `P40` (HPC/HPT boundary) was assigned by judgment call,
+not verified against N-CMAPSS's own documentation/model description. LPT's
+weak Fold-1 score is the first place to look if this grouping gets
+revisited — it has only 2 real channels to work with, fewer than any other
+component.
 
 ## Disposition
 
@@ -154,7 +172,13 @@ Not yet done, and the natural next steps if this is picked up again:
 - Cross-validated / multi-seed evaluation — Stage B is a single 40k/10k
   subsample and split; the RUL numbers above should be treated as
   indicative, not final, until repeated across seeds and larger samples.
-- Revisit the HPT/LPT sensor assignment given the weak LPT_eff Fold-1 score.
+- Revisit the LPT sensor assignment given the weak LPT_flow Fold-1 score
+  (R² = 0.297) — it has only 2 real channels (`T50, P50`) to work with.
+- The channel-set ablation shows part of the deconstructed tree's earlier
+  margin over flat/HME was those baselines tripping over collinear virtual
+  sensors, not purely structure helping — real numbers to cite are the
+  18-real-channel ones above (0.593 vs. 0.405 vs. 0.370), not the original
+  32-channel run.
 - The leaf-bucket-dedup enhancement sketched in `deconstruct.py`'s design
   (merging buckets that project to identical clauses on a leaf's own
   features) was not needed to get these results and was not built.

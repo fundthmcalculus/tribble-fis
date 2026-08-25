@@ -4,9 +4,15 @@ sketches were about.
 `T_dev`/`T_test` in the N-CMAPSS file are exactly the whiteboard's
 unobservable leaf-level health parameters (`fan_eff_mod, fan_flow_mod,
 LPC_eff_mod, LPC_flow_mod, HPC_eff_mod, HPC_flow_mod, HPT_eff_mod,
-HPT_flow_mod, LPT_eff_mod, LPT_flow_mod`); `X_s`/`X_v` are the physical/
-virtual sensors; `Y` is RUL. The topology below (RUL -> HP/LP -> component
--> flow/eff leaf -> sensors) matches the second whiteboard photo exactly.
+HPT_flow_mod, LPT_eff_mod, LPT_flow_mod`); `Y` is RUL. The topology below
+(RUL -> HP/LP -> component -> flow/eff leaf -> sensors) matches the second
+whiteboard photo exactly.
+
+Only the 18 REAL, physically-measured channels are used as inputs: the 14
+`X_s` sensors plus the 4 `W` flight-condition channels. `X_v` (14 *virtual*
+sensors -- model-derived/estimated quantities that aren't actual
+instrumentation, e.g. unmeasured internal flows and stall margins) is
+deliberately excluded, since a deployed system wouldn't have them either.
 
 The sensor -> component grouping is a *domain-informed starting proposal*
 from turbofan station numbers, NOT a verified fact -- several sensors sit at
@@ -46,13 +52,14 @@ SEED = 42
 FLIGHT_COLS = ["alt", "Mach", "TRA", "T2"]
 
 # Domain-informed starting proposal (turbofan station numbers) -- see module
-# docstring. Every X_s/X_v sensor is assigned to exactly one component.
+# docstring. Every one of the 14 REAL X_s sensors is assigned to exactly one
+# component; no X_v virtual sensors are used anywhere.
 COMPONENT_SENSORS = {
-    "FAN": ["P2", "P15", "P21", "Nf", "SmFan", "W21"],
-    "LPC": ["T24", "P24", "W22", "W25", "SmLPC"],
-    "HPC": ["T30", "Ps30", "P30", "Nc", "W31", "SmHPC"],
-    "HPT": ["T48", "T40", "Wf", "W32", "P40"],
-    "LPT": ["P50", "T50", "P45", "W48", "W50", "phi"],
+    "FAN": ["P2", "P15", "P21", "Nf"],
+    "LPC": ["T24", "P24"],
+    "HPC": ["T30", "Ps30", "Nc"],
+    "HPT": ["T48", "Wf", "P40"],
+    "LPT": ["T50", "P50"],
 }
 
 TOPOLOGY = {
@@ -89,11 +96,10 @@ def _load_split(h5, split: str, n_rows: int, rng: np.random.Generator) -> pd.Dat
         return pd.DataFrame(arr[idx][:, [names_arr.index(n) for n in names]], columns=names)
 
     x_s = cols("X_s", [n.decode() for n in h5["X_s_var"][:]])
-    x_v = cols("X_v", [n.decode() for n in h5["X_v_var"][:]])
     w = cols("W", [n.decode() for n in h5["W_var"][:]])
     t = cols("T", [n.decode() for n in h5["T_var"][:]])
     y = pd.Series(h5[f"Y_{split}"][:][idx].ravel().astype(float), name="RUL")
-    df = pd.concat([x_s, x_v, w, t, y], axis=1)
+    df = pd.concat([x_s, w, t, y], axis=1)
     return df
 
 
@@ -139,7 +145,7 @@ def main():
     print("=" * 82)
 
     flat = TribbleRegressor(n_output_buckets=4, tsk_order="1st", top_n=-1, random_state=SEED).fit(X_tr, y_tr)
-    report("Flat TRIBBLE on all sensors", y_te, flat.predict(X_te))
+    report(f"Flat TRIBBLE on all {len(sensor_cols)} real channels", y_te, flat.predict(X_te))
 
     hme = HierarchicalFuzzyExpertsRegressor(
         criterion="variance", max_depth=2, n_gate_terms=2, top_n=6,
