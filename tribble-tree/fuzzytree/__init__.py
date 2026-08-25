@@ -16,7 +16,13 @@ from .hme import (
     HierarchicalFuzzyExpertsRegressor,
 )
 from .em import refine_em_classifier, refine_em_regressor
-from .render import render_tree_text, plot_fuzzy_tree, render_hme_text, plot_hme
+from .render import (
+    render_tree_text,
+    plot_fuzzy_tree,
+    render_hme_text,
+    plot_hme,
+    plot_deconstructed_tree,
+)
 from .topology import TopologyNode, parse_topology
 from .deconstruct import DeconstructedHierarchicalRegressor
 
@@ -36,6 +42,7 @@ __all__ = [
     "plot_fuzzy_tree",
     "render_hme_text",
     "plot_hme",
+    "plot_deconstructed_tree",
     "TopologyNode",
     "parse_topology",
     "DeconstructedHierarchicalRegressor",

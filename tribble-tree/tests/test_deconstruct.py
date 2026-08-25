@@ -1,12 +1,23 @@
 """Tests for fuzzytree.topology / fuzzytree.deconstruct (unittest, run via pytest)."""
 
+import os
+import tempfile
 import unittest
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.figure
 import numpy as np
 import pandas as pd
 from sklearn.metrics import r2_score
 
-from fuzzytree import DeconstructedHierarchicalRegressor, TopologyNode, parse_topology
+from fuzzytree import (
+    DeconstructedHierarchicalRegressor,
+    TopologyNode,
+    parse_topology,
+    plot_deconstructed_tree,
+)
 
 
 def _rng(seed=0):
@@ -134,6 +145,56 @@ class TestDeconstructedHierarchicalRegressor(unittest.TestCase):
         pred = m.predict(self.X)
         self.assertEqual(pred.shape, (len(self.X),))
         self.assertTrue(np.all(np.isfinite(pred)))
+
+
+class TestPlotDeconstructedTree(unittest.TestCase):
+    def setUp(self):
+        rng = _rng(3)
+        n = 500
+        self.X = pd.DataFrame({
+            "a": rng.uniform(0, 10, n), "b": rng.uniform(0, 10, n),
+            "c": rng.uniform(0, 10, n), "d": rng.uniform(0, 10, n),
+        })
+        self.y = self.X["a"] + self.X["b"] + self.X["c"] + self.X["d"] + rng.normal(0, 0.1, n)
+        self.topology = {"ROOT": ["G1", "G2"], "G1": ["a", "b"], "G2": ["c", "d"]}
+
+    def test_plot_unfitted_topology_returns_figure(self):
+        root = parse_topology(self.topology, list(self.X.columns))
+        fig = plot_deconstructed_tree(root)
+        self.assertIsInstance(fig, matplotlib.figure.Figure)
+
+    def test_plot_fitted_model_returns_figure_with_edge_labels(self):
+        m = DeconstructedHierarchicalRegressor(
+            flat_regressor_kwargs={"n_output_buckets": 3},
+        ).fit(self.X, self.y, self.topology)
+        fig = plot_deconstructed_tree(m, title="Sanity check")
+        self.assertIsInstance(fig, matplotlib.figure.Figure)
+        ax = fig.axes[0]
+        self.assertEqual(ax.get_title(), "Sanity check")
+        texts = [t.get_text() for t in ax.texts]
+        # A branch's fitted combiner weight should show up on an edge label.
+        self.assertTrue(any(t.startswith("×") for t in texts))
+
+    def test_plot_saves_svg_file(self):
+        m = DeconstructedHierarchicalRegressor(
+            flat_regressor_kwargs={"n_output_buckets": 3},
+        ).fit(self.X, self.y, self.topology)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "tree.svg")
+            plot_deconstructed_tree(m, save_path=path)
+            self.assertTrue(os.path.exists(path))
+            with open(path) as f:
+                content = f.read()
+            self.assertIn("<svg", content)
+
+    def test_plot_flags_constant_leaf(self):
+        y_ab_only = 3 * self.X["a"] - 2 * self.X["b"]
+        m = DeconstructedHierarchicalRegressor(
+            flat_regressor_kwargs={"n_output_buckets": 3, "top_n": 2},
+        ).fit(self.X, y_ab_only, self.topology)
+        fig = plot_deconstructed_tree(m)
+        texts = [t.get_text() for t in fig.axes[0].texts]
+        self.assertTrue(any("CONSTANT" in t for t in texts))
 
 
 if __name__ == "__main__":
