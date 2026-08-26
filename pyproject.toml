@@ -45,6 +45,9 @@ dev = [
 docs = [
     "sympy>=1.14.0",
 ]
+cmapss = [
+    "h5py",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tribblefis"]

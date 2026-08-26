@@ -1,11 +1,18 @@
 """Human-readable rendering of a fitted fuzzy tree.
 
-Two views:
-    * ``render_tree_text`` -- an indented IF-THEN rule tree with per-leaf stats.
-    * ``plot_fuzzy_tree``  -- a matplotlib node-box diagram (no graphviz needed).
+Views:
+    * ``render_tree_text``       -- an indented IF-THEN rule tree with per-leaf stats.
+    * ``plot_fuzzy_tree``        -- a matplotlib node-box diagram (no graphviz needed).
+    * ``plot_deconstructed_tree`` -- the same kind of diagram for a
+      ``DeconstructedHierarchicalRegressor`` (or a bare, unfitted
+      ``TopologyNode``), so a user-supplied topology can be eyeballed --
+      which sensors actually reached each leaf, whether a leaf starved down
+      to a constant, and each branch's fitted combiner weights -- before or
+      after fitting.
 
-Both accept a fitted ``FuzzyRegressionTree`` or ``FuzzyClassificationTree`` and
-introspect the leaf consequents / class distributions to annotate leaves.
+``plot_fuzzy_tree``/``plot_hme`` accept a fitted ``FuzzyRegressionTree`` or
+``FuzzyClassificationTree`` and introspect the leaf consequents / class
+distributions to annotate leaves.
 """
 
 from __future__ import annotations
@@ -257,4 +264,140 @@ def plot_hme(est, ax=None, figsize=(12, 7), title: str | None = None):
     ax.axis("off")
     ax.set_title(title or "Hierarchical Fuzzy Experts", fontsize=11)
     fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Deconstructed hierarchical FIS rendering (fuzzytree.deconstruct)
+# ---------------------------------------------------------------------------
+_MAX_FEATURES_SHOWN = 4
+
+
+def _feature_preview(names) -> str:
+    names = list(names)
+    shown = ", ".join(names[:_MAX_FEATURES_SHOWN])
+    return shown + (", ..." if len(names) > _MAX_FEATURES_SHOWN else "")
+
+
+def _layout_topology(node, depth, next_x, positions):
+    """Same idea as ``_layout``, but keyed by ``node.name`` -- a `TopologyNode`
+    has no ``.id``/``.depth`` field, and its uniqueness (one name per tree,
+    enforced by ``parse_topology``) makes the name a valid position key."""
+    if node.is_leaf:
+        x = next_x[0]
+        next_x[0] += 1
+        positions[node.name] = (x, -depth)
+        return x
+    child_xs = [_layout_topology(c, depth + 1, next_x, positions) for c in node.children]
+    x = float(np.mean(child_xs))
+    positions[node.name] = (x, -depth)
+    return x
+
+
+def _deconstructed_leaf_text(node, state) -> str:
+    declared = node.own_features
+    if state is None:
+        return f"{node.name}\n[{len(declared)}] {_feature_preview(declared)}"
+    if state["kind"] == "constant":
+        return f"{node.name}\nCONSTANT (0/{len(declared)} features survived)"
+    used = state["top_n_todo"]
+    if len(used) < len(declared):
+        return f"{node.name}\nused {len(used)}/{len(declared)}: {_feature_preview(used)}"
+    return f"{node.name}\n[{len(used)}] {_feature_preview(used)}"
+
+
+def _deconstructed_branch_text(node, state) -> str:
+    if state is None:
+        return f"{node.name}\n({len(node.children)} children)"
+    a0 = state["y_bucket_mean"][0]
+    return f"{node.name}\na0={a0:+.3g}"
+
+
+def _deconstructed_edge_label(state, child_name: str) -> str | None:
+    if state is None or state.get("kind") != "branch":
+        return None
+    try:
+        idx = state["children"].index(child_name)
+    except ValueError:
+        return None
+    coeff = state["corr_terms"][0][idx]
+    return f"×{coeff:+.3g}"
+
+
+def plot_deconstructed_tree(model, ax=None, figsize=(11, 7), title: str | None = None, save_path: str | None = None):
+    """Draw a `DeconstructedHierarchicalRegressor`'s tree as a node-box diagram.
+
+    Accepts either a *fitted* estimator (leaf boxes then show how many of the
+    declared features actually survived the flat model's own feature
+    selection, a constant-fallback flag, and each branch's fitted combiner
+    weight on every child edge) or a bare, unfitted `TopologyNode` (e.g. from
+    `parse_topology` directly) -- so a topology can be sanity-checked before
+    ever fitting anything. Blue leaves are ordinary leaves, amber nodes are
+    branches, and a leaf that starved down to a constant is flagged in red.
+
+    ``save_path``, if given, is passed straight to ``Figure.savefig`` --
+    matplotlib infers the format from the extension (``.svg``, ``.png``,
+    ``.pdf``, ...). The figure is returned either way.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import FancyBboxPatch
+
+    root = model.root_ if hasattr(model, "root_") else model
+    node_state = getattr(model, "node_state_", None)
+
+    positions: dict = {}
+    _layout_topology(root, 0, [0], positions)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    def state_of(name):
+        return node_state.get(name) if node_state is not None else None
+
+    def draw(node):
+        x, y = positions[node.name]
+        state = state_of(node.name)
+        if node.is_leaf:
+            text = _deconstructed_leaf_text(node, state)
+            color = "#fee2e2" if (state and state["kind"] == "constant") else "#dbeafe"
+        else:
+            text = _deconstructed_branch_text(node, state)
+            color = "#fef3c7"
+        box = FancyBboxPatch(
+            (x - 0.52, y - 0.24), 1.04, 0.48,
+            boxstyle="round,pad=0.02", linewidth=1.0,
+            edgecolor="#334155", facecolor=color, zorder=2,
+        )
+        ax.add_patch(box)
+        ax.text(x, y, text, ha="center", va="center", fontsize=7.5, zorder=3)
+
+        for child in node.children:
+            cx, cy = positions[child.name]
+            ax.plot([x, cx], [y - 0.24, cy + 0.24], color="#94a3b8", lw=0.9, zorder=1)
+            label = _deconstructed_edge_label(state, child.name)
+            if label:
+                mx, my = (x + cx) / 2, (y - 0.24 + cy + 0.24) / 2
+                ax.text(
+                    mx, my, label, ha="center", va="center", fontsize=7,
+                    color="#475569",
+                    bbox=dict(boxstyle="round,pad=0.1", fc="white", ec="none", alpha=0.85),
+                    zorder=3,
+                )
+            draw(child)
+
+    draw(root)
+
+    xs = [p[0] for p in positions.values()]
+    ys = [p[1] for p in positions.values()]
+    ax.set_xlim(min(xs) - 0.9, max(xs) + 0.9)
+    ax.set_ylim(min(ys) - 0.9, max(ys) + 0.9)
+    ax.axis("off")
+    ax.set_title(title or "Deconstructed Hierarchical FIS", fontsize=11)
+    fig.tight_layout()
+
+    if save_path is not None:
+        fig.savefig(save_path)
+
     return fig
