@@ -309,6 +309,10 @@ def _deconstructed_leaf_text(node, state) -> str:
 def _deconstructed_branch_text(node, state) -> str:
     if state is None:
         return f"{node.name}\n({len(node.children)} children)"
+    if "per_class" in state:
+        # Classifier branch: one (corr_terms, y_bucket_mean) pair per class,
+        # not a single intercept -- name the thing there is one of instead.
+        return f"{node.name}\n{len(state['per_class'])} classes"
     a0 = state["y_bucket_mean"][0]
     return f"{node.name}\na0={a0:+.3g}"
 
@@ -320,6 +324,11 @@ def _deconstructed_edge_label(state, child_name: str) -> str | None:
         idx = state["children"].index(child_name)
     except ValueError:
         return None
+    if "per_class" in state:
+        # Mean of that child's per-class combiner weight -- a compact stand-in
+        # for the n_classes individual weights, clearly flagged as an average.
+        weights = [corr_terms[0][idx] for corr_terms, _ in state["per_class"].values()]
+        return f"×{float(np.mean(weights)):+.3g} avg"
     coeff = state["corr_terms"][0][idx]
     return f"×{coeff:+.3g}"
 

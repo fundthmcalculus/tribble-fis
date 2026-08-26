@@ -10,9 +10,10 @@ matplotlib.use("Agg")
 import matplotlib.figure
 import numpy as np
 import pandas as pd
-from sklearn.metrics import r2_score
+from sklearn.metrics import accuracy_score, r2_score
 
 from fuzzytree import (
+    DeconstructedHierarchicalClassifier,
     DeconstructedHierarchicalRegressor,
     TopologyNode,
     parse_topology,
@@ -195,6 +196,76 @@ class TestPlotDeconstructedTree(unittest.TestCase):
         fig = plot_deconstructed_tree(m)
         texts = [t.get_text() for t in fig.axes[0].texts]
         self.assertTrue(any("CONSTANT" in t for t in texts))
+
+
+class TestDeconstructedHierarchicalClassifier(unittest.TestCase):
+    def setUp(self):
+        rng = _rng(5)
+        n = 2000
+        self.a = rng.uniform(0, 10, n)
+        self.b = self.a + rng.normal(0, 0.5, n)  # redundant w/ a, survives feature selection
+        self.c = rng.uniform(0, 10, n)
+        self.d = self.c + rng.normal(0, 0.5, n)  # redundant w/ c, survives feature selection
+        self.X = pd.DataFrame({"a": self.a, "b": self.b, "c": self.c, "d": self.d})
+        # G1 = a decides class 0 vs {1,2}; G2 = c decides 1 vs 2 within that.
+        # Axis-aligned thresholds, not a diagonal a+b sum -- per-feature Gaussian
+        # antecedents (this whole FIS family) represent axis-aligned class
+        # regions well and diagonal sum-thresholds poorly; the *flat* classifier
+        # gets ~0.61 accuracy on a sum-threshold version of this same setup, so
+        # that would be testing a known FIS-family limitation, not this module.
+        g1_hi = self.a >= 5
+        g2_hi = self.c >= 5
+        self.y = np.where(~g1_hi, 0, np.where(~g2_hi, 1, 2))
+        self.topology = {"ROOT": ["G1", "G2"], "G1": ["a", "b"], "G2": ["c", "d"]}
+
+    def test_leaf_only_sees_its_own_feature_group(self):
+        m = DeconstructedHierarchicalClassifier().fit(self.X, self.y, self.topology)
+        g1_state = m.node_state_["G1"]
+        g2_state = m.node_state_["G2"]
+        self.assertEqual(g1_state["kind"], "leaf")
+        self.assertEqual(g2_state["kind"], "leaf")
+        self.assertEqual(set(g1_state["top_n_todo"]), {"a", "b"})
+        self.assertEqual(set(g2_state["top_n_todo"]), {"c", "d"})
+
+    def test_end_to_end_fit_predict_shape_and_accuracy(self):
+        m = DeconstructedHierarchicalClassifier().fit(self.X, self.y, self.topology)
+        pred = m.predict(self.X)
+        self.assertEqual(pred.shape, (len(self.X),))
+        self.assertGreater(accuracy_score(self.y, pred), 0.8)
+
+    def test_predict_proba_is_bounded_and_sums_to_one(self):
+        m = DeconstructedHierarchicalClassifier().fit(self.X, self.y, self.topology)
+        proba = m.predict_proba(self.X)
+        self.assertEqual(proba.shape, (len(self.X), 3))
+        self.assertTrue(np.all(proba >= 0.0))
+        self.assertTrue(np.all(proba <= 1.0))
+        np.testing.assert_allclose(proba.sum(axis=1), 1.0, rtol=1e-6)
+
+    def test_root_branch_state_has_one_combiner_per_class(self):
+        m = DeconstructedHierarchicalClassifier().fit(self.X, self.y, self.topology)
+        root_state = m.node_state_["ROOT"]
+        self.assertEqual(root_state["kind"], "branch")
+        self.assertEqual(set(root_state["per_class"].keys()), set(m.classes_))
+
+    def test_leaf_with_no_surviving_features_falls_back_to_constant(self):
+        # y depends only on a, b; with top_n=2 the flat model's own feature
+        # selection should drop c and d entirely, starving G2's leaf.
+        y_ab_only = (self.a >= 5).astype(int)
+        m = DeconstructedHierarchicalClassifier(
+            flat_classifier_kwargs={"top_n": 2},
+        ).fit(self.X, y_ab_only, self.topology)
+        self.assertEqual(m.node_state_["G2"]["kind"], "constant")
+        proba = m.predict_proba(self.X)
+        self.assertEqual(proba.shape, (len(self.X), 2))
+        np.testing.assert_allclose(proba.sum(axis=1), 1.0, rtol=1e-6)
+
+    def test_plot_classifier_tree_returns_figure(self):
+        m = DeconstructedHierarchicalClassifier().fit(self.X, self.y, self.topology)
+        fig = plot_deconstructed_tree(m)
+        self.assertIsInstance(fig, matplotlib.figure.Figure)
+        texts = [t.get_text() for t in fig.axes[0].texts]
+        self.assertTrue(any("classes" in t for t in texts))
+        self.assertTrue(any("avg" in t for t in texts))
 
 
 if __name__ == "__main__":
