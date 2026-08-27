@@ -34,12 +34,12 @@ import warnings
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import mean_squared_error, r2_score
 
 warnings.filterwarnings("ignore")
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from demo_utils import evaluate_model, regressor_report
 from fuzzytree import DeconstructedHierarchicalRegressor, HierarchicalFuzzyExpertsRegressor
 from tribblefis.gaussian_regressor import TribbleRegressor
 
@@ -117,10 +117,8 @@ def load_data():
 
 
 def report(name, y_true, y_pred):
-    r2 = r2_score(y_true, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-    print(f"  {name:<56} R2={r2:6.3f}   RMSE={rmse:7.2f}")
-    return r2, rmse
+    """Local report for leaf predictions that don't go through evaluate_model."""
+    return regressor_report(name, y_true, y_pred)
 
 
 def main():
@@ -145,21 +143,21 @@ def main():
     print("=" * 82)
 
     flat = TribbleRegressor(n_output_buckets=4, tsk_order="1st", top_n=-1, random_state=SEED).fit(X_tr, y_tr)
-    report(f"Flat TRIBBLE on all {len(sensor_cols)} real channels", y_te, flat.predict(X_te))
+    evaluate_model(flat, X_te, y_te, f"Flat TRIBBLE on all {len(sensor_cols)} real channels", regressor_report)
 
     hme = HierarchicalFuzzyExpertsRegressor(
         criterion="variance", max_depth=2, n_gate_terms=2, top_n=6,
         min_soft_count=100, min_expert_samples=150,
         expert_kwargs={"n_output_buckets": 4, "tsk_order": "1st"},
     ).fit(X_tr, y_tr)
-    report("HME (auto topology)", y_te, hme.predict(X_te))
+    evaluate_model(hme, X_te, y_te, "HME (auto topology)", regressor_report)
 
     fold2_no_oracle = DeconstructedHierarchicalRegressor(
         flat_regressor_kwargs={"n_output_buckets": 4, "top_n": -1, "random_state": SEED},
     ).fit(X_tr, y_tr, TOPOLOGY)
-    report("Deconstructed tree (leaves supervised only on RUL)", y_te, fold2_no_oracle.predict(X_te))
+    evaluate_model(fold2_no_oracle, X_te, y_te, "Deconstructed tree (leaves supervised only on RUL)", regressor_report)
 
-    report("Deconstructed tree (leaves supervised on true health params)", y_te, fold1.predict(X_te))
+    evaluate_model(fold1, X_te, y_te, "Deconstructed tree (leaves supervised on true health params)", regressor_report)
 
 
 if __name__ == "__main__":

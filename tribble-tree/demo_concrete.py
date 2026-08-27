@@ -21,13 +21,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
 warnings.filterwarnings("ignore")  # quiet upstream KMeans/scipy fit warnings
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from demo_utils import evaluate_model, regressor_report
 from fuzzytree import (
     FuzzyRegressionTree,
     HierarchicalFuzzyExpertsRegressor,
@@ -61,13 +61,6 @@ def load_data():
     return X, y.to_numpy()
 
 
-def report(name, y_true, y_pred):
-    r2 = r2_score(y_true, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-    print(f"  {name:<44} R2={r2:6.3f}   RMSE={rmse:6.3f} MPa")
-    return r2, rmse
-
-
 def main():
     print("Loading UCI concrete compressive-strength data...")
     X, y = load_data()
@@ -81,17 +74,17 @@ def main():
     baseline = TribbleRegressor(
         n_output_buckets=3, tsk_order="1st", top_n=-1, random_state=42
     ).fit(X_tr, y_tr)
-    report("Flat TRIBBLE (TribbleRegressor)", y_te, baseline.predict(X_te))
+    evaluate_model(baseline, X_te, y_te, "Flat TRIBBLE (TribbleRegressor)", regressor_report)
 
     tree0 = FuzzyRegressionTree(
         tsk_order="0th", criterion="variance", max_depth=3, n_terms=2, top_n=4, min_soft_count=20
     ).fit(X_tr, y_tr)
-    report("Fuzzy tree (0th-order, constant leaves)", y_te, tree0.predict(X_te))
+    evaluate_model(tree0, X_te, y_te, "Fuzzy tree (0th-order, constant leaves)", regressor_report)
 
     tree1 = FuzzyRegressionTree(
         tsk_order="1st", criterion="variance", max_depth=3, n_terms=2, top_n=4, min_soft_count=20
     ).fit(X_tr, y_tr)
-    report("Fuzzy tree (1st-order, linear leaves)", y_te, tree1.predict(X_te))
+    evaluate_model(tree1, X_te, y_te, "Fuzzy tree (1st-order, linear leaves)", regressor_report)
 
     # A user-directed structure: cement content is the dominant strength driver,
     # so pin Cement to the root and let the criterion choose the rest.
@@ -103,7 +96,7 @@ def main():
     tree_plan = FuzzyRegressionTree(
         variable_plan=plan, tsk_order="1st", top_n=4, min_soft_count=20
     ).fit(X_tr, y_tr)
-    report("Fuzzy tree (1st-order, Cement pinned to root)", y_te, tree_plan.predict(X_te))
+    evaluate_model(tree_plan, X_te, y_te, "Fuzzy tree (1st-order, Cement pinned to root)", regressor_report)
 
     # Hierarchical mixture of fuzzy experts: gate (route) on the strongest
     # features, and let a full TSK sub-FIS predict within each region.
@@ -112,7 +105,7 @@ def main():
         min_soft_count=40, min_expert_samples=60,
         expert_kwargs={"n_output_buckets": 3, "tsk_order": "1st"},
     ).fit(X_tr, y_tr)
-    report("Hierarchical fuzzy experts (gated sub-FIS)", y_te, hme.predict(X_te))
+    evaluate_model(hme, X_te, y_te, "Hierarchical fuzzy experts (gated sub-FIS)", regressor_report)
 
     print("\n" + "=" * 74)
     print("HUMAN-READABLE RULE TREE (1st-order fuzzy tree, auto structure)")
