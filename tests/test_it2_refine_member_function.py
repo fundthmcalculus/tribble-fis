@@ -105,6 +105,7 @@ def test_refine_it2_antecedents_preserves_lower_le_upper_invariant(member_functi
     assert np.all(firing_lower <= firing_upper + 1e-9)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("member_function", MEMBER_FUNCTIONS)
 def test_refine_it2_regressor_antecedents_never_increases_cv_loss(member_function):
     X, y = make_regression(n_samples=200, n_features=4, n_informative=3, noise=5.0, random_state=3)

@@ -452,6 +452,7 @@ def test_ledoit_wolf_scoring_is_invariant_to_column_order(correlated_one_class):
     np.testing.assert_allclose(det.anomaly_score(X_normal), det.anomaly_score(permuted))
 
 
+@pytest.mark.slow
 def test_few_shot_labels_beat_pure_one_class(correlated_one_class):
     """A handful of labelled anomalies supplies the direction the one-class
     magnitude cannot, which is the whole claim."""
@@ -497,6 +498,7 @@ def test_few_shot_falls_back_to_one_class_without_two_labels(
     assert det._logit_ is None
 
 
+@pytest.mark.slow
 def test_few_shot_density_and_threshold_see_only_the_normal_rows(
     correlated_one_class,
 ):

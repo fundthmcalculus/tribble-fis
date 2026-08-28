@@ -2,6 +2,7 @@ import unittest
 
 import numpy as np
 import pandas as pd
+import pytest
 from matplotlib import pyplot as plt
 
 from tribblefis.gaussian_regressor import TribbleRegressor
@@ -555,6 +556,7 @@ class TestAntecedentRefinement(unittest.TestCase):
         # Safeguard: never return worse than the heuristic start on the CV fitness.
         self.assertLessEqual(info["val_mse"], info["init_val_mse"] + 1e-9)
 
+    @pytest.mark.slow
     def test_de_refine_never_worsens_val(self):
         """`refine_antecedents_de` now runs a GA via the in-house `optimizers`
         package instead of `scipy.optimize.differential_evolution` -- still

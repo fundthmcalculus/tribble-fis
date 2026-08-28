@@ -1,0 +1,125 @@
+name: Nightly (full suite)
+
+# The complement of tests.yml. Pull requests now run
+# `-m "not performance and not slow"`, which drops two categories:
+#
+#   * `performance` -- wall-clock benchmarks, already deselected on PRs before
+#     this workflow existed, and until now running nowhere automated at all;
+#   * `slow` -- eleven expensive *correctness* tests, mostly the GT2/IT2
+#     antecedent-refinement monotonicity guarantees ("refinement never
+#     increases CV loss"). Those are real invariants, not benchmarks, and
+#     deselecting them on PRs is only defensible because they run here.
+#
+# Both kernel legs, because a refinement regression that only shows up against
+# the compiled kernel is exactly the kind of thing the numpy leg cannot see.
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  full-suite:
+    name: full suite (${{ matrix.kernel }} kernel)
+    runs-on: ubuntu-latest
+    # The unmarked suite took ~20 min per leg before the split; the slow and
+    # performance tests push it higher. 90 min is generous headroom that still
+    # frees the runner well before the six-hour default.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: [numpy, compiled]
+    env:
+      UV_PYTHON: "3.11"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          # Deliberately NOT the same cache-suffix as tests.yml. Sharing it
+          # would have the nightly and the PR job evicting each other's entries
+          # on a cache that is keyed on uv.lock and sized per-repo.
+          cache-suffix: nightly-${{ matrix.kernel }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Build the compiled kernel
+        if: matrix.kernel == 'compiled'
+        run: uv run --with cython --with setuptools python setup_cython.py build_ext --inplace
+
+      # Same assertion tests.yml makes, and for the same reason: an unbuilt
+      # extension turns this leg into a second copy of the numpy leg with every
+      # kernel test silently skipped.
+      - name: Confirm the kernel state matches the matrix leg
+        run: |
+          uv run python - <<'PY'
+          from tribblefis import kernel
+          want = "${{ matrix.kernel }}" == "compiled"
+          if kernel.HAVE_CYTHON_KERNEL != want:
+              raise SystemExit(
+                  f"expected HAVE_CYTHON_KERNEL={want} on the "
+                  f"'${{ matrix.kernel }}' leg, got {kernel.HAVE_CYTHON_KERNEL}"
+              )
+          print(f"kernel backend under test: {'compiled' if want else 'numpy'}")
+          PY
+
+      # No -m at all: every marker included. --durations=25 so the next person
+      # asking "what should be marked slow?" has a measured answer rather than
+      # a guess, and so a test drifting past the ~25s bar is visible here first.
+      - name: Run the full suite
+        run: uv run pytest -n auto --durations=25
+
+      - name: Report a failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          KERNEL: ${{ matrix.kernel }}
+        run: |
+          set -euo pipefail
+          TITLE="Nightly full suite is failing ($KERNEL kernel)"
+          # `gh issue create --label` errors on an unknown label, and a failed
+          # report is worse than a noisy one, so ensure the label exists first.
+          gh label create nightly-failure --color B60205 \
+            --description "Opened automatically when the nightly suite fails" 2>/dev/null || true
+          # Exact title match over the labelled issues, NOT `--search "... in:title"`:
+          # GitHub's search index lags issue creation by seconds to minutes, so a
+          # search-based check can miss an issue that already exists and open a
+          # duplicate -- the precise failure this dedupe is here to prevent. The
+          # label list is served from the database and is immediately consistent.
+          existing=$(gh issue list --state open --label nightly-failure --limit 100 \
+            --json number,title --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          if [ -n "$existing" ]; then
+            # One issue that accumulates nights, not one issue per night.
+            gh issue comment "$existing" \
+              --body "Still failing on \`${{ github.sha }}\` -- [run]($RUN_URL)"
+            echo "commented on #$existing"
+          else
+            {
+              echo "The nightly run failed on the \`$KERNEL\` kernel."
+              echo
+              echo "Pull requests run \`-m \"not performance and not slow\"\`, so this is either"
+              echo "a \`performance\` benchmark regression or one of the \`slow\` correctness"
+              echo "tests -- the GT2/IT2 refinement monotonicity guarantees among them."
+              echo "Neither is visible to the PR gate."
+              echo
+              echo "- Commit: \`${{ github.sha }}\`"
+              echo "- Run: $RUN_URL"
+              echo
+              echo "This issue collects one comment per failing night and is NOT closed"
+              echo "automatically -- a nightly that starts passing again may just be flaky."
+              echo "Close it once the cause is understood."
+            } > issue-body.md
+            gh issue create --title "$TITLE" --label nightly-failure --body-file issue-body.md
+          fi

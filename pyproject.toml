@@ -59,6 +59,19 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
     "performance: marks tests as performance benchmarks (deselect with '-m \"not performance\"')",
+    # Correctness tests -- not benchmarks -- that are simply expensive, because
+    # GT2/IT2 antecedent refinement runs an optimizer sub-problem per slot per
+    # alpha plane. They are deselected on pull requests and run in full by
+    # nightly.yml, which opens an issue when they fail.
+    #
+    # The bar for adding a test here is wall-clock, measured, not guessed: the
+    # eleven marked today were the only ones above ~25s in a --durations run.
+    # One of them alone (test_refine_gt2_regressor_antecedents_never_increases_
+    # cv_loss[triangular], 399s) set a hard floor under the whole suite --
+    # pytest-xdist can shorten everything else, but never the longest single
+    # test. Do not mark a test slow to dodge a genuine regression; if it got
+    # slower, that is the finding.
+    "slow: expensive correctness test; deselected on PRs, run by nightly.yml",
 ]
 
 [tool.mypy]

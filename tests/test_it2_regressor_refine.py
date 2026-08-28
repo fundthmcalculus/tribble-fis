@@ -41,6 +41,7 @@ def _fitted_it2_regressor(X, y, **kwargs):
     return reg
 
 
+@pytest.mark.slow
 def test_refine_it2_regressor_antecedents_never_increases_cv_loss(synthetic_regression_data):
     X, y = synthetic_regression_data
     reg = _fitted_it2_regressor(X, y)
@@ -119,6 +120,7 @@ def test_regressor_refine_it2_option_fits_and_predicts_with_containment(syntheti
     np.testing.assert_allclose(y_pred, 0.5 * (y_lower + y_upper), atol=1e-9)
 
 
+@pytest.mark.slow
 def test_regressor_refine_it2_does_not_drastically_worsen_rmse(synthetic_regression_data):
     X, y = synthetic_regression_data
     from sklearn.metrics import mean_squared_error
