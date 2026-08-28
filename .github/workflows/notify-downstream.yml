@@ -1,0 +1,52 @@
+name: Notify downstream
+
+# This repo is a dependency of the repos in the matrix below. Nothing here
+# publishes on merge, so until now a fix landing on `main` sat unused until a
+# human remembered to bump a pin -- or, for grad-school's submodules, until its
+# twice-daily poll happened to run (up to 12h). tribble-fis consumes this repo
+# through a git pin in its `uv.lock`, which no poll covered at all.
+#
+# This closes that: every push to `main` pokes each downstream, which then
+# re-resolves its pin and force-updates its single standing sync PR.
+#
+# WHY A PAT: `repository_dispatch` writes to the *downstream* repo, and the
+# automatic GITHUB_TOKEN is scoped to this one -- there is no way to grant it
+# cross-repo. DOWNSTREAM_SYNC_TOKEN is a fine-grained PAT needing only
+# "Contents: read and write" on the downstream repos. When it is missing this
+# job logs a warning and exits 0 rather than failing: the downstream cron is
+# still there and still catches the change, just on its own schedule. That
+# makes the token a latency upgrade, not a hard dependency.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# A burst of merges should notify once with the newest SHA, not queue one run
+# per commit -- each dispatch triggers a full downstream re-resolve.
+concurrency:
+  group: notify-downstream
+  cancel-in-progress: true
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    strategy:
+      # One unreachable downstream must not suppress the others.
+      fail-fast: false
+      matrix:
+        downstream: [fundthmcalculus/grad-school]
+    steps:
+      - name: Dispatch upstream-updated to ${{ matrix.downstream }}
+        env:
+          GH_TOKEN: ${{ secrets.DOWNSTREAM_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::DOWNSTREAM_SYNC_TOKEN is not set -- not notifying ${{ matrix.downstream }}. Its scheduled sync will still pick this up."
+            exit 0
+          fi
+          gh api "repos/${{ matrix.downstream }}/dispatches"             -f event_type=upstream-updated             -f 'client_payload[repo]=fundthmcalculus/tribble-fis'             -f 'client_payload[sha]=${{ github.sha }}'
+          echo "notified ${{ matrix.downstream }} that fundthmcalculus/tribble-fis is at ${{ github.sha }}"
