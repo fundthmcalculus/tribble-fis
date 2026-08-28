@@ -130,5 +130,12 @@ jobs:
       #
       # Pushes to main still run everything: the deselection is a PR-latency
       # tradeoff, and main is where it should not apply.
+      #
+      # --durations=25 is not decoration. The `slow` list was derived from a
+      # local numpy-kernel profile, but the *compiled* leg is the binding
+      # constraint (232s numpy vs materially longer compiled on the same
+      # commit), and nothing had ever measured which tests are slow *there*.
+      # Printing it every run means the next person tuning this budget reads a
+      # number instead of extrapolating from the other kernel.
       - name: Run tests
-        run: uv run pytest -n auto ${{ github.event_name == 'pull_request' && '-m "not performance and not slow"' || '' }}
+        run: uv run pytest -n auto --durations=25 ${{ github.event_name == 'pull_request' && '-m "not performance and not slow"' || '' }}
