@@ -20,21 +20,21 @@ wheels = [
 ]
 
 [[package]]
+name = "cloudpickle"
+version = "3.1.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/27/fb/576f067976d320f5f0114a8d9fa1215425441bb35627b1993e5afd8111e5/cloudpickle-3.1.2.tar.gz", hash = "sha256:7fda9eb655c9c230dab534f1983763de5835249750e85fbcef43aaa30a9a2414", size = 22330, upload-time = "2025-11-03T09:25:26.604Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/88/39/799be3f2f0f38cc727ee3b4f1445fe6d5e4133064ec2e4115069418a5bb6/cloudpickle-3.1.2-py3-none-any.whl", hash = "sha256:9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a", size = 22228, upload-time = "2025-11-03T09:25:25.534Z" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
-]
-
-[[package]]
-name = "contextlib2"
-version = "21.6.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c7/13/37ea7805ae3057992e96ecb1cffa2fa35c2ef4498543b846f90dd2348d8f/contextlib2-21.6.0.tar.gz", hash = "sha256:ab1e2bfe1d01d968e1b7e8d9023bc51ef3509bba217bb730cee3827e1ee82869", size = 43795, upload-time = "2021-06-27T06:54:40.841Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/76/56/6d6872f79d14c0cb02f1646cbb4592eef935857c0951a105874b7b62a0c3/contextlib2-21.6.0-py2.py3-none-any.whl", hash = "sha256:3fbdb64466afd23abaf6c977627b75b6139a5a3e8ce38405c5b413aed7a0471f", size = 13277, upload-time = "2021-06-27T06:54:20.972Z" },
 ]
 
 [[package]]
@@ -623,20 +623,6 @@ wheels = [
 ]
 
 [[package]]
-name = "numba-progress"
-version = "1.2.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numba" },
-    { name = "numpy" },
-    { name = "tqdm" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a2/ae/3f8e5e757badaf8e2fe6c596f183c6709c4e7af51cd4bdcbaec61c2c27ca/numba_progress-1.2.0.tar.gz", hash = "sha256:c6189119ae901ad106b0cae3796319024d20bbbb3b7ae027b9bfcb08802585a8", size = 14392, upload-time = "2026-04-28T18:36:18.079Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ec/4f/71b6d8605d46fdf629f0e3f595a6bfd50ad6b731550cbd70ef79d0e3b692/numba_progress-1.2.0-py3-none-any.whl", hash = "sha256:9404c437d55f6454d907ebad28717baf64593405c68446675c1d0d10c833b21f", size = 7445, upload-time = "2026-04-28T18:36:19.399Z" },
-]
-
-[[package]]
 name = "numpy"
 version = "2.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -718,9 +704,9 @@ wheels = [
 [[package]]
 name = "optimizers"
 version = "0.2.0"
-source = { git = "https://github.com/fundthmcalculus/optimizers.git#7b5958a1d27928451ec71d6909a768e7bf730323" }
+source = { git = "https://github.com/fundthmcalculus/optimizers.git#4d81121499a2c718f7d3cbd6566cb8a0604758ee" }
 dependencies = [
-    { name = "contextlib2" },
+    { name = "cloudpickle" },
     { name = "joblib" },
     { name = "kmodes" },
     { name = "matplotlib" },
@@ -1183,11 +1169,10 @@ wheels = [
 [[package]]
 name = "tribble-clustering"
 version = "0.2.1"
-source = { git = "https://github.com/fundthmcalculus/clustering.git#635ed6ed713298b9823ff226de533e68a8917c1b" }
+source = { git = "https://github.com/fundthmcalculus/clustering.git#1dcf331b17b6a455babff953414894d95fbba4c4" }
 dependencies = [
     { name = "matplotlib" },
     { name = "numba" },
-    { name = "numba-progress" },
     { name = "numpy" },
 ]
 
