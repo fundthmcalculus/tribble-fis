@@ -1,10 +1,9 @@
 name: Notify downstream
 
-# This repo is a dependency of the repos in the matrix below. Nothing here
-# publishes on merge, so until now a fix landing on `main` sat unused until a
-# human remembered to bump a pin -- or, for grad-school's submodules, until its
-# twice-daily poll happened to run (up to 12h). tribble-fis consumes this repo
-# through a git pin in its `uv.lock`, which no poll covered at all.
+# This repo is a dependency of the repos listed in DOWNSTREAMS below. Nothing
+# here publishes on merge, so until now a fix landing on `main` sat unused until
+# a human remembered to bump a pin -- or, for grad-school's submodules, until its
+# twice-daily poll happened to run (up to 12h). grad-school pins this repo as a submodule.
 #
 # This closes that: every push to `main` pokes each downstream, which then
 # re-resolves its pin and force-updates its single standing sync PR.
@@ -12,10 +11,9 @@ name: Notify downstream
 # WHY A PAT: `repository_dispatch` writes to the *downstream* repo, and the
 # automatic GITHUB_TOKEN is scoped to this one -- there is no way to grant it
 # cross-repo. DOWNSTREAM_SYNC_TOKEN is a fine-grained PAT needing only
-# "Contents: read and write" on the downstream repos. When it is missing this
-# job logs a warning and exits 0 rather than failing: the downstream cron is
-# still there and still catches the change, just on its own schedule. That
-# makes the token a latency upgrade, not a hard dependency.
+# "Contents: read and write" on the downstream repos. When it is absent this job
+# logs a warning and exits 0: the downstream crons still catch the change on
+# their own schedule. The token buys latency, not correctness.
 on:
   push:
     branches: [main]
@@ -24,8 +22,9 @@ on:
 permissions:
   contents: read
 
-# A burst of merges should notify once with the newest SHA, not queue one run
-# per commit -- each dispatch triggers a full downstream re-resolve.
+# A burst of merges should notify once with the newest SHA rather than queue one
+# full downstream re-resolve per commit. Safe to cancel: the survivor carries the
+# newer SHA, and each downstream re-resolves to the branch head regardless.
 concurrency:
   group: notify-downstream
   cancel-in-progress: true
@@ -33,20 +32,33 @@ concurrency:
 jobs:
   notify:
     runs-on: ubuntu-latest
-    strategy:
-      # One unreachable downstream must not suppress the others.
-      fail-fast: false
-      matrix:
-        downstream: [fundthmcalculus/grad-school]
+    env:
+      # Deliberately a loop in one job rather than a matrix: each leg is a
+      # single API call, and a matrix would spin up a whole extra runner per
+      # downstream to make it. The loop keeps the isolation that mattered --
+      # one unreachable downstream does not skip the others -- and still fails
+      # the job at the end so a broken dispatch is visible rather than silent.
+      DOWNSTREAMS: >-
+        fundthmcalculus/grad-school
     steps:
-      - name: Dispatch upstream-updated to ${{ matrix.downstream }}
+      - name: Dispatch upstream-updated to each downstream
         env:
           GH_TOKEN: ${{ secrets.DOWNSTREAM_SYNC_TOKEN }}
+          SELF: fundthmcalculus/tribble-fis
+          SHA: ${{ github.sha }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::warning::DOWNSTREAM_SYNC_TOKEN is not set -- not notifying ${{ matrix.downstream }}. Its scheduled sync will still pick this up."
+            echo "::warning::DOWNSTREAM_SYNC_TOKEN is not set -- notifying nobody. The downstream scheduled syncs will still pick this up, just later."
             exit 0
           fi
-          gh api "repos/${{ matrix.downstream }}/dispatches"             -f event_type=upstream-updated             -f 'client_payload[repo]=fundthmcalculus/tribble-fis'             -f 'client_payload[sha]=${{ github.sha }}'
-          echo "notified ${{ matrix.downstream }} that fundthmcalculus/tribble-fis is at ${{ github.sha }}"
+          failed=0
+          for downstream in $DOWNSTREAMS; do
+            if gh api "repos/$downstream/dispatches"                  -f event_type=upstream-updated                  -f "client_payload[repo]=$SELF"                  -f "client_payload[sha]=$SHA"; then
+              echo "notified $downstream that $SELF is at $SHA"
+            else
+              echo "::error::failed to notify $downstream"
+              failed=1
+            fi
+          done
+          exit "$failed"
