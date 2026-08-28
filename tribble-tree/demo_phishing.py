@@ -24,7 +24,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import make_pipeline
 
@@ -32,6 +31,7 @@ warnings.filterwarnings("ignore")  # quiet upstream KMeans/scipy fit warnings
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from demo_utils import classifier_report, evaluate_model
 from fuzzytree import (
     FuzzyClassificationTree,
     HierarchicalFuzzyExpertsClassifier,
@@ -66,13 +66,6 @@ def load_data(sample_size=SAMPLE_SIZE, random_state=42):
     return X, y.to_numpy()
 
 
-def report(name, y_true, y_pred):
-    acc = accuracy_score(y_true, y_pred)
-    f1 = f1_score(y_true, y_pred, pos_label="phish")
-    print(f"  {name:<46} acc={acc:6.3f}   F1(phish)={f1:6.3f}")
-    return acc, f1
-
-
 def main():
     print("Loading PhiUSIIL phishing-URL data...")
     X, y = load_data()
@@ -87,7 +80,7 @@ def main():
     print("=" * 76)
 
     baseline = TribbleClassifier(top_n=5, random_state=42).fit(X_tr, y_tr)
-    report("Flat TRIBBLE (TribbleClassifier)", y_te, baseline.predict(X_te))
+    evaluate_model(baseline, X_te, y_te, "Flat TRIBBLE (TribbleClassifier)", classifier_report, pos_label="phish")
 
     # Several of the URL/page count features here (e.g. NoOfSubDomain,
     # NoOfImage) span multiple orders of magnitude. StandardFuzzyScalar/UnitFuzzyScalar
@@ -103,22 +96,22 @@ def main():
     standard_pipe = make_pipeline(
         StandardFuzzyScalar(), TribbleClassifier(top_n=5, random_state=42)
     ).fit(X_tr, y_tr)
-    report("Flat TRIBBLE + StandardFuzzyScalar (Pipeline)", y_te, standard_pipe.predict(X_te))
+    evaluate_model(standard_pipe, X_te, y_te, "Flat TRIBBLE + StandardFuzzyScalar (Pipeline)", classifier_report, pos_label="phish")
 
     unit_pipe = make_pipeline(
         UnitFuzzyScalar(), TribbleClassifier(top_n=5, random_state=42)
     ).fit(X_tr, y_tr)
-    report("Flat TRIBBLE + UnitFuzzyScalar (Pipeline)", y_te, unit_pipe.predict(X_te))
+    evaluate_model(unit_pipe, X_te, y_te, "Flat TRIBBLE + UnitFuzzyScalar (Pipeline)", classifier_report, pos_label="phish")
 
     tree = FuzzyClassificationTree(
         criterion="ambiguity", max_depth=3, n_terms=2, top_n=5, min_soft_count=50
     ).fit(X_tr, y_tr)
-    report("Fuzzy tree (ambiguity splits)", y_te, tree.predict(X_te))
+    evaluate_model(tree, X_te, y_te, "Fuzzy tree (ambiguity splits)", classifier_report, pos_label="phish")
 
     tree_ig = FuzzyClassificationTree(
         criterion="info_gain", max_depth=3, n_terms=2, top_n=5, min_soft_count=50
     ).fit(X_tr, y_tr)
-    report("Fuzzy tree (fuzzy info-gain splits)", y_te, tree_ig.predict(X_te))
+    evaluate_model(tree_ig, X_te, y_te, "Fuzzy tree (fuzzy info-gain splits)", classifier_report, pos_label="phish")
 
     # A user-directed structure: HTTPS usage is a well-known phishing signal, so
     # pin IsHTTPS to the root and let the criterion choose deeper splits.
@@ -130,7 +123,7 @@ def main():
         tree_plan = FuzzyClassificationTree(
             variable_plan=plan, top_n=5, min_soft_count=50
         ).fit(X_tr, y_tr)
-        report("Fuzzy tree (IsHTTPS pinned to root)", y_te, tree_plan.predict(X_te))
+        evaluate_model(tree_plan, X_te, y_te, "Fuzzy tree (IsHTTPS pinned to root)", classifier_report, pos_label="phish")
 
     # Hierarchical mixture of fuzzy experts: gate (route) on the strongest
     # signals, and let a full fuzzy classifier sub-FIS decide within each region.
@@ -139,7 +132,7 @@ def main():
         min_soft_count=100, min_expert_samples=200,
         expert_kwargs={"top_n": 5},
     ).fit(X_tr, y_tr)
-    report("Hierarchical fuzzy experts (gated sub-FIS)", y_te, hme.predict(X_te))
+    evaluate_model(hme, X_te, y_te, "Hierarchical fuzzy experts (gated sub-FIS)", classifier_report, pos_label="phish")
 
     print("\n" + "=" * 76)
     print("HUMAN-READABLE RULE TREE (ambiguity splits)")

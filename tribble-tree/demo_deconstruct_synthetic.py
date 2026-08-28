@@ -24,13 +24,17 @@ import warnings
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
 warnings.filterwarnings("ignore")
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from demo_utils import evaluate_model, regressor_report
+
+# Retain report for internal leaf prediction, which doesn't go through evaluate_model
+def report(name, y_true, y_pred):
+    return regressor_report(name, y_true, y_pred)
 from fuzzytree import DeconstructedHierarchicalRegressor, HierarchicalFuzzyExpertsRegressor
 from tribblefis.gaussian_regressor import TribbleRegressor
 
@@ -56,13 +60,6 @@ def make_data(n=4000, seed=0):
     return X, y.to_numpy(), groups
 
 
-def report(name, y_true, y_pred):
-    r2 = r2_score(y_true, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-    print(f"  {name:<52} R2={r2:6.3f}   RMSE={rmse:6.3f}")
-    return r2, rmse
-
-
 def main():
     print("Synthetic 3-group dataset (a,b -> G1; c,d -> G2; e,f -> G3; no cross-group interaction)\n")
     X, y, groups = make_data()
@@ -75,19 +72,19 @@ def main():
     print("=" * 78)
 
     flat = TribbleRegressor(n_output_buckets=5, tsk_order="1st", top_n=-1, random_state=42).fit(X_tr, y_tr)
-    report("Flat TRIBBLE (TribbleRegressor, no structure)", y_te, flat.predict(X_te))
+    evaluate_model(flat, X_te, y_te, "Flat TRIBBLE (TribbleRegressor, no structure)", regressor_report)
 
     hme = HierarchicalFuzzyExpertsRegressor(
         criterion="variance", max_depth=2, n_gate_terms=2, top_n=4,
         min_soft_count=40, min_expert_samples=60,
         expert_kwargs={"n_output_buckets": 4, "tsk_order": "1st"},
     ).fit(X_tr, y_tr)
-    report("HME (auto topology, fits sub-FIS per leaf row subset)", y_te, hme.predict(X_te))
+    evaluate_model(hme, X_te, y_te, "HME (auto topology, fits sub-FIS per leaf row subset)", regressor_report)
 
     deconstructed = DeconstructedHierarchicalRegressor(
         flat_regressor_kwargs={"n_output_buckets": 5, "top_n": -1, "random_state": 42},
     ).fit(X_tr, y_tr, TOPOLOGY)
-    report("Deconstructed tree (true topology, flat-then-deconstruct)", y_te, deconstructed.predict(X_te))
+    evaluate_model(deconstructed, X_te, y_te, "Deconstructed tree (true topology, flat-then-deconstruct)", regressor_report)
 
     print("\n" + "=" * 78)
     print("PER-LEAF RECOVERY (deconstructed tree only): does each leaf's own fitted")
@@ -118,7 +115,7 @@ def main():
     deconstructed_oracle_leaves = DeconstructedHierarchicalRegressor(
         flat_regressor_kwargs={"n_output_buckets": 5, "top_n": -1, "random_state": 42},
     ).fit(X_tr, y_tr, TOPOLOGY, leaf_targets=leaf_targets_tr)
-    report("Deconstructed tree (leaves supervised on true group signal)", y_te, deconstructed_oracle_leaves.predict(X_te))
+    evaluate_model(deconstructed_oracle_leaves, X_te, y_te, "Deconstructed tree (leaves supervised on true group signal)", regressor_report)
     for leaf in deconstructed_oracle_leaves.root_.iter_leaves():
         leaf_pred = deconstructed_oracle_leaves._predict_node(leaf, X_te)
         true_contribution = groups[leaf.name].to_numpy()[idx_te]
