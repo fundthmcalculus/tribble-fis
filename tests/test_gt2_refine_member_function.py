@@ -91,6 +91,7 @@ def test_refine_gt2_antecedents_actually_changes_parameters(member_function, syn
     assert not np.allclose(before, after), "refinement left every antecedent parameter unchanged"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("member_function", MEMBER_FUNCTIONS)
 def test_refine_gt2_antecedents_preserves_ordering_invariant(member_function, synthetic_classification_data):
     """`a_upper <= a_principal <= a_lower` (and the right-side mirror) must

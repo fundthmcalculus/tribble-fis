@@ -53,6 +53,7 @@ def test_refine_gt2_regressor_antecedents_never_increases_cv_loss(synthetic_regr
     assert y_bucket_mean.shape == reg._base_regressor.y_bucket_mean_.shape
 
 
+@pytest.mark.slow
 def test_refine_gt2_regressor_antecedents_preserves_sigma_ordering_invariant(synthetic_regression_data):
     X, y = synthetic_regression_data
     reg = _fitted_gt2_regressor(X, y)
@@ -124,6 +125,7 @@ def test_regressor_refine_gt2_option_fits_and_predicts_with_containment(syntheti
     assert np.all(y_pred <= y_upper + 1e-9)
 
 
+@pytest.mark.slow
 def test_regressor_refine_gt2_does_not_drastically_worsen_rmse(synthetic_regression_data):
     X, y = synthetic_regression_data
     from sklearn.metrics import mean_squared_error

@@ -130,6 +130,7 @@ def test_default_guard_is_none():
     assert sig.parameters["guard"].default == "none"
 
 
+@pytest.mark.slow
 def test_none_trains_on_all_the_data():
     """Half the value of dropping the guard is reclaiming `val_fraction` of the
     training set. If the split were still being taken, shrinking val_fraction
