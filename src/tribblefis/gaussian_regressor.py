@@ -18,9 +18,16 @@ from .regression import (
     partition_output,
     solve_tsk_consequents,
     select_interaction_terms,
+    select_consequent_hyperparams,
     predict_tsk,
     compute_rbf_centers,
 )
+
+# Candidates tried by tsk_order="auto" (regression.select_consequent_hyperparams's
+# CV screen). Includes "0th" -- unlike that helper's own default -- because auto's
+# whole point is a safety net against small-sample overfitting (issue #120), and
+# 0th is the floor every candidate above it must beat.
+_AUTO_ORDER_CANDIDATES = ("0th", "1st", "2nd", "full-2nd", "3rd")
 
 
 class TribbleRegressor(BaseEstimator, RegressorMixin):
@@ -53,6 +60,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         detect_interactions=False,
         interaction_top_p=0.95,
         select_interactions=False,
+        auto_order_candidates=_AUTO_ORDER_CANDIDATES,
         rbf_n_centers=3,
         rbf_gamma=1.0,
         rbf_radius=None,
@@ -72,7 +80,21 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             output_partition: "uniform" for equal-width buckets (default), or
                 "quantile" for equal-frequency buckets with pinned extreme centroids,
                 which is what this estimator shipped with before.
-            tsk_order: TSK polynomial order ('0th', '1st', '2nd', '3rd', 'full-2nd').
+            tsk_order: TSK polynomial order ('0th', '1st', '2nd', '3rd', 'full-2nd'),
+                or 'auto' to pick one per fit. A full-2nd consequent fits
+                1 + 2*n_features + C(n_features, 2) coefficients per rule, which
+                overfits catastrophically once training rows per rule undercut
+                that count by roughly 5x (issue #120 -- e.g. diabetes-scale data
+                went from R²=0.44 at order 1 to R²=-0.05 at full-2nd). 'auto'
+                runs `regression.select_consequent_hyperparams`'s k-fold CV over
+                `auto_order_candidates` (basis and l2_reg held at whatever this
+                estimator was constructed with) and fits the winner; the choice
+                is exposed as `tsk_order_` and the full CV result as
+                `consequent_selection_`. Costs one CV sweep at fit time (cheap:
+                each candidate is a single linear solve per fold). Note CV always
+                scores at firing_exponent=1.0 regardless of this estimator's
+                `firing_exponent`, since `select_consequent_hyperparams` does not
+                thread that parameter through.
             optimize_coefficients: Retained for API compatibility. Consequents are
                 always solved in closed form (the exact firing-weighted ridge
                 least-squares optimum), which supersedes the former per-bucket LS
@@ -126,6 +148,8 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                 sparsity pass over the shortlist rather than the dense
                 all-`n_choose_2`-pairs default `full-2nd` otherwise uses. Has
                 no effect for any other `tsk_order` (a warning is raised).
+            auto_order_candidates: Orders tried by `tsk_order='auto'`, in the
+                order CV screens them (first entry wins ties). Ignored otherwise.
             rbf_n_centers: For 'gaussian-rbf' basis, number of centers per feature
                 (produces n_features * rbf_n_centers total centers).
             rbf_gamma: Shape parameter for Gaussian RBF evaluations. Larger values
@@ -152,6 +176,8 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self.interaction_pairs_ = None
         self.cross_pairs_ = None
         self.rbf_centers_ = None
+        self.tsk_order_ = None
+        self.consequent_selection_ = None
 
         self.top_n = top_n
         self.top_p = top_p
@@ -179,6 +205,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self.detect_interactions = detect_interactions
         self.interaction_top_p = interaction_top_p
         self.select_interactions = select_interactions
+        self.auto_order_candidates = auto_order_candidates
         self.rbf_n_centers = rbf_n_centers
         self.rbf_gamma = rbf_gamma
         self.rbf_radius = rbf_radius
@@ -258,7 +285,11 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             )
             self.top_n_actual_ = len(self.top_features_)
 
-            if self.tsk_order == "full-2nd":
+            if self.tsk_order in ("full-2nd", "auto"):
+                # "auto" may or may not resolve to full-2nd, but cross_pairs_ is
+                # only ever consumed when the resolved order is full-2nd
+                # (build_consequent_features ignores it otherwise), so it is
+                # harmless to prepare unconditionally here.
                 # cross_pairs is index-space into the *final* (post-rescue)
                 # top_features_ order -- build_consequent_features/
                 # solve_tsk_consequents/predict_tsk all key on that ordering.
@@ -338,6 +369,31 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         else:
             self.rbf_centers_ = None
 
+        # Resolve tsk_order="auto" to a concrete order via k-fold CV over
+        # auto_order_candidates, before the (single) closed-form consequent
+        # solve below -- see issue #120: full-2nd overfits catastrophically
+        # once rows/coeff drops below ~5, and this is the automatic guard
+        # against picking it blind on small data. self.tsk_order itself is
+        # left untouched (sklearn's clone()/get_params() require __init__
+        # args to round-trip unmodified); the resolved order lives in
+        # tsk_order_, which predict() also reads.
+        self.tsk_order_ = self.tsk_order
+        self.consequent_selection_ = None
+        if self.tsk_order == "auto":
+            self.consequent_selection_ = select_consequent_hyperparams(
+                X_df, self.model_, self.top_features_,
+                self.y_bucket_mean_, y_partitioned,
+                n_output_buckets=self.n_output_buckets,
+                candidate_orders=self.auto_order_candidates,
+                candidate_bases=(self.consequent_basis,),
+                candidate_l2=(self.l2_reg,),
+                pin_extremes=self.pin_extremes,
+                random_state=self.random_state,
+                rbf_n_centers=self.rbf_n_centers, rbf_gamma=self.rbf_gamma,
+                rbf_radius=self.rbf_radius,
+            )
+            self.tsk_order_ = self.consequent_selection_["order"]
+
         # Solve TSK consequents in closed form: for fixed firing strengths the
         # output is linear in the coefficients, so a single ridge least-squares
         # solve yields the exact firing-weighted optimum.
@@ -345,7 +401,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             X_df, self.model_, self.top_features_,
             self.y_bucket_mean_, y_partitioned,
             n_output_buckets=self.n_output_buckets,
-            order=self.tsk_order, l2_reg=self.l2_reg, basis=self.consequent_basis,
+            order=self.tsk_order_, l2_reg=self.l2_reg, basis=self.consequent_basis,
             pin_extremes=self.pin_extremes,
             norms=self._norms(),
             cross_pairs=self.cross_pairs_,
@@ -380,7 +436,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         return predict_tsk(
             X_df, self.model_, self.top_features_,
             self.y_bucket_mean_, self.corr_terms_,
-            order=self.tsk_order, basis=self.consequent_basis,
+            order=self.tsk_order_, basis=self.consequent_basis,
             norms=self._norms(),
             cross_pairs=self.cross_pairs_,
             rbf_centers=self.rbf_centers_, rbf_gamma=self.rbf_gamma,
