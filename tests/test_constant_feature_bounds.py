@@ -55,7 +55,8 @@ def test_constant_bounds_are_accepted_by_the_optimizer(value):
     against the validator that rejected the old bounds, so the test fails again
     if that contract changes rather than merely if this helper does.
     """
-    variables = pytest.importorskip("optimizers.continuous.variables")
+    from optimizers.continuous import variables
+
     lo, hi, _ = feature_span(np.full(10, value))
     variables.InputContinuousVariable("mu", float(lo), float(hi))
 
@@ -86,10 +87,19 @@ def test_build_param_bounds_survives_a_constant_feature():
     )
     bounds = build_param_bounds(model, X)
 
-    assert bounds, "the model produced no parameter slots to bound"
+    # Assert the constant column actually reached the builder. Without this the
+    # test goes vacuous the moment anything upstream starts dropping
+    # zero-variance columns: it would keep passing while no longer exercising
+    # the case it exists for.
+    assert "constant" in model.feature_models, (
+        "the constant column was dropped before the builder saw it, "
+        "so this test is no longer exercising the degenerate case"
+    )
+    assert len(bounds) == 18, "3 features x 3 buckets x (mu, sigma)"
     for lo, hi in bounds:
         assert lo < hi, f"zero-width bound {(lo, hi)} would be rejected upstream"
 
-    variables = pytest.importorskip("optimizers.continuous.variables")
+    from optimizers.continuous import variables
+
     for i, (lo, hi) in enumerate(bounds):
         variables.InputContinuousVariable(f"p{i}", float(lo), float(hi))
