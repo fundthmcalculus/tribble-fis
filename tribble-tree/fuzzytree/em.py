@@ -135,14 +135,31 @@ def _rebuild_gate_tree(
             sigma = max(float(np.sqrt(var)), float(np.sqrt(var_floor)))
             new_mfs.append(GaussianMembership.create(mu=mu, sigma=sigma))
     else:
+        # Trapezoid gate M-step: Use smooth trapezoid optimization then extract crisp parameters.
+        # The smooth approximation avoids the mode-hugging pathology of piecewise-linear objectives
+        # while preserving crisp trapezoid behavior in the final gates.
+        #
+        # We weight the data using the gate responsibilities (gamma) by resampling, then fit
+        # smooth trapezoids, which gives us better knot optimization than quantile-based approaches.
         n_terms = len(old_mfs)
         total_gamma = float(gamma.sum())
         if total_gamma <= min_mass:
             new_mfs = old_mfs
         else:
-            knots = _weighted_quantiles(col, gamma, np.linspace(0.0, 1.0, n_terms + 1))
-            span = (knots[-1] - knots[0]) if np.all(np.isfinite(knots)) else 0.0
-            new_mfs = _trapezoid_terms(knots, n_terms) if span > 1e-9 else old_mfs
+            # Weighted data: resample according to gamma (normalized to probabilities)
+            from tribblefis.trapz_math_smooth import fit_smooth_trapezoids_em
+
+            p = gamma / total_gamma
+            n_resample = max(int(round(total_gamma)), 100)  # At least 100 samples
+            rng = np.random.default_rng(42)  # Fixed seed for reproducibility
+            idx_resampled = rng.choice(len(col), size=n_resample, replace=True, p=p)
+            col_resampled = col[idx_resampled]
+
+            # Fit smooth trapezoids to weighted sample
+            memberships, weights, _ = fit_smooth_trapezoids_em(
+                col_resampled, n_components=n_terms, n_bins=50, max_iter=20, tol=1e-4, shape="trapezoid"
+            )
+            new_mfs = memberships
 
     new_terms = list(zip(labels, new_mfs))
     new_children = [
