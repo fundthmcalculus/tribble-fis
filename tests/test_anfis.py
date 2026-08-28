@@ -10,7 +10,9 @@ package holds analytic-gradient and closed-form-solver code to
   the same (consequents-held-fixed) loss it is a gradient of;
 * the closed-form consequent solver recovers a known-exact linear function;
 * the estimator's guard-rail (never worse, on the validation fold, than the
-  untrained grid partition) holds end to end.
+  untrained grid partition) holds end to end;
+* the grid partition of a *constant* feature straddles the one value that
+  feature takes rather than sitting beside it (#206).
 """
 
 import unittest
@@ -19,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from tribblefis.gauss_data import GaussianMembership
+from tribblefis.refine import feature_span
 from tribblefis.regression import _mse, _rsquared
 from tribblefis.anfis import (
     ANFISModel,
@@ -187,6 +190,110 @@ class TestANFISRegressorEndToEnd(unittest.TestCase):
         pred = reg.predict(X)
         self.assertEqual(pred.shape, y.shape)
         self.assertTrue(np.all(np.isfinite(pred)))
+
+
+class TestConstantFeatureGridPartition(unittest.TestCase):
+    """A feature whose observed min equals its max (#206).
+
+    `init_anfis_model` used to widen such a feature by anchoring at the low end
+    (`hi = lo + 1.0`) while `refine.feature_span` widened it symmetrically. Two
+    conventions for one degenerate case, and the anchoring one put every term at
+    or above the only value the feature takes: at `k == 1` the centre landed at
+    `lo + 0.5`, and at `k == 4` the four terms evaluated to
+    `[1.0, 6.25e-2, 1.53e-5, 1.46e-11]` there -- lopsided, with the outermost
+    term effectively dead on every row.
+
+    These assert against `feature_span` rather than restating "unit width
+    centred on the constant" locally, so they follow the shared helper if its
+    convention ever moves and fail if `anfis` drifts away from it again.
+    """
+
+    CONSTANT = 3.0
+
+    def _model(self, k):
+        return init_anfis_model(pd.DataFrame({"c": np.full(40, self.CONSTANT)}), ["c"], k)
+
+    def _memberships_at_the_constant(self, model):
+        return term_memberships(model, {"c": np.array([self.CONSTANT])})[0][0]
+
+    def test_single_term_centre_sits_on_the_only_observed_value(self):
+        # The whole point: `lo + 0.5` is not a defensible centre for a feature
+        # that only ever takes `lo`.
+        self.assertEqual(float(self._model(1).mu[0][0]), self.CONSTANT)
+
+    def test_multiple_terms_straddle_the_only_observed_value(self):
+        for k in (2, 3, 4):
+            with self.subTest(k=k):
+                mu = self._model(k).mu[0]
+                self.assertLess(float(np.min(mu)), self.CONSTANT)
+                self.assertGreater(float(np.max(mu)), self.CONSTANT)
+                # Symmetric about the constant, not piled up on one side.
+                self.assertAlmostEqual(
+                    float(np.mean(mu)), self.CONSTANT, places=12
+                )
+
+    def test_terms_are_mirror_images_at_the_only_observed_value(self):
+        # Under the old anchoring, k=4 gave [1.0, 6.25e-2, 1.53e-5, 1.46e-11]:
+        # membership fell away monotonically from one end because every term sat
+        # on the same side of the data. Symmetric widening makes the sequence a
+        # palindrome, so no term is systematically starved.
+        for k in (1, 2, 3, 4):
+            with self.subTest(k=k):
+                mem = self._memberships_at_the_constant(self._model(k))
+                self.assertTrue(np.all(mem > 0.0), mem)
+                np.testing.assert_allclose(mem, mem[::-1], rtol=0, atol=1e-15)
+
+    def test_agrees_with_the_shared_feature_span_helper(self):
+        lo, hi, _ = feature_span(np.full(40, self.CONSTANT))
+        self.assertEqual(float(self._model(1).mu[0][0]), 0.5 * (lo + hi))
+        for k in (2, 3, 4):
+            with self.subTest(k=k):
+                np.testing.assert_allclose(
+                    self._model(k).mu[0], np.linspace(lo, hi, k), rtol=0, atol=1e-15
+                )
+
+    def test_the_width_convention_did_not_move(self):
+        # Only the *location* changed in #206. Both conventions give unit width,
+        # so sigma is what it always was -- adjacent terms crossing at 0.5.
+        _, _, rng = feature_span(np.full(40, self.CONSTANT))
+        for k in (1, 2, 3, 4):
+            with self.subTest(k=k):
+                gap = rng / (k - 1) if k > 1 else rng
+                expected = 0.5 * gap / np.sqrt(2 * np.log(2))
+                np.testing.assert_allclose(
+                    self._model(k).sigma[0], np.full(k, expected), rtol=1e-12, atol=0
+                )
+
+    def test_an_ordinary_column_is_untouched(self):
+        # The non-regression leg: nothing changes when no feature is constant.
+        col = np.linspace(-2.0, 6.0, 50)
+        X = pd.DataFrame({"c": col})
+        for k in (1, 2, 3, 4):
+            with self.subTest(k=k):
+                mu = init_anfis_model(X, ["c"], k).mu[0]
+                expected = (np.array([0.5 * (col.min() + col.max())]) if k == 1
+                            else np.linspace(col.min(), col.max(), k))
+                np.testing.assert_allclose(mu, expected, rtol=0, atol=0)
+
+    def test_a_single_row_frame_centres_every_feature_on_its_value(self):
+        # min == max on every column, which is the same degenerate case.
+        X = pd.DataFrame({"a": [7.5], "b": [-2.0]})
+        model = init_anfis_model(X, ["a", "b"], 2)
+        for fi, value in enumerate((7.5, -2.0)):
+            with self.subTest(feature=fi):
+                self.assertAlmostEqual(float(np.mean(model.mu[fi])), value, places=12)
+
+    def test_an_end_to_end_fit_survives_a_constant_column(self):
+        # A smoke test, not a #206 assertion: the centres are checked above.
+        # What this adds is that the widened feature still trains -- the terms
+        # now overlap far more (0.5/0.5 at k=2 instead of 1.0/0.0625), and a
+        # near-duplicated rule base is the sort of thing a consequent solve can
+        # choke on.
+        X, y = _toy_data(seed=7, n=80)
+        X = X.assign(cst=np.full(len(X), self.CONSTANT))
+        reg = ANFISRegressor(n_terms=2, n_epochs=10, random_state=42).fit(X, y)
+        self.assertTrue(np.all(np.isfinite(reg.predict(X))))
+        self.assertEqual(reg.n_rules_, 8)
 
 
 if __name__ == "__main__":
