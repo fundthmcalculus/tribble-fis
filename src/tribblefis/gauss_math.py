@@ -8,7 +8,6 @@ import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.preprocessing import LabelEncoder
-from tribbleclustering import IVATMeans, FuzzyCMeans
 
 from . import kernel
 from .gauss_data import *  # noqa: F401, F403
