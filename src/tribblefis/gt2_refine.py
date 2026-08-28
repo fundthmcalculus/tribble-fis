@@ -49,7 +49,7 @@ from .gt2_kernel import (
 )
 from .it2_refine import _normalize_proba, _side_widths
 from .optimizer_utils import optimizers_sub_solve as _optimizers_sub_solve
-from .refine import _make_folds, _prepare_folds
+from .refine import _make_folds, _prepare_folds, feature_span
 from .regression import solve_tsk_consequents_from_firing, rule_consequent_values, _mse
 
 
@@ -329,10 +329,7 @@ def refine_gt2_antecedents(
 
     feature_bounds: dict[str, tuple[float, float, float]] = {}
     for fname in {s[0] for s in slots}:
-        col = X[fname].to_numpy(dtype=float)
-        lo, hi = float(np.min(col)), float(np.max(col))
-        rng = hi - lo if hi > lo else 1.0
-        feature_bounds[fname] = (lo, hi, rng)
+        feature_bounds[fname] = feature_span(X[fname].to_numpy(dtype=float))
 
     current = gt2_model
     best_model = gt2_model
@@ -525,10 +522,7 @@ def refine_gt2_regressor_antecedents(
 
     feature_bounds: dict[str, tuple[float, float, float]] = {}
     for fname in {s[0] for s in slots}:
-        col = X[fname].to_numpy(dtype=float)
-        lo, hi = float(np.min(col)), float(np.max(col))
-        rng = hi - lo if hi > lo else 1.0
-        feature_bounds[fname] = (lo, hi, rng)
+        feature_bounds[fname] = feature_span(X[fname].to_numpy(dtype=float))
 
     folds = _make_folds(len(X), n_folds, val_fraction, seed)
     prepared = _prepare_folds(X, y_df, folds)

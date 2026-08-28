@@ -104,6 +104,34 @@ def apply_gaussian_params(model: GaussianMixtureModel, vec: np.ndarray) -> Gauss
     return model._replace(feature_models=new_feature_models)
 
 
+def feature_span(col) -> tuple[float, float, float]:
+    """``(lo, hi, rng)`` for one feature, widened when the feature is constant.
+
+    A constant column gives ``lo == hi``, and a zero-width interval is not a
+    usable box bound. `optimizers` rejects it outright --
+    ``InputContinuousVariable`` raises *"lower_bound must be less than
+    upper_bound"* -- and even where a solver accepts it, pinning mu to a single
+    point makes the sub-solve a no-op that still costs a full evaluation budget.
+
+    Constant columns are ordinary in real data rather than a pathology to assume
+    away: RT-IOT2022 ships one (``bwd_URG_flag_count``) among 82 numeric
+    features, and a train split of a low-cardinality column can produce one from
+    data that is not globally constant. Nothing upstream of here drops them.
+
+    The convention for the degenerate case is the one this function's callers
+    already used for sigma -- ``rng = 1.0`` -- now applied to mu as well, giving
+    a unit-width interval centred on the constant. Keeping mu and sigma on a
+    single convention is the point: the old code guarded ``rng`` on one line and
+    left mu with a zero-width bound on the next, which is how the two drifted
+    apart in the first place.
+    """
+    lo, hi = float(np.min(col)), float(np.max(col))
+    if hi > lo:
+        return lo, hi, hi - lo
+    rng = 1.0
+    return lo - 0.5 * rng, hi + 0.5 * rng, rng
+
+
 def build_param_bounds(
     model: GaussianMixtureModel,
     X_train: pd.DataFrame,
@@ -114,9 +142,7 @@ def build_param_bounds(
     ``[sigma_min_frac, sigma_max_frac] * feature_range``."""
     bounds: list[tuple[float, float]] = []
     for fname, _, _, _ in _iter_gaussian_slots(model):
-        col = X_train[fname].to_numpy()
-        lo, hi = float(np.min(col)), float(np.max(col))
-        rng = hi - lo if hi > lo else 1.0
+        lo, hi, rng = feature_span(X_train[fname].to_numpy())
         bounds.append((lo, hi))                                  # mu
         bounds.append((sigma_min_frac * rng, sigma_max_frac * rng))  # sigma
     return bounds
