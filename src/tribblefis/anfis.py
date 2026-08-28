@@ -21,6 +21,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.utils.validation import check_X_y, check_is_fitted
 
+from .refine import feature_span
 from .regression import build_consequent_features, _normalize_firing_strengths, _mse, _rsquared
 
 # Grid partitioning limit: 5000 rules x thousands of samples → multi-second solve.
@@ -314,8 +315,11 @@ def init_anfis_model(
 ) -> ANFISModel:
     """Grid-partition every feature into `n_terms` quantile-spaced Gaussian terms.
 
-    Centres are evenly spaced over the feature's observed range; sigma is set
-    so adjacent terms cross at membership 0.5 (`exp(-0.5*(0.5*gap/s)^2) = 0.5`)
+    Centres are evenly spaced over the feature's observed range -- or, when that
+    range is degenerate (`min == max`), over the unit-wide window `feature_span`
+    opens symmetrically about the one observed value, so that the terms straddle
+    the data rather than sitting to one side of it (#206). sigma is set so
+    adjacent terms cross at membership 0.5 (`exp(-0.5*(0.5*gap/s)^2) = 0.5`)
     -- the standard ANFIS "grid partition" initial candidate (Jang 1993,
     section V), the per-feature-independent analogue of
     `ruspini.ruspinize_model`'s shared-knot landmark heuristic. Raises
@@ -346,19 +350,16 @@ def init_anfis_model(
     sigma: list[np.ndarray] = []
     for f, k in zip(feature_names, n_terms_list):
         col = X[f].to_numpy(dtype=float)
-        lo, hi = float(np.min(col)), float(np.max(col))
-        if hi <= lo:
-            # A second convention for the same degenerate case, differing from
-            # `refine.feature_span()`: that one widens symmetrically, this one
-            # anchors at `lo`. Deliberately not unified here, because this path
-            # never reaches `optimizers` and so never crashed -- changing it
-            # would move results in a fix whose scope is a crash. Worth knowing
-            # the two differ: at k == 1 this puts the centre at `lo + 0.5`, half
-            # a unit off the only value the feature takes, where `feature_span`
-            # would put it exactly on `lo`.
-            hi = lo + 1.0
+        # `feature_span` widens a constant feature symmetrically about its one
+        # observed value, so the centres below straddle the data rather than
+        # sitting on one side of it. This module used to widen by anchoring
+        # (`hi = lo + 1.0`), a second convention for the same degenerate case;
+        # at k == 1 that put the centre at `lo + 0.5`, half a unit off the only
+        # value the feature ever takes, and at k > 1 it spread every term over
+        # `[lo, lo + 1]` -- all of them at or above the data. See #206.
+        lo, hi, rng = feature_span(col)
         centres = np.array([0.5 * (lo + hi)]) if k == 1 else np.linspace(lo, hi, k)
-        gap = float(centres[1] - centres[0]) if k > 1 else (hi - lo)
+        gap = float(centres[1] - centres[0]) if k > 1 else rng
         s = max(0.5 * gap / np.sqrt(2 * np.log(2)), 1e-6)
         mu.append(centres)
         sigma.append(np.full(k, s))
