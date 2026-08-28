@@ -52,9 +52,16 @@ jobs:
             echo "::warning::DOWNSTREAM_SYNC_TOKEN is not set -- notifying nobody. The downstream scheduled syncs will still pick this up, just later."
             exit 0
           fi
+          # Built with jq and piped in as explicit JSON rather than gh's
+          # `-f 'client_payload[repo]=...'` bracket notation. The bracket form
+          # very likely works, but this is the one line carrying the payload and
+          # a silently mis-nested body would produce a dispatch the downstream
+          # accepts and cannot read. This construction needs no guessing, and jq
+          # handles quoting for free. jq is preinstalled on ubuntu-latest.
+          payload=$(jq -nc --arg repo "$SELF" --arg sha "$SHA"             '{event_type: "upstream-updated", client_payload: {repo: $repo, sha: $sha}}')
           failed=0
           for downstream in $DOWNSTREAMS; do
-            if gh api "repos/$downstream/dispatches"                  -f event_type=upstream-updated                  -f "client_payload[repo]=$SELF"                  -f "client_payload[sha]=$SHA"; then
+            if printf '%s' "$payload" | gh api --input - "repos/$downstream/dispatches"; then
               echo "notified $downstream that $SELF is at $SHA"
             else
               echo "::error::failed to notify $downstream"
