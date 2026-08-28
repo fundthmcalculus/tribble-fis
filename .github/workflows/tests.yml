@@ -20,6 +20,16 @@ jobs:
     # unnoticed until someone built it by hand.
     name: pytest (${{ matrix.kernel }} kernel)
     runs-on: ubuntu-latest
+    # The 5-minute PR budget, actually enforced rather than hoped for. Without
+    # a timeout the only thing stopping this job creeping back to 20+ minutes is
+    # somebody noticing, and nobody noticed the last time -- which is how it got
+    # to 26 minutes. A test that pushes the PR leg past 10 minutes should fail
+    # loudly and get marked `slow` (or fixed), not quietly spend the budget.
+    #
+    # Two values, because this job serves two events: pushes to main run the
+    # full suite by design (no marker filter), and that legitimately takes far
+    # longer than any PR leg should.
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 10 || 60 }}
     strategy:
       fail-fast: false
       matrix:
