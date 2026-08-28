@@ -348,6 +348,14 @@ def init_anfis_model(
         col = X[f].to_numpy(dtype=float)
         lo, hi = float(np.min(col)), float(np.max(col))
         if hi <= lo:
+            # A second convention for the same degenerate case, differing from
+            # `refine.feature_span()`: that one widens symmetrically, this one
+            # anchors at `lo`. Deliberately not unified here, because this path
+            # never reaches `optimizers` and so never crashed -- changing it
+            # would move results in a fix whose scope is a crash. Worth knowing
+            # the two differ: at k == 1 this puts the centre at `lo + 0.5`, half
+            # a unit off the only value the feature takes, where `feature_span`
+            # would put it exactly on `lo`.
             hi = lo + 1.0
         centres = np.array([0.5 * (lo + hi)]) if k == 1 else np.linspace(lo, hi, k)
         gap = float(centres[1] - centres[0]) if k > 1 else (hi - lo)
