@@ -1,0 +1,141 @@
+name: Dependency Sync
+
+# Keeps the two git-sourced dependencies in `uv.lock` -- `optimizers` and
+# `tribble-clustering` -- tracking their upstream `main`.
+#
+# Both are declared in [tool.uv.sources] as bare git URLs with no `rev`, so uv
+# resolves the branch head once and then pins that commit in the lock forever.
+# `uv lock --check` cannot see the drift: a revision-less git source is "in
+# sync" with whatever commit is already locked, however old. That is exactly the
+# blind spot called out in clustering's own pr.yaml comment, and it was real --
+# when this workflow was written the lock was already several commits behind
+# both upstreams with nothing to report it.
+#
+# Triggered directly by each upstream's notify-downstream.yml (see the
+# repository_dispatch below), with a daily cron as a backstop for when the
+# dispatch token is absent or a dispatch is lost.
+on:
+  repository_dispatch:
+    types: [upstream-updated]
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  SYNC_BRANCH: chore/dependency-sync
+
+# Two upstreams merging at once would otherwise race to force-push the same
+# branch, and the loser's re-resolve is thrown away. Serialize instead of
+# cancelling: a cancelled run leaves the lock un-bumped for that upstream.
+concurrency:
+  group: dependency-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # A PR opened with the automatic GITHUB_TOKEN does not trigger
+          # `pull_request` workflows -- GitHub suppresses that to prevent
+          # recursion. The sync PR would sit with no checks at all, which
+          # defeats the point of having a standing "merge me to get current"
+          # PR: nobody can tell whether taking it is safe. Checking out with
+          # the PAT makes the push (and so the PR) attributable to it, and CI
+          # runs. Falls back to GITHUB_TOKEN with a warning below.
+          token: ${{ secrets.DOWNSTREAM_SYNC_TOKEN || github.token }}
+
+      # The `secrets` context is not available in a step `if:`, so this is a
+      # plain shell test on an env-injected value rather than a conditional step.
+      - name: Warn if the PR will land without CI
+        env:
+          TOKEN: ${{ secrets.DOWNSTREAM_SYNC_TOKEN }}
+        run: |
+          if [ -z "${TOKEN:-}" ]; then
+            echo "::warning::DOWNSTREAM_SYNC_TOKEN is not set. The sync PR will be opened by github-actions, so tests.yml will NOT run on it -- verify it by hand before merging."
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Re-resolve the git-sourced dependencies
+        id: relock
+        run: |
+          set -euo pipefail
+          before_opt=$(awk '/^name = "optimizers"$/{f=1} f&&/^source =/{print;exit}' uv.lock)
+          before_clu=$(awk '/^name = "tribble-clustering"$/{f=1} f&&/^source =/{print;exit}' uv.lock)
+
+          # Scoped to the two git deps on purpose. A bare `uv lock --upgrade`
+          # would also float every PyPI dependency, turning "pick up the
+          # upstream fix" into an unreviewable dependency bump.
+          uv lock --upgrade-package optimizers --upgrade-package tribble-clustering
+
+          if git diff --quiet -- uv.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "uv.lock already tracks both upstream heads -- nothing to do."
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          after_opt=$(awk '/^name = "optimizers"$/{f=1} f&&/^source =/{print;exit}' uv.lock)
+          after_clu=$(awk '/^name = "tribble-clustering"$/{f=1} f&&/^source =/{print;exit}' uv.lock)
+
+          sha() { echo "$1" | sed -E 's/.*#([0-9a-f]{40}).*/\1/'; }
+          row() {
+            local repo=$1 name=$2 b=$3 a=$4
+            local bs as
+            bs=$(sha "$b"); as=$(sha "$a")
+            [ "$bs" = "$as" ] && return 0
+            echo "| \`$name\` | \`${bs:0:7}\` | [\`${as:0:7}\`](https://github.com/$repo/compare/$bs...$as) |"
+          }
+
+          {
+            echo "Automated re-resolve of the two git-sourced dependencies in \`uv.lock\`."
+            echo
+            echo "| Dependency | Old | New |"
+            echo "|---|---|---|"
+            row fundthmcalculus/optimizers optimizers "$before_opt" "$after_opt"
+            row fundthmcalculus/clustering tribble-clustering "$before_clu" "$after_clu"
+            echo
+            echo "Triggered by: \`${{ github.event_name }}\`${{ github.event.client_payload.repo && format(' from `{0}`', github.event.client_payload.repo) || '' }}"
+            echo
+            echo "> This branch is machine-owned and force-pushed on every upstream merge."
+            echo "> Do not commit to it by hand -- your commit will be overwritten. Push a"
+            echo "> fix to the upstream repo instead and let it flow back down."
+          } > pr-body.md
+
+      - name: Push the moving sync branch
+        if: steps.relock.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$SYNC_BRANCH"
+          git add uv.lock
+          git commit -m "chore(deps): re-resolve optimizers and tribble-clustering to upstream main"
+          git push --force origin "$SYNC_BRANCH"
+
+      - name: Open or update the sync PR
+        if: steps.relock.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DOWNSTREAM_SYNC_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          existing=$(gh pr list --head "$SYNC_BRANCH" --state open --json number -q '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --body-file pr-body.md
+            echo "updated #$existing"
+          else
+            gh pr create \
+              --title "chore(deps): sync git dependencies to upstream main" \
+              --body-file pr-body.md \
+              --head "$SYNC_BRANCH" \
+              --base main
+          fi
