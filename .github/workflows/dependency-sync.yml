@@ -127,15 +127,45 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.DOWNSTREAM_SYNC_TOKEN || github.token }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           existing=$(gh pr list --head "$SYNC_BRANCH" --state open --json number -q '.[0].number // empty')
           if [ -n "$existing" ]; then
             gh pr edit "$existing" --body-file pr-body.md
             echo "updated #$existing"
-          else
-            gh pr create \
-              --title "chore(deps): sync git dependencies to upstream main" \
-              --body-file pr-body.md \
-              --head "$SYNC_BRANCH" \
-              --base main
+            exit 0
           fi
+
+          # Captured rather than run bare, because the likeliest failure here is
+          # a repo setting rather than a bug, and the raw GraphQL error names
+          # neither the setting nor the remedy. grad-school hit exactly this on
+          # its first real scheduled run (2026-08-29): the branch pushed fine
+          # and only this step failed, so the bump sat on a ref nobody knew to
+          # look at, under an error that read like a code bug.
+          if out=$(gh pr create               --title "chore(deps): sync git dependencies to upstream main"               --body-file pr-body.md               --head "$SYNC_BRANCH"               --base main 2>&1); then
+            echo "$out"
+            exit 0
+          fi
+          echo "$out"
+
+          COMPARE="${{ github.server_url }}/${{ github.repository }}/compare/main...$SYNC_BRANCH?expand=1"
+          if echo "$out" | grep -qi "not permitted to create or approve pull requests"; then
+            {
+              echo "## Dependency sync could not open its PR"
+              echo
+              echo "The branch \`$SYNC_BRANCH\` **was pushed successfully** -- the relocked"
+              echo "\`uv.lock\` is safe, only the pull request is missing."
+              echo "[Open it by hand]($COMPARE), or fix one of these so the next run does it:"
+              echo
+              echo "1. **Set the \`DOWNSTREAM_SYNC_TOKEN\` secret** (preferred). A PR opened by a"
+              echo "   PAT is not \"GitHub Actions creating a PR\", so the restriction does not"
+              echo "   apply -- and it separately fixes this PR getting no CI, since one opened"
+              echo "   with the automatic GITHUB_TOKEN triggers no \`pull_request\` workflows."
+              echo "2. **Or** enable Settings -> Actions -> General -> Workflow permissions ->"
+              echo "   \"Allow GitHub Actions to create and approve pull requests\". That works,"
+              echo "   but leaves the sync PR with no checks on it."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Branch pushed, but GitHub Actions may not open a PR. Set DOWNSTREAM_SYNC_TOKEN, or enable 'Allow GitHub Actions to create and approve pull requests'. Open manually: $COMPARE"
+          else
+            echo "::error::Branch pushed, but opening the sync PR failed. Open manually: $COMPARE"
+          fi
+          exit 1
