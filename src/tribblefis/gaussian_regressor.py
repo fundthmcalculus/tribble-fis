@@ -40,6 +40,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self,
         top_n=-1,
         top_p=0.95,
+        correlation_threshold=0.85,
         n_gaussians=0,
         n_output_buckets=2,
         output_partition="uniform",
@@ -75,6 +76,10 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             top_p: Per-feature score threshold, not cumulative coverage: a feature
                    is kept when its own normalized differentiation score is
                    >= (1 - top_p). Ignored if top_n > 0.
+            correlation_threshold: When top_n > 0, drop a candidate feature whose
+                   absolute correlation with an already-selected feature is >=
+                   this value, pulling in the next-best feature instead. Set to
+                   <= 0.0 or >= 1.0 to disable.
             n_gaussians: Number of Gaussians per feature per label (0 for automatic).
             n_output_buckets: Number of output buckets for partitioning y during training.
             output_partition: "uniform" for equal-width buckets (default), or
@@ -181,6 +186,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
 
         self.top_n = top_n
         self.top_p = top_p
+        self.correlation_threshold = correlation_threshold
         self.n_gaussians = n_gaussians
         self.n_output_buckets = n_output_buckets
         # Equal-WIDTH output buckets by default. "quantile" restores the previous
@@ -259,7 +265,8 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         # so only pass top_n when interaction detection is disabled
         top_n_for_correlation = -1 if self.detect_interactions else self.top_n
         self.feature_differentiators_ = calculate_gaussian_correlation(
-            X_df, y_partitioned["y_bucket"], top_n=top_n_for_correlation
+            X_df, y_partitioned["y_bucket"], top_n=top_n_for_correlation,
+            correlation_threshold=self.correlation_threshold,
         )
 
         # Select top features
