@@ -20,21 +20,23 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-# Tracks the branch; uv.lock pins the commit. Do not roll that pin back before
+# Pinned to a specific revision to avoid silent drift. Do not roll back before
 # optimizers 3a57f91 -- earlier revisions draw the initial population from
 # `np.random.default_rng()` with no argument, i.e. fresh OS entropy, so
 # `refine_method="optimizers"` ignores its `seed` and returns a different model
 # on every call. See the note above `_run_optimizer_search` in
-# src/tribblefis/refine.py.
-optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git" }
+# src/tribblefis/refine.py. When updating, run `uv lock --upgrade-package optimizers`.
+optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git", rev = "4d81121499a2c718f7d3cbd6566cb8a0604758ee" }
 # Temporary: PyPI's tribble-clustering==0.1.8 is the latest published release
 # and its compiled `pcvat` extension is built with -march=native, which SIGILLs
 # on any CPU lacking whatever the build machine had (AVX-512, observed on some
 # GitHub Actions runners -- see tribble-fis#124). Fixed on the clustering
 # repo's default branch (fundthmcalculus/clustering#79, -march=x86-64-v3) but
 # not yet cut into a PyPI release, so track the branch via git until it is.
-# Remove this override (and bump the >=0.1.8 floor) once a fixed release ships.
-tribble-clustering = { git = "https://github.com/fundthmcalculus/clustering.git" }
+# Pinned here to prevent silent drift (see issue #201). Remove this override
+# (and bump the >=0.1.8 floor) once a fixed release ships. When updating, run
+# `uv lock --upgrade-package tribble-clustering`.
+tribble-clustering = { git = "https://github.com/fundthmcalculus/clustering.git", rev = "1dcf331b17b6a455babff953414894d95fbba4c4" }
 
 [project.optional-dependencies]
 dev = [
