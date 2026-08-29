@@ -439,7 +439,80 @@ def _encode_if_categorical(series: pd.Series, full_column: pd.Series) -> pd.Seri
     return series
 
 
-def calculate_gaussian_correlation(X, y, method: str = "wasserstein", top_n: int = -1) -> list[tuple[Any, Any]]:
+def _select_uncorrelated_top_n(
+    X: pd.DataFrame,
+    ranked_features: list[tuple[Any, Any]],
+    top_n: int,
+    correlation_threshold: float,
+) -> list[tuple[Any, Any]]:
+    """Greedily select the top N ranked features, skipping redundant ones.
+
+    Walks `ranked_features` in ranking order, accepting a candidate only if its
+    absolute Pearson correlation with every already-selected feature is below
+    `correlation_threshold`. A rejected candidate is dropped with a warning and
+    the walk continues further down the ranking to fill the slot, so the
+    returned list still has `top_n` entries whenever enough uncorrelated
+    features exist.
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Feature data (same frame passed to `calculate_gaussian_correlation`).
+    ranked_features : list[tuple[str, float]]
+        All (feature_name, score) pairs, sorted by score descending.
+    top_n : int
+        Number of features to select.
+    correlation_threshold : float
+        Features correlated at or above this threshold (in absolute value)
+        are treated as redundant.
+
+    Returns
+    -------
+    list[tuple[str, float]]
+        Selected (feature_name, score) pairs, sorted by score descending.
+    """
+    encoded_columns: dict[Any, pd.Series] = {}
+
+    def encoded(col):
+        if col not in encoded_columns:
+            series = X[col].dropna()
+            encoded_columns[col] = _encode_if_categorical(series, X[col])
+        return encoded_columns[col]
+
+    selected: list[tuple[Any, Any]] = []
+    for col, score in ranked_features:
+        if len(selected) >= top_n:
+            break
+        candidate = encoded(col)
+        redundant_with = None
+        for sel_col, _ in selected:
+            aligned = pd.concat([candidate, encoded(sel_col)], axis=1, join="inner")
+            if len(aligned) < 2:
+                continue
+            corr = aligned.iloc[:, 0].corr(aligned.iloc[:, 1])
+            if pd.notna(corr) and abs(corr) >= correlation_threshold:
+                redundant_with = sel_col
+                break
+        if redundant_with is not None:
+            warnings.warn(
+                f"Dropping feature {col!r} from top-{top_n} selection: correlation "
+                f"with already-selected feature {redundant_with!r} is >= "
+                f"{correlation_threshold} (redundant).",
+                stacklevel=2,
+            )
+            continue
+        selected.append((col, score))
+
+    return selected
+
+
+def calculate_gaussian_correlation(
+    X,
+    y,
+    method: str = "wasserstein",
+    top_n: int = -1,
+    correlation_threshold: float = 0.85,
+) -> list[tuple[Any, Any]]:
     """Calculate distance metric between distributions for each feature across different labels.
 
     Parameters
@@ -453,6 +526,11 @@ def calculate_gaussian_correlation(X, y, method: str = "wasserstein", top_n: int
         (cheaper, works for approximately Gaussian data); composite blends both.
     top_n : int, default=-1
         If > 0, return only top N features; if <= 0, return all sorted descending.
+    correlation_threshold : float, default=0.85
+        When `top_n` > 0, a candidate feature is dropped -- with a warning -- if
+        its absolute Pearson correlation with an already-selected feature is >=
+        this threshold; the next-best feature is then pulled in to fill the slot.
+        Set to a value <= 0.0 or >= 1.0 to disable this check.
 
     Returns
     -------
@@ -507,7 +585,12 @@ def calculate_gaussian_correlation(X, y, method: str = "wasserstein", top_n: int
     # When top_n is specified, only keep the top N before normalization
     # This reduces downstream processing when only a subset is needed
     if top_n > 0:
-        feature_differentiators = feature_differentiators[:top_n]
+        if 0.0 < correlation_threshold < 1.0:
+            feature_differentiators = _select_uncorrelated_top_n(
+                X, feature_differentiators, top_n, correlation_threshold
+            )
+        else:
+            feature_differentiators = feature_differentiators[:top_n]
 
     # Normalize feature differentiators
     if feature_differentiators:
