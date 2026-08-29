@@ -150,6 +150,7 @@ def test_regularisation_gradient_matches_its_own_finite_difference():
         assert abs(got[j] - expected) < 1e-6 * max(abs(expected), 1.0)
 
 
+@pytest.mark.slow
 @requires_kernel
 def test_refinement_runs_and_stays_finite_with_the_gradient_on():
     """End to end. It is allowed to land somewhere different from the
@@ -206,6 +207,7 @@ def test_analytic_gradient_defaults_to_the_smoothness_rule():
     assert not R._smooth_objective(NormPair("probability", "min/max"))
 
 
+@pytest.mark.slow
 def test_auto_rule_engages_under_the_default_family_and_not_under_min_max():
     """End to end: the rule has to reach the solver, not just exist. Fewer
     evaluations is the observable signature of a gradient being supplied."""

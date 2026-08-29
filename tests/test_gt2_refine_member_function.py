@@ -54,6 +54,7 @@ def test_refine_gt2_slots_are_the_expected_type(member_function, synthetic_class
     assert all(isinstance(gt2_mf, expected_type) for *_, gt2_mf in slots)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("member_function", MEMBER_FUNCTIONS)
 def test_refine_gt2_antecedents_never_increases_training_loss(member_function, synthetic_classification_data):
     X, y = synthetic_classification_data
@@ -72,6 +73,7 @@ def test_refine_gt2_antecedents_never_increases_training_loss(member_function, s
     assert refined_loss <= init_loss + 1e-9
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("member_function", MEMBER_FUNCTIONS)
 def test_refine_gt2_antecedents_actually_changes_parameters(member_function, synthetic_classification_data):
     X, y = synthetic_classification_data
@@ -89,6 +91,7 @@ def test_refine_gt2_antecedents_actually_changes_parameters(member_function, syn
     assert not np.allclose(before, after), "refinement left every antecedent parameter unchanged"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("member_function", MEMBER_FUNCTIONS)
 def test_refine_gt2_antecedents_preserves_ordering_invariant(member_function, synthetic_classification_data):
     """`a_upper <= a_principal <= a_lower` (and the right-side mirror) must
@@ -119,6 +122,7 @@ def test_refine_gt2_antecedents_preserves_ordering_invariant(member_function, sy
     assert np.all(firing_lower <= firing_upper + 1e-9)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("member_function", MEMBER_FUNCTIONS)
 def test_refine_gt2_regressor_antecedents_never_increases_cv_loss(member_function):
     X, y = make_regression(n_samples=200, n_features=4, n_informative=3, noise=5.0, random_state=3)

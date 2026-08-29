@@ -20,6 +20,16 @@ jobs:
     # unnoticed until someone built it by hand.
     name: pytest (${{ matrix.kernel }} kernel)
     runs-on: ubuntu-latest
+    # The 5-minute PR budget, actually enforced rather than hoped for. Without
+    # a timeout the only thing stopping this job creeping back to 20+ minutes is
+    # somebody noticing, and nobody noticed the last time -- which is how it got
+    # to 26 minutes. A test that pushes the PR leg past 10 minutes should fail
+    # loudly and get marked `slow` (or fixed), not quietly spend the budget.
+    #
+    # Two values, because this job serves two events: pushes to main run the
+    # full suite by design (no marker filter), and that legitimately takes far
+    # longer than any PR leg should.
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 10 || 60 }}
     strategy:
       fail-fast: false
       matrix:
@@ -107,5 +117,25 @@ jobs:
       # -n auto (pytest-xdist) spreads the suite's ~840 tests across the
       # runner's cores instead of running them one at a time in a single
       # process; combined with the uv cache above this is most of the win.
+      #
+      # `not slow` is the second half of that win, and the more important one.
+      # Setup is already fully cached -- a --durations run put every install
+      # step at ~3s and the whole 19-26 minutes in this one command. xdist can
+      # shorten the aggregate but never the *longest single test*, and one test
+      # (test_refine_gt2_regressor_antecedents_never_increases_cv_loss
+      # [triangular]) ran 399s on its own, putting a ~6.6 minute floor under
+      # the job no matter how many cores it got. The eleven tests above ~25s
+      # are now marked `slow` and run in full by nightly.yml, which opens an
+      # issue when they fail. See the marker's note in pyproject.toml.
+      #
+      # Pushes to main still run everything: the deselection is a PR-latency
+      # tradeoff, and main is where it should not apply.
+      #
+      # --durations=25 is not decoration. The `slow` list was derived from a
+      # local numpy-kernel profile, but the *compiled* leg is the binding
+      # constraint (232s numpy vs materially longer compiled on the same
+      # commit), and nothing had ever measured which tests are slow *there*.
+      # Printing it every run means the next person tuning this budget reads a
+      # number instead of extrapolating from the other kernel.
       - name: Run tests
-        run: uv run pytest -n auto ${{ github.event_name == 'pull_request' && '-m "not performance"' || '' }}
+        run: uv run pytest -n auto --durations=25 ${{ github.event_name == 'pull_request' && '-m "not performance and not slow"' || '' }}

@@ -59,6 +59,39 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
     "performance: marks tests as performance benchmarks (deselect with '-m \"not performance\"')",
+    # Correctness tests -- not benchmarks -- that are simply expensive, because
+    # GT2/IT2 antecedent refinement runs an optimizer sub-problem per slot per
+    # alpha plane. They are deselected on pull requests and run in full by
+    # nightly.yml, which opens an issue when they fail.
+    #
+    # The boundary is a family, not a stopwatch threshold: everything marked is
+    # antecedent refinement. An explicit "over 25s" rule was tried first and
+    # rejected -- it put a 24.6s test inside the set and a 25.3s test outside,
+    # and membership defined that way churns on runner noise.
+    #
+    # MEASURE ON CI, ON BOTH LEGS, BEFORE CHANGING THIS LIST. The first version
+    # of it was derived from a local profile and was materially wrong, because
+    # the local .venv installs tribblefis non-editable and was running pre-#200
+    # code (see issue #214). Against real CI numbers, tests that profile put at
+    # ~19s were actually the slowest in the suite:
+    #
+    #     preserves_sigma_ordering_invariant   15s numpy / 137s compiled
+    #     does_not_drastically_worsen_rmse     88s numpy /  98s compiled
+    #     preserves_ordering_invariant[trap]   57s numpy /  58s compiled
+    #
+    # Note how far the two legs diverge. The compiled leg is the binding
+    # constraint and needs its own numbers; extrapolating from numpy does not
+    # work. tests.yml prints --durations=25 on every run for exactly this.
+    #
+    # DELIBERATELY NOT MARKED: tests/test_refine_compiled_parity.py, despite
+    # costing ~148s on the compiled leg. Those parity tests are the documented
+    # reason the compiled matrix leg exists at all; deselecting them on PRs
+    # would leave the leg running while the thing it guards goes unchecked.
+    # They stay, and the budget is met without them.
+    #
+    # Do not mark a test slow to dodge a genuine regression. If it got slower,
+    # that is the finding -- see #213.
+    "slow: expensive correctness test; deselected on PRs, run by nightly.yml",
 ]
 
 [tool.mypy]
