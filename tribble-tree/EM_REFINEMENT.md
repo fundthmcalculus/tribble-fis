@@ -22,11 +22,21 @@ Implementation notes:
   closed-form weighted mean/variance update in §4.2 and can genuinely
   *sharpen* (shrink sigma) around a sharp regime boundary -- this is the
   headline validation case in §10 and is covered by
-  `tests/test_em_refinement.py`. The default trapezoid gates only get their
-  knots (not their ramp width) re-derived from responsibility-weighted
-  quantiles, since a trapezoid's ramp width is a fixed function of its knot
-  spacing and has no free parameter to sharpen -- `gate_style="gaussian"` is
-  recommended whenever `refine_em` will be called.
+  `tests/test_em_refinement.py`. **The default trapezoid gates
+  (`gate_style="trapezoid"`) are deprecated for `refine_em`**: their M-step
+  resamples rows by branch responsibility and refits a smooth-trapezoid EM
+  (`tribblefis.trapz_math_smooth`), which is stochastic and only
+  approximates a weighted MLE, not the closed-form update Gaussian gates get
+  -- see `ISSUE_163_RESOLUTION_PLAN.md` for why trapezoid+EM is a poor fit
+  in general (a bounded-support MLE's incentive to shrink onto the data
+  mode is a property of the objective, not an optimizer artifact, so no
+  amount of smoothing the M-step's landscape fixes it). Calling
+  `_rebuild_gate_tree` on trapezoid gates now issues a `FutureWarning`.
+  **Use `gate_style="gaussian"` whenever `refine_em` will be called**; if
+  crisp trapezoid interpretability is required without EM refinement, build
+  the gates with trapezoids and skip `refine_em`, or use
+  `TribbleRegressor`/`TribbleClassifier`'s `trapz_method="fast"` at the leaf
+  level instead.
 - **No-worse guarantee** (§10): rather than hoping every M-step improves,
   both drivers snapshot the model's parameters at whichever iteration had the
   best observed log-likelihood and restore that snapshot before returning --
@@ -181,14 +191,22 @@ routing variable for the samples that (softly) took that branch. This reuses
 TRIBBLE's Gaussian MF representation directly and is the gate analogue of the expert
 `σ_ℓ²` update.
 
-> **Representation note.** Today's gates use open-shouldered **trapezoids** from
-> `build_split_terms`, which have no closed-form weighted MLE. For EM, either
+> **Representation note (deprecated path).** Today's gates use open-shouldered
+> **trapezoids** from `build_split_terms`, which have no closed-form weighted
+> MLE. Two options were explored for EM:
 > (a) switch the gate terms to **Gaussian** (closed-form updates above), or
-> (b) keep trapezoids but re-derive knots from `τ`-weighted quantiles each M-step
-> (reuse `_weighted_quantiles` with `weights = τ_{·,i,j}`). Option (a) is cleaner and
-> recommended for the EM path; option (b) preserves the crisp-shoulder
-> interpretability. The routing *variable* at each node stays fixed (structure is
-> frozen); only its term shapes move.
+> (b) keep trapezoids and refit them via a smooth-trapezoid EM on a
+> responsibility-weighted resample (`tribblefis.trapz_math_smooth`).
+> **Option (a) is recommended and option (b) is deprecated** --
+> `ISSUE_163_RESOLUTION_PLAN.md` found the trapezoid+EM combination
+> structurally weak (the area-normalized MLE objective rewards shrinking
+> support onto the data mode regardless of how smooth the M-step's
+> optimization landscape is) and calling it now issues a `FutureWarning`.
+> Use Gaussian gates for `refine_em`; trapezoid gates remain fine for the
+> initial greedy build, just skip `refine_em` on them or use
+> `trapz_method="fast"` (no EM) at the leaf level. The routing *variable* at
+> each node stays fixed either way (structure is frozen); only its term
+> shapes move.
 
 Multi-input gates (a gate that routes on a small variable *group*, mentioned as a
 future option in the HME docstring) generalize this to a weighted multivariate GMM
@@ -294,7 +312,7 @@ EM_refine(HME model, X, y, max_iter, tol):
         for internal node i, each branch j:
             μ_ij  = Σ τ_ij · v_i(X) / Σ τ_ij             # Gaussian gate update (§4.2)
             σ_ij² = max(Σ τ_ij (v_i(X) - μ_ij)² / Σ τ_ij, ε)
-            # (or τ-weighted quantiles if keeping trapezoid gates)
+            # (or τ-weighted smooth-trapezoid EM if keeping trapezoid gates -- deprecated, §4.2)
 
     return model
 ```

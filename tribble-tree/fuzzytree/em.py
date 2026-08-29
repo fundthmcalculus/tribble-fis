@@ -135,6 +135,15 @@ def _rebuild_gate_tree(
             sigma = max(float(np.sqrt(var)), float(np.sqrt(var_floor)))
             new_mfs.append(GaussianMembership.create(mu=mu, sigma=sigma))
     else:
+        warnings.warn(
+            "EM refinement of trapezoid gates is deprecated and not recommended. "
+            "Trapezoid MFs lack properties needed for effective EM optimization "
+            "(see ISSUE_163_RESOLUTION_PLAN.md). Use Gaussian gates instead via "
+            "gate_style='gaussian'. For trapezoid interpretability without EM, use "
+            "TribbleRegressor/TribbleClassifier's fast trapezoid method instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
         # Trapezoid gate M-step: Use smooth trapezoid optimization then extract crisp parameters.
         # The smooth approximation avoids the mode-hugging pathology of piecewise-linear objectives
         # while preserving crisp trapezoid behavior in the final gates.
@@ -279,6 +288,13 @@ def refine_em_regressor(
     stand-in for a true weighted MLE), the model's parameters are rolled back
     to whichever iteration had the best observed log-likelihood before
     returning -- the Sec.10 "no-worse guarantee".
+
+    If the model's gates are trapezoid (``gate_style="trapezoid"``, the
+    default), a ``FutureWarning`` is issued on every gate M-step: trapezoid
+    gates are refined via a stochastic, resampling-based smooth-trapezoid fit
+    that is not a true weighted MLE and is deprecated (see
+    ``ISSUE_163_RESOLUTION_PLAN.md``). Prefer ``gate_style="gaussian"`` for
+    EM-refined models, which get an exact closed-form weighted update instead.
     """
     check_is_fitted(model)
     X_df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X, columns=model.feature_names_in_)
@@ -347,6 +363,9 @@ def refine_em_classifier(
     can occasionally decrease the log-likelihood. As a safeguard the model's
     parameters are rolled back to whichever iteration had the best observed
     log-likelihood before returning -- the Sec.10 "no-worse guarantee".
+
+    See :func:`refine_em_regressor`'s docstring for the same trapezoid-gate
+    deprecation warning and the ``gate_style="gaussian"`` recommendation.
     """
     check_is_fitted(model)
     X_df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X, columns=model.feature_names_in_)

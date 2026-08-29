@@ -19,7 +19,26 @@ Explored smooth sigmoid-based trapezoid approximation to provide smooth gradient
 - **Finding:** Smooth approximation creates different objective, not smoother version of same objective
 - **Conclusion:** Approximation-based approach doesn't work; removal is better path
 
-### Phase 2: Deprecation (IN PROGRESS)
+### Phase 2: Deprecation (COMPLETED)
+
+Revisited during the grad-school "trapz EM review" task: the Phase 1
+prototype's smooth-trapezoid shape function turned out to have a real bug
+(its "ramp" was a smoothed indicator of the whole `[a, b]` interval, not a
+rising ramp -- the shape it fit was closer to a boxcar over `[a, d]` than a
+trapezoid, and its declared normalization was correspondingly off by
+6-50% depending on the knots). `trapz_math_smooth.py` was rewritten with a
+correct softplus-ramp construction, quadrature-based exact normalization,
+and the same `_solve_ordered_params` ordering constraint and `width_reg`
+support `trapz_math.py`'s M-step uses. Re-benchmarked against plain EM on
+the corrected implementation: log-likelihood is now comparable to plain EM
+(sometimes fractionally better, sometimes worse, no decisive win) while
+being 10-70x slower than plain EM, itself ~200-1000x slower than the fast
+method. Neither the original nor the corrected smoothing touches the two
+actual causes of the quality gap -- the area-normalized MLE's incentive to
+shrink support onto the data mode, and firing-coverage collapse under a
+product t-norm in higher dimensions -- so **Phase 1's conclusion stands**:
+smoothing the optimization landscape was never the fix. Phase 2 proceeded
+as originally planned.
 
 #### 2a. Add Deprecation Warning
 **File:** `tribble-tree/fuzzytree/em.py`  
@@ -99,7 +118,7 @@ model.refine_em(X, y)  # Now works well
 ### Option 2: Use Fast Trapezoids (No EM)
 ```python
 model = TribbleRegressor(
-    member_function="trapezoid",  # Use trapezoid
+    member_function="trap",  # Use trapezoid
     trapz_method="fast",  # No EM
 ).fit(X, y)
 ```
@@ -117,10 +136,20 @@ model = HierarchicalFuzzyExpertsRegressor(
 
 ## Files Changed
 
-- [ ] `tribble-tree/fuzzytree/em.py` — Add deprecation warning
-- [ ] `tribble-tree/EM_REFINEMENT.md` — Remove trapezoid option
-- [ ] `tribble-tree/tests/test_em_refinement.py` — Add deprecation test
-- [ ] `README.md` — Add note about trapezoid+EM deprecation (if applicable)
+- [x] `tribble-tree/fuzzytree/em.py` — Add deprecation warning (also updated
+      `refine_em_regressor`/`refine_em_classifier` docstrings)
+- [x] `tribble-tree/EM_REFINEMENT.md` — Remove trapezoid option (status box,
+      Sec.4.2 representation note, Sec.8 pseudocode comment)
+- [x] `tribble-tree/tests/test_em_refinement.py` — Add deprecation test
+      (`TestEMTrapezoidDeprecation`)
+- [ ] `README.md` — Add note about trapezoid+EM deprecation (skipped: the
+      root README doesn't otherwise document `member_function`/`gate_style`,
+      so a deprecation note here would be an orphaned mention)
+- [x] `src/tribblefis/trapz_math_smooth.py` — Fixed the shape/normalization
+      bug found while re-validating Phase 1 (not in the original file list,
+      but a real correctness bug regardless of the deprecation decision)
+- [x] `tests/test_trapz_math_smooth.py` — New (this module had no test
+      coverage before)
 
 ## Backward Compatibility
 
@@ -132,10 +161,11 @@ model = HierarchicalFuzzyExpertsRegressor(
 
 ## Testing
 
-Current tests should not be affected:
-- All EM tests use Gaussian gates (not trapezoid)
-- Trapezoid tests use fast method (not EM)
-- No existing code combines trapezoid+EM in tests
+- All prior EM tests use Gaussian gates (not trapezoid) and are unaffected.
+- Trapezoid tests elsewhere use the fast method (not EM).
+- `TestEMTrapezoidDeprecation` (added in this pass) is the first test that
+  deliberately combines trapezoid gates with `refine_em`, specifically to
+  assert the `FutureWarning` fires.
 
 ## Related References
 
