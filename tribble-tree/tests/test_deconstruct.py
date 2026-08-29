@@ -138,9 +138,13 @@ class TestDeconstructedHierarchicalRegressor(unittest.TestCase):
     def test_leaf_with_no_surviving_features_falls_back_to_constant(self):
         # y depends only on a, b; with top_n=2 the flat model's own feature
         # selection should drop c and d entirely, starving G2's leaf.
+        # correlation_threshold=1.0 disables the redundant-feature dedup so
+        # that b (highly correlated with a) still occupies the second slot,
+        # as this test's premise requires -- the dedup itself is covered by
+        # test_gauss_math.py / test_perf_optimizations.py.
         y_ab_only = 3 * self.a - 2 * self.b
         m = DeconstructedHierarchicalRegressor(
-            flat_regressor_kwargs={"n_output_buckets": 4, "top_n": 2},
+            flat_regressor_kwargs={"n_output_buckets": 4, "top_n": 2, "correlation_threshold": 1.0},
         ).fit(self.X, y_ab_only, self.topology)
         self.assertEqual(m.node_state_["G2"]["kind"], "constant")
         pred = m.predict(self.X)
@@ -250,9 +254,13 @@ class TestDeconstructedHierarchicalClassifier(unittest.TestCase):
     def test_leaf_with_no_surviving_features_falls_back_to_constant(self):
         # y depends only on a, b; with top_n=2 the flat model's own feature
         # selection should drop c and d entirely, starving G2's leaf.
+        # correlation_threshold=1.0 disables the redundant-feature dedup so
+        # that b (highly correlated with a) still occupies the second slot,
+        # as this test's premise requires -- the dedup itself is covered by
+        # test_gauss_math.py / test_perf_optimizations.py.
         y_ab_only = (self.a >= 5).astype(int)
         m = DeconstructedHierarchicalClassifier(
-            flat_classifier_kwargs={"top_n": 2},
+            flat_classifier_kwargs={"top_n": 2, "correlation_threshold": 1.0},
         ).fit(self.X, y_ab_only, self.topology)
         self.assertEqual(m.node_state_["G2"]["kind"], "constant")
         proba = m.predict_proba(self.X)

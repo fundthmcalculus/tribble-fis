@@ -86,6 +86,42 @@ class TestTopNFeatureOptimization(unittest.TestCase):
         self.assertEqual(len(preds), self.n_samples)
 
 
+class TestCorrelationDedup(unittest.TestCase):
+    """Test that top_n selection drops highly-correlated redundant features."""
+
+    def setUp(self):
+        np.random.seed(42)
+        self.n_samples = 200
+        base = np.random.randn(self.n_samples, 4)
+        # feature_0_dup is feature_0 plus tiny noise: near-perfect correlation
+        X = np.column_stack([base, base[:, 0] + np.random.randn(self.n_samples) * 1e-6])
+        self.X = pd.DataFrame(X, columns=["feature_0", "feature_1", "feature_2", "feature_3", "feature_0_dup"])
+        # y is driven by feature_0, so feature_0 and feature_0_dup both rank at
+        # the top -- exactly the redundant-pair scenario the dedup check targets.
+        self.y = pd.Series((self.X["feature_0"] > 0).astype(int))
+
+    def test_redundant_feature_dropped_by_default(self):
+        with self.assertWarns(UserWarning):
+            results = calculate_gaussian_correlation(self.X, self.y, top_n=2)
+        names = [name for name, _ in results]
+        self.assertEqual(len(names), 2)
+        # feature_0 and feature_0_dup should never both be selected
+        self.assertFalse({"feature_0", "feature_0_dup"}.issubset(set(names)))
+
+    def test_threshold_1_disables_check(self):
+        results = calculate_gaussian_correlation(self.X, self.y, top_n=2, correlation_threshold=1.0)
+        names = [name for name, _ in results]
+        self.assertEqual(len(names), 2)
+        # With the check disabled, both correlated top features come through.
+        self.assertTrue({"feature_0", "feature_0_dup"}.issubset(set(names)))
+
+    def test_threshold_0_disables_check(self):
+        results = calculate_gaussian_correlation(self.X, self.y, top_n=2, correlation_threshold=0.0)
+        names = [name for name, _ in results]
+        self.assertEqual(len(names), 2)
+        self.assertTrue({"feature_0", "feature_0_dup"}.issubset(set(names)))
+
+
 class TestGaussianMembershipParallelization(unittest.TestCase):
     """Test Issue #97: Parallelize Gaussian membership creation per-class"""
 

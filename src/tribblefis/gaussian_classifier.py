@@ -28,7 +28,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
     It follows scikit-learn's ClassifierMixin interface.
     """
 
-    def __init__(self, top_n=-1, top_p=0.95, n_gaussians=0, norm_conorm=DefaultNormCornorm, member_function="gaussian", trapz_method="fast", random_state=42,
+    def __init__(self, top_n=-1, top_p=0.95, correlation_threshold=0.85, n_gaussians=0, norm_conorm=DefaultNormCornorm, member_function="gaussian", trapz_method="fast", random_state=42,
                  refine=False, refine_method="coordinate", refine_l2_shrink=0.05,
                  t_norm=None, t_conorm=None, allow_mixed_norms=False, max_samples=None):
         """Initialize TribbleClassifier.
@@ -39,6 +39,10 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             Number of top features by differentiation score (-1 means use top_p).
         top_p : float
             Per-feature score threshold (0-1); ignored if top_n > 0.
+        correlation_threshold : float
+            When top_n > 0, drop a candidate feature whose absolute correlation
+            with an already-selected feature is >= this value, pulling in the
+            next-best feature instead. Set to <= 0.0 or >= 1.0 to disable.
         n_gaussians : int or dict
             Gaussians per feature per label (0=auto, dict for per-label override).
         member_function : str
@@ -67,6 +71,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         self.feature_names_in_: list[str] = []
         self.top_n = top_n
         self.top_p = top_p
+        self.correlation_threshold = correlation_threshold
         self.n_gaussians = n_gaussians
         self.member_function = member_function
         self.trapz_method = trapz_method
@@ -129,7 +134,9 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
 
         # 1. Calculate feature differentiators
         # Pass top_n to avoid computing scores for features we won't use
-        self.feature_differentiators_ = calculate_gaussian_correlation(X_df, y_series, top_n=self.top_n)
+        self.feature_differentiators_ = calculate_gaussian_correlation(
+            X_df, y_series, top_n=self.top_n, correlation_threshold=self.correlation_threshold
+        )
 
         # 2. Select top features
         self.top_n_actual_, self.top_features_ = take_top_features(
