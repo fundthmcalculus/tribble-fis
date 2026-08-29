@@ -119,5 +119,39 @@ class TestEMClassification(unittest.TestCase):
         self.assertGreaterEqual(acc_after, acc_before - 0.1)
 
 
+class TestEMTrapezoidDeprecation(unittest.TestCase):
+    """Trapezoid gates (the default `gate_style`) + `refine_em` warns and
+    documents the limitation -- see EM_REFINEMENT.md Sec.4.2/Sec.4 and
+    ISSUE_163_RESOLUTION_PLAN.md."""
+
+    def setUp(self):
+        rng = _rng(9)
+        n = 600
+        self.a = rng.uniform(0, 10, n)
+        self.b = rng.uniform(0, 10, n)
+        self.X = pd.DataFrame({"a": self.a, "b": self.b})
+        self.y = np.where(self.a < 5, 2 * self.b, -3 * self.b + 40) + rng.normal(0, 0.3, n)
+
+    def test_trapezoid_gate_warns_not_recommended(self):
+        # gate_style defaults to "trapezoid".
+        m = HierarchicalFuzzyExpertsRegressor(
+            max_depth=2, n_gate_terms=2, min_soft_count=50, min_expert_samples=50,
+            expert_kwargs={"n_output_buckets": 3, "tsk_order": "1st"},
+        ).fit(self.X, self.y)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            m.refine_em(self.X, self.y, max_iter=2)
+
+        self.assertTrue(
+            any(
+                issubclass(w.category, FutureWarning)
+                and "trapezoid" in str(w.message).lower()
+                for w in caught
+            ),
+            f"expected a FutureWarning about deprecated trapezoid gates, got: {[str(w.message) for w in caught]}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
