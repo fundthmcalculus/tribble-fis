@@ -199,11 +199,15 @@ grouping being right.
 ### Three things the table does say
 
 1. **Every deconstructed arm beats flat** (0.879), grouping or no grouping.
-2. **The zero-knowledge floor beats the hand-authored topology** (0.933 vs
-   0.917). That is not a paradox: `y` is additively separable, so one leaf per
-   feature under an affine combiner *is* the generating form, and grouping
-   features together only constrains it. A domain topology is a hypothesis
-   about structure, and on a problem with no group structure it is a wrong one.
+2. **The zero-knowledge floor lands above the hand-authored topology**
+   (0.933 vs 0.917) — indicative, not established: over 3 seeds with spreads of
+   ±0.011 and ±0.014, that gap is about one standard deviation and the bars
+   overlap. The *reason* to expect it is the stronger evidence than the number:
+   `y` is additively separable, so one leaf per feature under an affine
+   combiner *is* the generating form, and grouping features together only
+   constrains it. A domain topology is a hypothesis about structure, and on a
+   problem with no group structure it is a wrong one. Flat is the only arm
+   whose gap to the others clears the seed spread.
 3. **Selection does its job.** `topology="auto"` lands at 0.934 — at or above
    every fixed strategy, including the floor — by picking per seed
    (`per_feature`, `affinity_k4`, `per_feature`) rather than committing to a
