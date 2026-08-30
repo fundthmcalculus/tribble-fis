@@ -81,6 +81,15 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                    this value, pulling in the next-best feature instead. Set to
                    <= 0.0 or >= 1.0 to disable.
             n_gaussians: Number of Gaussians per feature per label (0 for automatic).
+                **No effect when `member_function="trap"` and the default
+                `trapz_method="fast"`**: that path is a histogram fitter with no
+                component-count argument at all -- it emits one trapezoid per
+                merged contiguous non-empty bin region, so the count comes from
+                the data. Honoured by "gaussian", by "triangular", and by
+                `trapz_method="em"`. This asymmetry is why a `[trap]` and a
+                `[triangular]` run at the same `n_gaussians` are not the same
+                amount of work; see issue #213 and
+                tests/test_member_function_component_counts.py.
             n_output_buckets: Number of output buckets for partitioning y during training.
             output_partition: "uniform" for equal-width buckets (default), or
                 "quantile" for equal-frequency buckets with pinned extreme centroids,
@@ -125,6 +134,9 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                 trapezoid), or "triangular" (special case of trap) -- same
                 semantics as `TribbleClassifier`'s parameter of the same name.
             trapz_method: "fast" (histogram-based) or "em" (EM algorithm).
+                **Ignored for "triangular"**, which has no histogram path and
+                always uses EM -- so "triangular" also pays EM's fit cost
+                (measured 0.97s against "trap"'s 0.02s on the #213 fixture).
             trapz_width_reg: EM-only support-width regularization (see
                 tribblefis.trapz_math and issue #163). 0.0 (default) is pure
                 maximum-likelihood, which collapses trapezoid support onto the

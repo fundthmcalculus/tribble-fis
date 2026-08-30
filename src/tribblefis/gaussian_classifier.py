@@ -45,6 +45,9 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             next-best feature instead. Set to <= 0.0 or >= 1.0 to disable.
         n_gaussians : int or dict
             Gaussians per feature per label (0=auto, dict for per-label override).
+            No effect when member_function="trap" and trapz_method="fast": that
+            path derives the component count from the histogram and takes no
+            component-count argument. See issue #213.
         member_function : str
             "gaussian", "trap" (EM trapezoid), or "triangular" (special case of trap).
         trapz_method : str
