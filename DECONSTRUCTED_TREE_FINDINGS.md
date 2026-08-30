@@ -155,6 +155,76 @@ weak Fold-1 score is the first place to look if this grouping gets
 revisited — it has only 2 real channels to work with, fewer than any other
 component.
 
+## Stage C — derived topology when no domain topology exists (#226)
+
+`DeconstructedHierarchicalRegressor.fit` required a fully-specified topology
+dict and had no fallback, so a dataset with no known physical structure could
+not use the estimator at all without someone inventing a grouping by hand —
+which is what `grad-school`'s `table_tribbletree_tsk_order.py` had to do for
+Concrete and Body Fat, with no automated alternative to compare against.
+`fuzzytree.auto_topology` adds the three strategies #226 asks for, reachable as
+`fit(X, y, topology="auto")`.
+
+`demo_auto_topology.py` re-runs the Stage A generator above with those arms
+added (N=3000, 75/25 split, 3 seeds, `n_gaussians=3`):
+
+| Model | Test R² |
+|---|---|
+| Flat `TribbleRegressor` (no structure) | 0.879 ± 0.008 |
+| Deconstructed, **true** topology | 0.917 ± 0.014 |
+| Deconstructed, affinity `k=2` | 0.917 ± 0.012 |
+| Deconstructed, affinity `k=3` | 0.916 ± 0.013 |
+| Deconstructed, affinity `k=4` | 0.923 ± 0.020 |
+| Deconstructed, `per_feature` (zero-knowledge floor) | 0.933 ± 0.011 |
+| Deconstructed, **`topology="auto"`** (selected) | **0.934 ± 0.011** |
+
+### Stage A cannot validate a topology-derivation strategy, and that is the finding
+
+The generator draws all six features as independent uniforms, and its group
+functions are additively separable in their own members
+(`g1 = 5·sin(a/2) + 0.5·b`, and likewise for `g2`, `g3`). So the whole of `y`
+is additively separable across all six features, and **the "true" topology
+`G1=[a,b] G2=[c,d] G3=[e,f]` is a labelling convention from how the generator
+was written — it leaves no trace in the data.** Measured max off-diagonal
+`|corr|` among the six features: **0.042**, i.e. noise.
+
+No derivation strategy can recover that grouping, and none should be judged on
+whether it does. It also means the correlation-affinity strategy (#226's
+option 1) is being run here on a dataset with no affinity structure to find,
+which is the honest reading of why `affinity_k2`/`k3` land exactly on the true
+topology's number rather than above it: on this data the benefit is the
+*deconstruction itself* — per-leaf TSK plus an affine combiner — not the
+grouping being right.
+
+### Three things the table does say
+
+1. **Every deconstructed arm beats flat** (0.879), grouping or no grouping.
+2. **The zero-knowledge floor lands above the hand-authored topology**
+   (0.933 vs 0.917) — indicative, not established: over 3 seeds with spreads of
+   ±0.011 and ±0.014, that gap is about one standard deviation and the bars
+   overlap. The *reason* to expect it is the stronger evidence than the number:
+   `y` is additively separable, so one leaf per feature under an affine
+   combiner *is* the generating form, and grouping features together only
+   constrains it. A domain topology is a hypothesis about structure, and on a
+   problem with no group structure it is a wrong one. Flat is the only arm
+   whose gap to the others clears the seed spread.
+3. **Selection does its job.** `topology="auto"` lands at 0.934 — at or above
+   every fixed strategy, including the floor — by picking per seed
+   (`per_feature`, `affinity_k4`, `per_feature`) rather than committing to a
+   `k` in advance. That is the whole argument for option 2 over option 1: `k`
+   is not knowable a priori, and on this data the right answer is "no grouping".
+
+### What this does not show
+
+**Nothing here demonstrates that a derived topology approaches a domain one
+where a real domain topology exists.** Stage B (N-CMAPSS, R² 0.593 with the
+turbofan-station topology against 0.405 flat) is the case that matters for that
+claim, and it has not been re-run with `topology="auto"` — the dataset is not
+available from this repository. Until it is, the conservative reading stands:
+**derive a topology when you have no domain knowledge, not instead of using it.**
+`fit` records which was used in `topology_source_` (`"supplied"` / `"auto"`) so
+a downstream table can never report one as the other.
+
 ## Disposition
 
 Kept, unlike the (rejected) adaptive-partitioning experiment this findings
@@ -162,8 +232,11 @@ note is styled after. `DeconstructedHierarchicalRegressor` is a genuine win
 over both the flat baseline and today's HME on the one real dataset tested,
 and the synthetic check confirms the mechanism itself (branch combiner
 weight recovery) is sound. Recommended for problems where the caller
-actually has domain knowledge of the right topology — it is not a
-replacement for HME's auto-discovery when no such knowledge exists.
+actually has domain knowledge of the right topology. It is no longer
+unusable without one — `topology="auto"` (Stage C, #226) derives a grouping
+and, on the Stage A generator, beats the hand-authored topology — but a derived
+topology is a fallback, not an equivalent, and Stage B has not been re-run with
+it.
 
 Not yet done, and the natural next steps if this is picked up again:
 - Classification (`TribbleClassifier`-based leaves) — out of scope here,
@@ -182,3 +255,14 @@ Not yet done, and the natural next steps if this is picked up again:
 - The leaf-bucket-dedup enhancement sketched in `deconstruct.py`'s design
   (merging buckets that project to identical clauses on a leaf's own
   features) was not needed to get these results and was not built.
+- **Re-run Stage B with `topology="auto"`.** Stage C shows a derived topology
+  beating a hand-authored one on a generator with no group structure to find,
+  which is the easy case. N-CMAPSS is the one with real structure, and until
+  the auto path is measured there, "derive when you have no domain knowledge"
+  is a recommendation resting on a benchmark that cannot test the alternative.
+- A *supervised* affinity for the clustering strategy. The correlation matrix
+  groups features that move together; what a leaf actually wants is features
+  whose joint effect on the target is not separable, which is what
+  `gauss_math.calculate_interaction_scores` measures. Not built, because Stage
+  A is additively separable end to end and would have shown a lift of zero for
+  it too — demonstrating it needs a benchmark with real interactions.
