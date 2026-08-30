@@ -276,6 +276,51 @@ class TestAutoTopologyOnTheEstimator(unittest.TestCase):
         # which no affinity strategy would ever propose.
         self.assertEqual(_groups(model.topology_), {frozenset("ac"), frozenset("bd")})
 
+    def test_all_three_provenance_attributes_exist_on_both_paths(self):
+        """A fitted-attribute surface must not change shape based on an argument.
+
+        `topology_name_` was set only on the auto path, so
+        `model.topology_name_` raised AttributeError for a supplied topology and
+        returned a string for a derived one -- and anything introspecting a set
+        of fitted models (a comparison table, exactly the use case #226 comes
+        from) had to `hasattr` its way around it.
+        """
+        X, y = _two_factor_frame(n=90)
+        supplied = self._fit(X, y, topology={"R": ["L"], "L": list(X.columns)})
+        auto = self._fit(X, y, topology="auto")
+
+        for model in (supplied, auto):
+            for attribute in ("topology_", "topology_source_", "topology_name_", "topology_scores_"):
+                self.assertTrue(hasattr(model, attribute), attribute)
+        self.assertIsNone(supplied.topology_name_)
+        self.assertIsNotNone(auto.topology_name_)
+
+    def test_leaf_targets_cannot_be_combined_with_auto(self):
+        """The two features are genuinely incompatible, so this refuses.
+
+        `leaf_targets` is keyed by node name, and a derived topology's node
+        names do not exist until after selection has run. Passing them through
+        is not a fix either: selection would score every candidate with the
+        leaves unsupervised and the final fit would then run supervised, so the
+        topology would be chosen under a different objective than the one it
+        gets used for. Stage A measures that gap -- leaf targets moved the final
+        prediction from R^2 0.971 to 0.985 and one leaf from -2.42 to 0.991.
+        """
+        X, y = _two_factor_frame(n=60)
+        model = DeconstructedHierarchicalRegressor()
+        with self.assertRaises(ValueError) as caught:
+            with contextlib.redirect_stdout(io.StringIO()):
+                model.fit(X, y, topology="auto", leaf_targets={"group_0": y})
+        self.assertIn("leaf_targets", str(caught.exception))
+
+    def test_leaf_targets_still_work_with_a_supplied_topology(self):
+        """The restriction is on the combination, not on `leaf_targets`."""
+        X, y = _two_factor_frame(n=90)
+        supplied = {"R": ["L1", "L2"], "L1": ["a", "b"], "L2": ["c", "d"]}
+        model = self._fit(X, y, topology=supplied, leaf_targets={"L1": y * 2.0})
+        self.assertEqual(model.topology_source_, "supplied")
+        self.assertEqual(len(model.predict(X)), len(X))
+
     def test_a_bad_topology_argument_is_rejected(self):
         X, y = _two_factor_frame(n=40)
         model = DeconstructedHierarchicalRegressor()

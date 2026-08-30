@@ -157,12 +157,33 @@ class DeconstructedHierarchicalRegressor(BaseEstimator, RegressorMixin):
         """
         if isinstance(topology, dict):
             self.topology_source_ = "supplied"
+            self.topology_name_ = None
             self.topology_scores_ = None
             return topology
         if topology not in (None, "auto"):
             raise ValueError(
-                f"topology must be a dict, \"auto\", or None (which means "
+                f'topology must be a dict, "auto", or None (which means '
                 f'"auto"); got {topology!r}.'
+            )
+        if leaf_targets:
+            # Not an arbitrary restriction, and not something that can be fixed
+            # by passing them through. `leaf_targets` is keyed by node name, and
+            # a derived topology's node names do not exist until after selection
+            # has run -- a caller cannot key a target to `group_0` before
+            # knowing whether there will be one or which features it will own.
+            #
+            # Ignoring them would be worse than refusing. Selection would score
+            # every candidate unsupervised at the leaves and the final fit would
+            # then run supervised, i.e. the topology would be chosen under a
+            # different objective than the one it gets used for. Stage A in
+            # DECONSTRUCTED_TREE_FINDINGS.md measures that gap: leaf targets took
+            # the final prediction from R^2 0.971 to 0.985 and one leaf from
+            # -2.42 to 0.991.
+            raise ValueError(
+                "leaf_targets cannot be combined with topology=\"auto\": its "
+                "keys are node names, and an auto-derived topology's node names "
+                "are not known until after candidate selection has run. Supply "
+                "an explicit topology, or drop leaf_targets."
             )
 
         self.topology_source_ = "auto"
