@@ -188,11 +188,14 @@ def test_log1p_cannot_change_the_empirical_cdf(pathological):
 
 
 def test_more_pieces_approach_the_empirical_cdf(pathological):
-    """`PiecewiseLinearCDFScaler` -> `EmpiricalCDFScaler` as `n_pieces` grows.
+    """More pieces move monotonically toward the empirical CDF.
 
-    The docstring says the two are endpoints of one dial. Monotone convergence
-    is the testable half: each increase in `n_pieces` must not move the output
-    further from the empirical CDF than the previous setting did.
+    Toward, not to. The two never coincide: the piecewise scaler interpolates
+    linearly between order statistics while the empirical CDF is a step
+    function, so they differ by up to one step's height at any `n_pieces`. What
+    is testable, and what this asserts, is that the error is monotone
+    decreasing and falls by at least an order of magnitude across the range --
+    a real dial, not a convergence proof.
     """
     column = pathological[["lognormal"]]
     target = EmpiricalCDFScaler().fit_transform(column)
@@ -329,12 +332,19 @@ def test_constant_feature_maps_to_the_low_end(cls):
     assert np.allclose(out[:, 0], -1.0)
 
 
-@pytest.mark.parametrize("cls", [EmpiricalCDFScaler, PiecewiseLinearCDFScaler])
+@pytest.mark.parametrize("cls", UNIFORMITY_SCALERS)
 def test_constant_feature_round_trips_to_its_value(cls):
     """A constant column is degenerate, not unknown.
 
     Returning NaN from the inverse would lose a perfectly well-defined value
     and turn one awkward column into a NaN-poisoned frame downstream.
+
+    All three classes, including the sklearn wrapper. An earlier version of
+    this test excluded `QuantileUniformScaler` on the assumption that
+    delegating to `QuantileTransformer` would not preserve this -- it does, via
+    its own quantile table. Excluding a class from a property test because it
+    is assumed to fail leaves the file asserting something for "the uniformity
+    scalers" that one of them was never checked for.
     """
     X = pd.DataFrame({"const": np.full(20, 7.0), "varying": np.arange(20.0)})
     scaler = cls().fit(X)
