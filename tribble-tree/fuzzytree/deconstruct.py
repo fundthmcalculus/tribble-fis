@@ -55,6 +55,7 @@ from tribblefis.regression import (
 )
 
 from .hme import _ConstantClassifier, _ConstantRegressor
+from .auto_topology import candidate_topologies, select_topology
 from .topology import TopologyNode, parse_topology
 
 _ORDER = "1st"
@@ -80,17 +81,58 @@ class DeconstructedHierarchicalRegressor(BaseEstimator, RegressorMixin):
         `tsk_order`.
     """
 
-    def __init__(self, flat_regressor_kwargs=None, l2_reg: float = 1e-6, order: str = _ORDER):
+    def __init__(
+        self,
+        flat_regressor_kwargs=None,
+        l2_reg: float = 1e-6,
+        order: str = _ORDER,
+        auto_n_groups: tuple[int, ...] = (2, 3, 4),
+        auto_n_splits: int = 3,
+        auto_random_state: int | None = 0,
+    ):
         self.flat_regressor_kwargs = flat_regressor_kwargs
         self.l2_reg = l2_reg
         self.order = order
+        # Only consulted when `fit` is asked to derive a topology. Cut counts
+        # above the feature count are dropped rather than raising, so the
+        # default sweep is safe on a narrow frame.
+        self.auto_n_groups = auto_n_groups
+        self.auto_n_splits = auto_n_splits
+        self.auto_random_state = auto_random_state
 
-    def fit(self, X, y, topology: dict[str, list[str]], leaf_targets: dict[str, object] | None = None):
+    def fit(
+        self,
+        X,
+        y,
+        topology: dict[str, list[str]] | str | None = None,
+        leaf_targets: dict[str, object] | None = None,
+    ):
+        """Fit the hierarchy.
+
+        Args:
+            topology: node -> children, exactly as `topology.parse_topology`
+                expects. **This is the recommended input**: the deconstruction
+                approach exists because structure from domain knowledge beats
+                structure from data, and on N-CMAPSS the hand-authored
+                turbofan-station topology is what produces R^2 0.593 against
+                0.405 flat.
+
+                Pass ``"auto"`` (or leave it ``None``) when no domain topology
+                exists, and one is derived from the data instead -- see
+                `auto_topology` and tribble-fis#226. A derived topology is a
+                fallback, not an equivalent: it is a guess about structure made
+                from correlations in one sample. `topology_source_` records
+                which of the two was used, so a downstream table can never
+                report a derived grouping as a domain one.
+            leaf_targets: optional per-node target override.
+        """
         if not isinstance(X, pd.DataFrame):
             X = pd.DataFrame(X)
         X = X.reset_index(drop=True)
         y = _as_target(y, X.index)
         leaf_targets = leaf_targets or {}
+
+        topology = self._resolve_topology(X, y, topology, leaf_targets)
 
         self.flat_ = TribbleRegressor(**(self.flat_regressor_kwargs or {}))
         self.flat_.fit(X, y)
@@ -100,10 +142,64 @@ class DeconstructedHierarchicalRegressor(BaseEstimator, RegressorMixin):
         )
 
         self.root_ = parse_topology(topology, list(X.columns))
+        self.topology_ = topology
         self.node_state_: dict[str, dict] = {}
         self._fit_node(self.root_, X, y, leaf_targets)
         self.is_fitted_ = True
         return self
+
+    def _resolve_topology(self, X, y, topology, leaf_targets):
+        """Return the topology dict to fit, deriving one if asked.
+
+        A dict passes straight through, unexamined -- a caller who supplied a
+        topology gets exactly the topology they supplied, and every rule about
+        it is still `parse_topology`'s to enforce.
+        """
+        if isinstance(topology, dict):
+            self.topology_source_ = "supplied"
+            self.topology_scores_ = None
+            return topology
+        if topology not in (None, "auto"):
+            raise ValueError(
+                f"topology must be a dict, \"auto\", or None (which means "
+                f'"auto"); got {topology!r}.'
+            )
+
+        self.topology_source_ = "auto"
+        if X.shape[1] < 2:
+            # One feature cannot be grouped, and `select_topology` would spend
+            # k folds discovering that. The floor is the only topology there is.
+            from .auto_topology import per_feature_topology
+
+            self.topology_scores_ = None
+            self.topology_name_ = "per_feature"
+            return per_feature_topology(X)
+
+        name, chosen, scores = select_topology(
+            X, y, self._score_candidate, n_groups=self.auto_n_groups,
+            n_splits=self.auto_n_splits, random_state=self.auto_random_state,
+        )
+        self.topology_name_ = name
+        self.topology_scores_ = scores
+        return chosen
+
+    def _score_candidate(self, X_train, y_train, X_val, y_val, topology):
+        """Held-out R^2 for one candidate topology.
+
+        A clone rather than `self`, because `self` is mid-`fit` and scoring a
+        candidate must not leave any of its state behind -- the first version of
+        this reused `self` and the flat model from the last candidate survived
+        into the real fit.
+        """
+        from sklearn.metrics import r2_score
+
+        twin = DeconstructedHierarchicalRegressor(
+            flat_regressor_kwargs=self.flat_regressor_kwargs,
+            l2_reg=self.l2_reg,
+            order=self.order,
+        )
+        twin.fit(X_train, y_train, topology=topology)
+        return float(r2_score(y_val, twin.predict(X_val)))
 
     def _node_target(self, node: TopologyNode, X: pd.DataFrame, y: pd.Series, leaf_targets: dict) -> pd.Series:
         raw = leaf_targets.get(node.name, y)

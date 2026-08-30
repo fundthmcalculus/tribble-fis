@@ -24,6 +24,14 @@ from .render import (
     plot_deconstructed_tree,
 )
 from .topology import TopologyNode, parse_topology
+from .auto_topology import (
+    affinity_topology,
+    candidate_topologies,
+    cluster_features,
+    feature_affinity,
+    per_feature_topology,
+    select_topology,
+)
 from .deconstruct import DeconstructedHierarchicalRegressor, DeconstructedHierarchicalClassifier
 
 __all__ = [
@@ -44,6 +52,12 @@ __all__ = [
     "plot_hme",
     "plot_deconstructed_tree",
     "TopologyNode",
+    "affinity_topology",
+    "candidate_topologies",
+    "cluster_features",
+    "feature_affinity",
+    "per_feature_topology",
+    "select_topology",
     "parse_topology",
     "DeconstructedHierarchicalRegressor",
     "DeconstructedHierarchicalClassifier",
