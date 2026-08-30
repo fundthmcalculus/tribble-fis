@@ -70,69 +70,30 @@ if ROOT not in sys.path:
 # the compiled CI leg quietly becomes a second copy of the numpy leg.
 
 import importlib.util
-import os
 
-ALLOW_INSTALLED_ENV = "TRIBBLEFIS_ALLOW_INSTALLED"
-
-_EXPECTED_PACKAGE = Path(ROOT) / "src" / "tribblefis"
-
-
-def editable_install_problem(origin):
-    """Describe what is wrong with where ``tribblefis`` resolves, or ``None``.
-
-    Takes the resolved origin rather than looking it up, so the decision is
-    testable without breaking a venv to reach it -- see
-    ``tests/test_editable_install.py``. ``origin`` is ``ModuleSpec.origin``:
-    the path to the package's ``__init__.py``, or ``None`` for a package that
-    is missing or is an empty namespace package shadowing the real one.
-    """
-    # Deliberately truthy-only. A leftover `TRIBBLEFIS_ALLOW_INSTALLED=0` in a
-    # shell profile reads as "off" to whoever wrote it, and treating any value
-    # as opt-in would silently disable the guard for them forever.
-    if os.environ.get(ALLOW_INSTALLED_ENV, "").strip().lower() in ("1", "true", "yes"):
-        return None
-
-    remedy = (
-        f"\n  Run `uv sync` from {ROOT} to reinstall the project editable.\n"
-        f"  If you are deliberately testing an installed build, set "
-        f"{ALLOW_INSTALLED_ENV}=1.\n"
-        f"  See tribble-fis#214."
-    )
-
-    if origin is None:
-        return (
-            "`tribblefis` is not installed in this environment (or is being "
-            "shadowed by an empty namespace package of the same name)." + remedy
-        )
-
-    found = Path(origin).resolve().parent
-    if found == _EXPECTED_PACKAGE.resolve():
-        return None
-
-    # The two failure shapes read very differently to whoever hits them, so
-    # they get different first lines. A site-packages copy is #214 verbatim; a
-    # different checkout is the quieter version, where everything looks
-    # editable and the edits simply land in a tree nobody is running.
-    if "site-packages" in found.parts or "dist-packages" in found.parts:
-        headline = (
-            f"`tribblefis` is not installed in editable mode: it resolves to a "
-            f"copy at\n    {found}\n  taken at the last `uv sync`, not to\n"
-            f"    {_EXPECTED_PACKAGE}\n"
-            f"  Every test below would run that copy, and the files you edit "
-            f"would have no effect on the result."
-        )
-    else:
-        headline = (
-            f"`tribblefis` resolves to a different checkout:\n    {found}\n"
-            f"  rather than this one:\n    {_EXPECTED_PACKAGE}\n"
-            f"  Edits made here would not affect the tests below."
-        )
-    return headline + remedy
+# Loaded by file path under a unique module name, rather than defined here.
+# There are two conftest.py files in this tree -- this one and
+# tribble-tree/conftest.py -- and pytest's default `prepend` import mode imports
+# both as the module `conftest`. `import conftest` from a test is therefore a
+# coin flip decided by collection order: locally, a narrow selection never
+# loaded the sibling and the guard's tests passed; in CI the full testpaths
+# loaded both and all nine failed with "module 'conftest' has no attribute
+# editable_install_problem". Nothing in the guard belongs in an ambiguous
+# namespace, so it lives in tests/editable_guard.py and is loaded by path here
+# -- which also avoids depending on `tests/` being on sys.path this early.
+_GUARD_SPEC = importlib.util.spec_from_file_location(
+    "tribblefis_editable_guard", Path(ROOT) / "tests" / "editable_guard.py"
+)
+editable_guard = importlib.util.module_from_spec(_GUARD_SPEC)
+sys.modules[_GUARD_SPEC.name] = editable_guard
+_GUARD_SPEC.loader.exec_module(editable_guard)
 
 
 def pytest_configure(config):
     spec = importlib.util.find_spec("tribblefis")
-    problem = editable_install_problem(spec.origin if spec is not None else None)
+    problem = editable_guard.editable_install_problem(
+        spec.origin if spec is not None else None
+    )
     if problem is not None:
         # `UsageError` stops the session before collection with the message and
         # no traceback. A traceback here would put the reader inside conftest.py,

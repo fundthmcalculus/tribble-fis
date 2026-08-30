@@ -1,11 +1,17 @@
-"""Unit tests for the editable-install guard in ``conftest.py``.
+"""Unit tests for the editable-install guard.
 
-The guard itself runs once per session, at ``pytest_configure``, and either says
-nothing or aborts the run. Neither outcome is a test result, so the decision
-logic is factored out as :func:`conftest.editable_install_problem` and exercised
-here against synthetic paths. Otherwise the only way to know the check works is
-to break the venv on purpose, which is precisely the state it exists to prevent
-anyone from being in.
+The guard itself runs once per session, from ``conftest.py``'s
+``pytest_configure``, and either says nothing or aborts the run. Neither outcome
+is a test result, so the decision logic is factored into
+:mod:`tests.editable_guard` and exercised here against synthetic paths.
+Otherwise the only way to know the check works is to break the venv on purpose,
+which is precisely the state it exists to prevent anyone from being in.
+
+That module is loaded here under the unique name ``tribblefis_editable_guard``
+that ``conftest.py`` registers, so these tests exercise the very object the
+guard uses. The first version of this file kept the logic in ``conftest.py`` and
+did ``import conftest``, which passed locally and failed all nine ways in CI --
+see ``test_the_guard_does_not_live_in_a_conftest``.
 
 Background is tribble-fis#214: the local `.venv` installed the project
 non-editable, so `site-packages/tribblefis/` was a *copy* taken at the last
@@ -20,6 +26,7 @@ it's always right") rather than a note telling the next person to re-run
 `uv sync` and hope.
 """
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -27,11 +34,12 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
-
-import conftest  # noqa: E402
-
 SRC = REPO_ROOT / "src" / "tribblefis"
+
+# Registered by conftest.py, which loads the guard by path. Importing it by that
+# name rather than re-loading the file means these tests exercise the same
+# module object the session-level check calls.
+conftest = sys.modules["tribblefis_editable_guard"]
 
 
 def test_editable_checkout_is_accepted():
@@ -132,3 +140,28 @@ def test_opt_out_requires_a_truthy_value(monkeypatch, value):
     """A leftover `TRIBBLEFIS_ALLOW_INSTALLED=0` must not silently disable it."""
     monkeypatch.setenv(conftest.ALLOW_INSTALLED_ENV, value)
     assert conftest.editable_install_problem(Path("/anywhere/site-packages/tribblefis/__init__.py")) is not None
+
+
+def test_the_guard_does_not_live_in_a_conftest():
+    """The logic must stay out of any file named `conftest.py`.
+
+    Two of them exist in this tree, and pytest's default `prepend` import mode
+    imports both under the module name `conftest`. Which one `import conftest`
+    returns is decided by collection order, so the first version of this file --
+    with the logic in the root conftest -- passed on a narrow local selection
+    and failed all nine tests in CI, where the full `testpaths` loaded the
+    sibling too:
+
+        AttributeError: module 'conftest' has no attribute 'editable_install_problem'
+
+    Both conftest paths are asserted to exist, so this test starts failing for
+    the right reason (rather than passing vacuously) if the sibling is ever
+    removed and someone is tempted to move the logic back.
+    """
+    conftests = [REPO_ROOT / "conftest.py", REPO_ROOT / "tribble-tree" / "conftest.py"]
+    assert all(p.exists() for p in conftests), (
+        f"expected both conftest files to exist: {[str(p) for p in conftests]}"
+    )
+    guard_file = Path(conftest.__file__).resolve()
+    assert guard_file.name != "conftest.py"
+    assert guard_file not in {p.resolve() for p in conftests}
