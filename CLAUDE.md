@@ -13,3 +13,13 @@ If the venv ever ends up in some other state -- a non-editable copy under `site-
 To test an installed build on purpose rather than the working tree, set `TRIBBLEFIS_ALLOW_INSTALLED=1`.
 
 CI syncs fresh on every run and is authoritative when local and CI results disagree.
+
+`uv sync` needs no C compiler. Keep it that way: `tribble-clustering` is a git
+source that builds Cython extensions from scratch, and it sits in the
+`clustering` extra rather than `[project].dependencies` precisely so a plain
+sync does not require the MSVC Build Tools on Windows — nothing in `tribblefis`
+imports it, and `tests/test_no_compiled_clustering_dependency.py` keeps both
+halves of that true. `dependency-sync.yml` moves the pinned revision twice a
+day, so anything on the default install path that compiles gets rebuilt from
+source that often, per developer. If you need the clustering estimators, run
+`uv sync --extra dev --extra clustering`. See issue #231.

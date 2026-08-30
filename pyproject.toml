@@ -13,7 +13,6 @@ dependencies = [
     "numba",
     "pandas",
     "scikit-learn",
-    "tribble-clustering>=0.1.8",
     "matplotlib",
     "ucimlrepo>=0.0.7",
     "optimizers",
@@ -43,9 +42,41 @@ optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git", rev = 
 # Bumped 1dcf331 -> 71dbcc3 (clustering main HEAD) to match the revision the
 # downstream grad-school superproject pins as its submodule, so that repo's
 # reproduce/ preflight PIN-MATCH stops reporting the two as drifted.
+#
+# Note that "once a fixed release ships" is a larger ask than it reads as:
+# PyPI has published no binary wheel for this package since 0.1.0 (which was
+# pure Python) -- 0.1.3 through 0.1.8 are sdist-only, and the upstream publish
+# workflow builds `--sdist` and nothing else. So dropping this override for
+# PyPI would not stop consumers compiling; it would only stop them compiling
+# *this revision*. The override is not what makes a compiler necessary. That
+# is why the dependency itself moved to the `clustering` extra in #231 rather
+# than this pin changing.
 tribble-clustering = { git = "https://github.com/fundthmcalculus/clustering.git", rev = "bc9c2f1b75fb7a7d4094fe38040c85b364548c1b" }
 
 [project.optional-dependencies]
+# Nothing in `tribblefis` imports `tribbleclustering`, and
+# tests/test_no_compiled_clustering_dependency.py exists to keep it that way
+# (#203). Leaving it in `[project].dependencies` anyway made a C toolchain a
+# hard requirement of a plain `uv sync` on every platform, because the pin in
+# `[tool.uv.sources]` is a git source and `tribbleclustering` builds three
+# Cython extensions (`pcvat`, `cfcm`, `clk`) from it. On Linux that is
+# invisible -- every runner has gcc -- but on Windows it needs the MSVC Build
+# Tools, and without them there is no venv to work in at all.
+#
+# #231 is what made that worth fixing rather than tolerating: dependency-sync
+# now works (it was inert before #222) and moves the `rev` twice a day, and
+# every bump lands on a revision nobody has cached, so the from-source rebuild
+# is not a one-time cost. Moving the dependency here takes it off the default
+# install path without giving it up -- `uv sync --extra clustering` still gets
+# it, on a machine that can build it.
+#
+# Note for downstream consumers that were picking this up transitively (the
+# `grad-school` repo builds its environment with
+# `uv sync --project tribble-fis --extra dev` and its ClusteringExperiments/
+# scripts import `tribbleclustering` directly): add `--extra clustering`.
+clustering = [
+    "tribble-clustering>=0.1.8",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov",

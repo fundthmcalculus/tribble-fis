@@ -51,8 +51,27 @@ jobs:
           # on a cache that is keyed on uv.lock and sized per-repo.
           cache-suffix: nightly-${{ matrix.kernel }}
 
+      # `--extra clustering` on the compiled leg only, and that asymmetry is
+      # the point of both legs rather than a shortcut.
+      #
+      # `tribble-clustering` moved out of `[project].dependencies` in #231:
+      # nothing in `tribblefis` imports it, and leaving it there made a C
+      # toolchain a hard requirement of a plain `uv sync`, because it is a git
+      # source that builds three Cython extensions. The `numpy` leg is meant to
+      # be a compiler-free install (see the fuller note in tests.yml), which it
+      # was not while that dependency sat on the default path, and is true only
+      # because this leg does not ask for the extra. (`optimizers`, the other
+      # git source, builds through hatchling and ships no extension at install
+      # time, so it costs nothing here.)
+      #
+      # The `compiled` leg does install it, because
+      # tests/test_no_compiled_clustering_dependency.py checks `sys.modules`
+      # after importing every module in the package, and that cannot tell
+      # "nobody imported it" from "it was not installed". Without the extra
+      # somewhere, the #203 guard would pass forever while testing nothing; it
+      # skips loudly on the `numpy` leg and runs for real on this one.
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev ${{ matrix.kernel == 'compiled' && '--extra clustering' || '' }}
 
       - name: Build the compiled kernel
         if: matrix.kernel == 'compiled'

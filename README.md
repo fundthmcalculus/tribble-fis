@@ -16,6 +16,20 @@ To install with optional dev dependencies (testing and benchmarking):
 uv sync --extra dev
 ```
 
+Neither command needs a C compiler. `tribble-clustering` does — it is a git
+source that builds three Cython extensions — so it lives in its own extra
+rather than on the default install path, since nothing in `tribblefis` imports
+it. If you want it (its estimators are used by downstream consumers of this
+environment, not by this package), ask for it explicitly, on a machine that can
+build it:
+
+```bash
+uv sync --extra dev --extra clustering
+```
+
+On Windows that needs the [MSVC Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/);
+on Linux and macOS the system compiler is enough. See issue #231.
+
 ## ANFIS
 
 `tribblefis.anfis` implements the canonical Jang (1993) ANFIS network:
