@@ -109,6 +109,31 @@ def test_workflow_refreshes_pins_through_the_script():
     )
 
 
+def _daily_firings(hour_field: str) -> int:
+    """How many times a day a cron hour field fires.
+
+    Handles the three spellings someone would reasonably reach for -- `7,19`,
+    `*/12` and `*` -- plus ranges. The first draft of this read only the
+    comma-separated form, which made two separate once-daily `- cron:` entries
+    (a correct schedule) fail the test. A test that fails a correct change is
+    worse than no test, because the fix people reach for is deleting it.
+    """
+    total = 0
+    for part in hour_field.split(","):
+        if not part:
+            continue
+        spec, _, step = part.partition("/")
+        step = int(step) if step else 1
+        if spec == "*":
+            lo, hi = 0, 23
+        elif "-" in spec:
+            lo, hi = (int(v) for v in spec.split("-", 1))
+        else:
+            lo = hi = int(spec)
+        total += len(range(lo, hi + 1, step))
+    return total
+
+
 def test_workflow_runs_more_than_once_a_day():
     """The schedule must fire at least twice daily.
 
@@ -117,15 +142,31 @@ def test_workflow_runs_more_than_once_a_day():
     merged just after the run waits nearly 24 hours, which for the seeding and
     determinism fixes that motivated #201 is a full day of downstream runs on
     known-bad code.
+
+    Every `- cron:` entry counts, not just the first: `0 7,19 * * *` and a pair
+    of once-daily entries are the same schedule, and both must pass.
     """
     yaml = WORKFLOW.read_text(encoding="utf-8")
     crons = re.findall(r"cron:\s*['\"]([^'\"]+)['\"]", yaml)
     assert crons, "dependency-sync.yml has no cron schedule"
-    hour_field = crons[0].split()[1]
-    n_runs = len([h for h in hour_field.split(",") if h])
+    n_runs = sum(_daily_firings(c.split()[1]) for c in crons)
     assert n_runs >= 2, (
-        f"cron {crons[0]!r} fires {n_runs}x/day; #201 asks for a couple times a day"
+        f"{crons!r} fires {n_runs}x/day; #201 asks for a couple times a day"
     )
+
+
+@pytest.mark.parametrize(
+    "hour_field,expected",
+    [("7", 1), ("7,19", 2), ("*/12", 2), ("*/6", 4), ("*", 24), ("0-6", 7), ("0-23/12", 2)],
+)
+def test_daily_firings_reads_every_cron_spelling(hour_field, expected):
+    """The counter is the part that can silently under-report, so pin it."""
+    assert _daily_firings(hour_field) == expected
+
+
+def test_two_separate_daily_crons_satisfy_the_requirement():
+    """The false negative that motivated `_daily_firings`, pinned directly."""
+    assert sum(_daily_firings(c.split()[1]) for c in ["0 7 * * *", "0 19 * * *"]) == 2
 
 
 # --------------------------------------------------------------------------

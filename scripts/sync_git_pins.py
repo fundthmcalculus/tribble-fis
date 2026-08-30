@@ -68,13 +68,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
-# uv accepts `branch`, `tag` and `rev` as the revision selector on a git source.
-# Only `rev` is a moving-target problem: `tag` is meant to be immutable, and
+# uv accepts `branch`, `tag` and `rev` as the revision selector on a git source,
+# and only `rev` is this script's business: `tag` is meant to be immutable, and
 # `branch` re-resolves on its own, which is the pre-#219 state this script
-# exists to replace. Anything selected another way is reported and skipped
-# rather than silently rewritten into a `rev`, because converting a caller's
-# `tag` pin into a floating rev is a decision, not a refresh.
-_REV_SELECTORS = ("rev",)
+# exists to replace. Either is reported and skipped rather than silently
+# rewritten into a `rev` -- converting a caller's `tag` pin into a floating rev
+# is a decision, not a refresh.
 
 # The branch a bare `rev` pin is understood to track. uv has no field for
 # "which branch this rev came from" -- `branch` and `rev` are alternatives, not
@@ -142,8 +141,7 @@ def discover_pins(pyproject_text: str) -> tuple[list[GitPin], list[str]]:
     for name, source in sorted(sources.items()):
         if not isinstance(source, dict) or "git" not in source:
             continue
-        selector = next((k for k in _REV_SELECTORS if k in source), None)
-        if selector is None:
+        if "rev" not in source:
             other = next((k for k in ("branch", "tag") if k in source), None)
             if other is not None:
                 warnings.append(
@@ -159,7 +157,7 @@ def discover_pins(pyproject_text: str) -> tuple[list[GitPin], list[str]]:
                     f"a `rev` so this script can refresh it."
                 )
             continue
-        rev = source[selector]
+        rev = source["rev"]
         if not isinstance(rev, str) or not _SHA_RE.match(rev):
             # A short rev resolves fine for uv but cannot be located
             # unambiguously in the file, and `git ls-remote` gives full SHAs, so
@@ -181,6 +179,23 @@ def resolve_head(url: str, branch: str, *, runner=subprocess.run) -> str:
     ``git ls-remote`` is used rather than a clone: this needs 40 bytes, and the
     two upstreams here carry compiled extensions and test corpora that make a
     clone orders of magnitude more expensive for the same answer.
+
+    **This does not, and cannot, tell you the head is *ahead* of the current
+    pin.** ls-remote returns a SHA and nothing else; ancestry needs history.
+    That matters here, because the comment above the ``optimizers`` pin names a
+    floor -- revisions before ``3a57f91`` ignore their ``seed`` and return a
+    different model on every call -- and a force-push of upstream ``main``
+    backwards past it would be installed by this script without complaint. The
+    resulting PR would be green, because what it reintroduces is
+    irreproducibility rather than a crash.
+
+    What guards that is the shape of the workflow rather than anything in this
+    file: **it opens a pull request, it does not merge one.** The PR body
+    carries a ``compare/<old>...<new>`` link, on which a backwards move renders
+    as "0 commits ahead", and the floor comment appears in the diff two lines
+    above the changed pin. If this workflow ever grows an auto-merge, that
+    review step is the thing being removed, and the ancestry check it stands in
+    for has to be built first.
     """
     result = runner(
         ["git", "ls-remote", url, f"refs/heads/{branch}"],
