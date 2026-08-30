@@ -99,7 +99,28 @@ markers = [
     # They stay, and the budget is met without them.
     #
     # Do not mark a test slow to dodge a genuine regression. If it got slower,
-    # that is the finding -- see #213.
+    # that is the finding.
+    #
+    # #213 asked whether the worst offender here --
+    # test_refine_gt2_regressor_antecedents_never_increases_cv_loss[triangular],
+    # 4x its [trap] sibling "on identical settings" -- was a fixable perf bug
+    # that would let it come back onto the PR path. It is not, and the reason
+    # is worth knowing before anyone tries to trim it:
+    #
+    # The settings are identical; the models are not. `member_function="trap"`
+    # with the default `trapz_method="fast"` uses a histogram fitter that takes
+    # no component-count argument, so it emits ONE trapezoid per feature/label
+    # on unimodal data whatever `n_gaussians` says. `member_function=
+    # "triangular"` routes through EM, which honours it, and builds two.
+    # Refinement is `for sweep: for slot: <sub_maxfun evaluations>` with every
+    # evaluation running the whole model, i.e. O(slots x model size) -- so 2x
+    # the memberships costs 4x. Measured 3.80x against a predicted 4.00x.
+    #
+    # The [triangular] leg is therefore the only one of the pair that exercises
+    # multi-component slot refinement at all. Cutting its cost by lowering
+    # `n_gaussians` would delete exactly the coverage that makes it worth
+    # running. It stays marked, and it stays expensive, on purpose. See
+    # tests/test_member_function_component_counts.py.
     "slow: expensive correctness test; deselected on PRs, run by nightly.yml",
 ]
 
