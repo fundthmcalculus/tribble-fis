@@ -6,9 +6,10 @@
 
 # Local development environment
 
-The local `.venv` installs the project non-editable, meaning `site-packages/tribblefis/` is a copy taken at the last `uv sync`, not a link to `src/tribblefis/`. This means local test runs and imports will use stale code even after pulling changes, while `git status` and the files on disk show current code. If local test results don't match CI:
+`uv sync` installs the project **editable**, so `import tribblefis` runs `src/tribblefis/` directly and your edits take effect without re-syncing. Run `uv sync` after pulling to pick up dependency changes, not code changes.
 
-1. Run `uv sync` to refresh the venv's copy of the code.
-2. Re-run your local tests or measurements.
+If the venv ever ends up in some other state -- a non-editable copy under `site-packages/`, or a link to a different checkout -- `conftest.py` aborts the whole pytest session at startup and names the fix. That check exists because the alternative is silent: a stale copy fails with an `AttributeError` deep inside an estimator while `git status` and `git log` show current code, and both obvious readings ("main is broken", "it's a platform break") are wrong and expensive. See issue #214.
+
+To test an installed build on purpose rather than the working tree, set `TRIBBLEFIS_ALLOW_INSTALLED=1`.
 
 CI syncs fresh on every run and is authoritative when local and CI results disagree.
