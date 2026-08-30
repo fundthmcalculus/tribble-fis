@@ -30,7 +30,7 @@ dependencies = [
 # downstream grad-school superproject pins as its submodule, so that repo's
 # reproduce/ preflight PIN-MATCH stops reporting the two as drifted. Forward of
 # the 3a57f91 floor above.
-optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git", rev = "644ba3406b95deff8b6364581ef393afdaecb801" }
+optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git", rev = "10d8300123e2ccbbcb296fa7509435d0ba2d6e0f" }
 # Temporary: PyPI's tribble-clustering==0.1.8 is the latest published release
 # and its compiled `pcvat` extension is built with -march=native, which SIGILLs
 # on any CPU lacking whatever the build machine had (AVX-512, observed on some
@@ -43,7 +43,7 @@ optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git", rev = 
 # Bumped 1dcf331 -> 71dbcc3 (clustering main HEAD) to match the revision the
 # downstream grad-school superproject pins as its submodule, so that repo's
 # reproduce/ preflight PIN-MATCH stops reporting the two as drifted.
-tribble-clustering = { git = "https://github.com/fundthmcalculus/clustering.git", rev = "d1a97ac2a0edcedce7e4415e9362172e1e3b3934" }
+tribble-clustering = { git = "https://github.com/fundthmcalculus/clustering.git", rev = "bc9c2f1b75fb7a7d4094fe38040c85b364548c1b" }
 
 [project.optional-dependencies]
 dev = [
