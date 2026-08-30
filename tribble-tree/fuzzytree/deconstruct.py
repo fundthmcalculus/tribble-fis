@@ -124,7 +124,10 @@ class DeconstructedHierarchicalRegressor(BaseEstimator, RegressorMixin):
                 from correlations in one sample. `topology_source_` records
                 which of the two was used, so a downstream table can never
                 report a derived grouping as a domain one.
-            leaf_targets: optional per-node target override.
+            leaf_targets: optional per-node target override. Cannot be
+                combined with ``"auto"``: its keys are node names, and a
+                derived topology's node names are not known until after
+                candidate selection has run.
         """
         if not isinstance(X, pd.DataFrame):
             X = pd.DataFrame(X)
