@@ -47,6 +47,10 @@ from sklearn.datasets import make_regression
 
 from tribblefis.gaussian_regressor import TribbleRegressor
 
+# ~9s total: every test here fits a real TribbleRegressor, because what is being
+# pinned is what `fit` builds. Named here so the next person tuning the PR
+# budget reads a number instead of finding it in --durations=25.
+
 
 def _membership_counts(model):
     """Memberships per (feature, label), flattened."""
@@ -71,7 +75,7 @@ def _fit(X, y, **kwargs):
     return TribbleRegressor(random_state=0, **kwargs).fit(X, y).model_
 
 
-def test_fast_trapezoids_ignore_n_gaussians(regression_data, capsys):
+def test_fast_trapezoids_ignore_n_gaussians(regression_data):
     """`n_gaussians` has no effect on the default trap path. Not a typo -- measured.
 
     `create_trapz_membership_dict_fast` has no component-count parameter to pass
@@ -86,7 +90,6 @@ def test_fast_trapezoids_ignore_n_gaussians(regression_data, capsys):
         n: _membership_counts(_fit(X, y, member_function="trap", n_gaussians=n))
         for n in (1, 2, 8)
     }
-    capsys.readouterr()
 
     assert counts[1] == counts[2] == counts[8], counts
     # And what it settles on is one per feature/label, because these features are
@@ -94,20 +97,19 @@ def test_fast_trapezoids_ignore_n_gaussians(regression_data, capsys):
     assert set(counts[2]) == {1}, counts[2]
 
 
-def test_triangular_honours_n_gaussians(regression_data, capsys):
+def test_triangular_honours_n_gaussians(regression_data):
     """The triangular path routes through EM, which does take a component count."""
     X, y = regression_data
     counts = {
         n: _membership_counts(_fit(X, y, member_function="triangular", n_gaussians=n))
         for n in (1, 2)
     }
-    capsys.readouterr()
 
     assert set(counts[1]) == {1}, counts[1]
     assert set(counts[2]) == {2}, counts[2]
 
 
-def test_trap_and_triangular_build_different_sized_models(regression_data, capsys):
+def test_trap_and_triangular_build_different_sized_models(regression_data):
     """The claim at the centre of #213: "identical settings" are not identical work.
 
     This is the assertion that makes the issue's headline resolvable. At the
@@ -120,12 +122,11 @@ def test_trap_and_triangular_build_different_sized_models(regression_data, capsy
     triangular = _membership_counts(
         _fit(X, y, member_function="triangular", n_gaussians=2)
     )
-    capsys.readouterr()
 
     assert sum(triangular) == 2 * sum(trap), (sum(trap), sum(triangular))
 
 
-def test_fast_trapezoid_count_follows_the_data_not_the_parameter(capsys):
+def test_fast_trapezoid_count_follows_the_data_not_the_parameter():
     """The fast fitter is data-adaptive, which is a design choice, not an oversight.
 
     One trapezoid per merged contiguous non-empty histogram region. A unimodal
@@ -155,7 +156,6 @@ def test_fast_trapezoid_count_follows_the_data_not_the_parameter(capsys):
     y = X["unimodal"] + rng.normal(0, 0.1, n)
 
     model = _fit(X, y, member_function="trap", n_gaussians=1, top_n=2)
-    capsys.readouterr()
 
     per_feature = {
         name: max(len(lm.memberships) for lm in fm.label_models.values())
@@ -165,7 +165,7 @@ def test_fast_trapezoid_count_follows_the_data_not_the_parameter(capsys):
     assert per_feature["bimodal"] >= 2, per_feature
 
 
-def test_triangular_ignores_trapz_method(regression_data, capsys):
+def test_triangular_ignores_trapz_method(regression_data):
     """`trapz_method` is accepted and does nothing when `member_function` is triangular.
 
     The branch hardcodes the EM fitter; there is no histogram-based triangle
@@ -191,6 +191,5 @@ def test_triangular_ignores_trapz_method(regression_data, capsys):
     em = _membership_counts(
         _fit(X, y, member_function="triangular", n_gaussians=2, trapz_method="em")
     )
-    capsys.readouterr()
 
     assert fast == em, (fast, em)
