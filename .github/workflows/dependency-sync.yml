@@ -1,24 +1,44 @@
 name: Dependency Sync
 
-# Keeps the two git-sourced dependencies in `uv.lock` -- `optimizers` and
-# `tribble-clustering` -- tracking their upstream `main`.
+# Keeps the git-sourced dependencies -- `optimizers` and `tribble-clustering` --
+# tracking their upstream `main`, in both `pyproject.toml` and `uv.lock`.
 #
-# Both are declared in [tool.uv.sources] as bare git URLs with no `rev`, so uv
-# resolves the branch head once and then pins that commit in the lock forever.
-# `uv lock --check` cannot see the drift: a revision-less git source is "in
-# sync" with whatever commit is already locked, however old. That is exactly the
-# blind spot called out in clustering's own pr.yaml comment, and it was real --
-# when this workflow was written the lock was already several commits behind
-# both upstreams with nothing to report it.
+# The mechanism has to match how the pins are written, and that has changed
+# once already:
+#
+#   * Originally the sources were bare git URLs with no `rev`. uv resolved the
+#     branch head once and pinned it in the lock forever, and `uv lock --check`
+#     could not see the drift -- a revision-less git source is "in sync" with
+#     whatever commit is already locked, however old. This workflow was written
+#     for that state, and `uv lock --upgrade-package` was the whole of it.
+#
+#   * #219 then pinned explicit revisions, so the intended commit shows up in a
+#     diff where a reviewer already looks. That is a better pin, and it made
+#     this workflow inert: with a `rev` present there is nothing for
+#     `--upgrade-package` to upgrade to, so the re-resolve is a fixed point.
+#     Measured on `ae0ef13`, with optimizers 4 commits behind upstream and
+#     clustering 7 behind, it produced a zero-byte `uv.lock` diff and this
+#     workflow reported "nothing to do" on every scheduled run until a human
+#     typed the SHAs by hand in #221.
+#
+# So the `rev` in `pyproject.toml` is now rewritten first, by
+# scripts/sync_git_pins.py, and `uv lock` follows to match. Both files move
+# together and the bump stays reviewable. tests/test_sync_git_pins.py fails if
+# this workflow stops calling that script, because a sync job that finds no
+# drift and one that *cannot* find drift look identical from the outside.
 #
 # Triggered directly by each upstream's notify-downstream.yml (see the
-# repository_dispatch below), with a daily cron as a backstop for when the
+# repository_dispatch below), with a twice-daily cron as a backstop for when the
 # dispatch token is absent or a dispatch is lost.
 on:
   repository_dispatch:
     types: [upstream-updated]
   schedule:
-    - cron: '0 7 * * *'
+    # Twice a day, per the ask on #201. A single daily run means an upstream fix
+    # merged just after it waits nearly 24 hours -- and the fixes that motivated
+    # #201 were seeding/determinism fixes, where a day of downstream runs on the
+    # old code produces results that look fine and are not reproducible.
+    - cron: '0 7,19 * * *'
   workflow_dispatch: {}
 
 permissions:
@@ -65,45 +85,59 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Re-resolve the git-sourced dependencies
+      # Stdlib-only -- `git ls-remote` and a text substitution. `--no-project`
+      # is deliberate: the pin repair must not depend on the project resolving,
+      # or a lock this workflow exists to fix could be what stops it running.
+      # `--python 3.11` matches the floor in `requires-python`; the script needs
+      # `tomllib`, which is 3.11+.
+      - name: Refresh the rev pins in pyproject.toml
+        id: pins
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.11 python scripts/sync_git_pins.py --markdown-table pin-table.md
+
+      - name: Re-resolve the lock against the refreshed pins
         id: relock
         run: |
           set -euo pipefail
-          before_opt=$(awk '/^name = "optimizers"$/{f=1} f&&/^source =/{print;exit}' uv.lock)
-          before_clu=$(awk '/^name = "tribble-clustering"$/{f=1} f&&/^source =/{print;exit}' uv.lock)
 
-          # Scoped to the two git deps on purpose. A bare `uv lock --upgrade`
-          # would also float every PyPI dependency, turning "pick up the
-          # upstream fix" into an unreviewable dependency bump.
+          # Scoped to the git deps on purpose. A bare `uv lock --upgrade` would
+          # also float every PyPI dependency, turning "pick up the upstream fix"
+          # into an unreviewable dependency bump.
+          #
+          # This runs even when the pins did not move: `pyproject.toml` and
+          # `uv.lock` can disagree for other reasons, and re-locking here is how
+          # that gets noticed rather than shipped.
           uv lock --upgrade-package optimizers --upgrade-package tribble-clustering
 
-          if git diff --quiet -- uv.lock; then
+          if git diff --quiet -- pyproject.toml uv.lock; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "uv.lock already tracks both upstream heads -- nothing to do."
+            echo "Both pins are already at their upstream branch head -- nothing to do."
             exit 0
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
-          after_opt=$(awk '/^name = "optimizers"$/{f=1} f&&/^source =/{print;exit}' uv.lock)
-          after_clu=$(awk '/^name = "tribble-clustering"$/{f=1} f&&/^source =/{print;exit}' uv.lock)
-
-          sha() { echo "$1" | sed -E 's/.*#([0-9a-f]{40}).*/\1/'; }
-          row() {
-            local repo=$1 name=$2 b=$3 a=$4
-            local bs as
-            bs=$(sha "$b"); as=$(sha "$a")
-            [ "$bs" = "$as" ] && return 0
-            echo "| \`$name\` | \`${bs:0:7}\` | [\`${as:0:7}\`](https://github.com/$repo/compare/$bs...$as) |"
-          }
+          # A lock that moved while the pins did not means `uv.lock` had fallen
+          # out of step with `pyproject.toml` independently of upstream drift.
+          # Say so in the PR body rather than letting an unexplained lock diff
+          # ride along under a "bump the pins" title.
+          if [ ! -s pin-table.md ]; then
+            {
+              echo '| Dependency | Old | New |'
+              echo '|---|---|---|'
+              echo '| _(no pin moved)_ | | |'
+            } > pin-table.md
+            note='> **Note:** no `rev` pin moved -- the lock alone was out of step with `pyproject.toml`.'
+          else
+            note=''
+          fi
 
           {
-            echo "Automated re-resolve of the two git-sourced dependencies in \`uv.lock\`."
+            echo "Automated refresh of the git-sourced dependency pins in \`pyproject.toml\`, with \`uv.lock\` re-resolved to match."
             echo
-            echo "| Dependency | Old | New |"
-            echo "|---|---|---|"
-            row fundthmcalculus/optimizers optimizers "$before_opt" "$after_opt"
-            row fundthmcalculus/clustering tribble-clustering "$before_clu" "$after_clu"
+            cat pin-table.md
             echo
+            if [ -n "$note" ]; then echo "$note"; echo; fi
             echo "Triggered by: \`${{ github.event_name }}\`${{ github.event.client_payload.repo && format(' from `{0}`', github.event.client_payload.repo) || '' }}"
             echo
             echo "> This branch is machine-owned and force-pushed on every upstream merge."
@@ -118,8 +152,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B "$SYNC_BRANCH"
-          git add uv.lock
-          git commit -m "chore(deps): re-resolve optimizers and tribble-clustering to upstream main"
+          # Both files, always. Committing only the lock is how the two got
+          # out of step in the first place -- the `rev` in pyproject.toml is now
+          # the authoritative pin, and a lock that names a commit the pin does
+          # not is unresolvable by anyone reading the diff.
+          git add pyproject.toml uv.lock
+          git commit -m "chore(deps): refresh optimizers and tribble-clustering pins to upstream main"
           git push --force origin "$SYNC_BRANCH"
 
       - name: Open or update the sync PR
