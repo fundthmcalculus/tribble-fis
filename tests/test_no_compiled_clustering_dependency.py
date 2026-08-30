@@ -172,10 +172,10 @@ def test_tribble_clustering_is_not_a_default_install_dependency():
     )
 
     # And it is still *available*, which is the other half: the point was to
-    # move it, not to drop it. A downstream consumer that was getting it
-    # transitively (grad-school builds its environment with
-    # `uv sync --project tribble-fis --extra dev`) needs the extra to exist
-    # under a stable name to add `--extra clustering` to that command.
+    # move it, not to drop it. Anyone who was getting the package transitively
+    # needs a stable name to ask for it by -- `uv sync --extra clustering` --
+    # so the extra is part of the contract, not an implementation detail of
+    # this file.
     extra = pyproject["project"]["optional-dependencies"]["clustering"]
     assert any(
         d.split()[0].split(">")[0].split("=")[0].strip() == "tribble-clustering"

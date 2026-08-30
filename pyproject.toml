@@ -70,10 +70,18 @@ tribble-clustering = { git = "https://github.com/fundthmcalculus/clustering.git"
 # install path without giving it up -- `uv sync --extra clustering` still gets
 # it, on a machine that can build it.
 #
-# Note for downstream consumers that were picking this up transitively (the
-# `grad-school` repo builds its environment with
-# `uv sync --project tribble-fis --extra dev` and its ClusteringExperiments/
-# scripts import `tribbleclustering` directly): add `--extra clustering`.
+# One downstream consumer was picking this up transitively, and it is a
+# narrower set than it first looks: in the `grad-school` repo, everything that
+# actually clusters already runs under `--project tribble-cluster` (the
+# Chapter 3 tables, `ClusteringExperiments/`, `bodyfat_ivat.py`) or supplies
+# the submodule with `--with-editable tribble-cluster`. Only
+# `reproduce/optimizers/` runs under `--project tribble-fis` and imports
+# `tribbleclustering`, on its opt-in `--init fcm` arms. Handled in
+# grad-school#252, and handled with `--with-editable tribble-cluster` rather
+# than this extra on purpose: that repo's PROVENANCE records the submodule SHA
+# and its preflight PIN-MATCH checks it, so resolving clustering from this
+# project's lock instead would reintroduce the drift that check exists to
+# catch.
 clustering = [
     "tribble-clustering>=0.1.8",
 ]
