@@ -180,16 +180,37 @@ of it are worth stating outright, because they are easy to trip over:
   :class:`_UniformityScalerBase` for the partial version of that argument for
   :class:`PiecewiseLinearCDFScaler`.
 
-**Which to reach for.** :class:`MinMaxScaler` remains the documented default;
-the evidence for the uniformity family comes from experiments in a separate
-repository (issue #220) that this package cannot re-run in its own test suite,
-and swapping a default on numbers that cannot be reproduced here would be
-trading one weakly-grounded prior for another. What *is* verified here is
-mechanical: `benchmarks/uniformity_scaling.py` measures marginal uniformity and
-downstream regression quality on synthetic distributions with known pathology,
-and `tests/test_uniformity_scaling.py` pins the mathematical properties. Treat
-:class:`EmpiricalCDFScaler` as the first thing to try when a feature's marginal
-is visibly non-uniform and `MinMaxScaler` is underperforming.
+**Which to reach for.** :class:`MinMaxScaler` remains the documented default.
+Reach for :class:`EmpiricalCDFScaler` when `MinMaxScaler` is underperforming
+*and* you suspect the input distribution is the cause -- a marginal that is
+visibly bimodal, heavy-tailed, zero-inflated, or otherwise not helped by the
+log1p pre-step.
+
+**Reported accuracy** (issues #220 and #224, ten seeds each). These numbers come
+from sweeps in a separate repository and are **not reproduced by this package's
+test suite**, which cannot fetch the datasets; they are recorded here because
+they are the best evidence available for the accuracy claim, not because this
+repository can check them::
+
+    dataset                     log+minmax     EmpiricalCDF
+    UCI Concrete       (R^2)         0.801            0.821
+    Body Fat           (R^2)         0.109            0.587
+    Bike Sharing       (R^2)         0.589            0.620
+    Glass          (accuracy)        0.533            0.528
+    Shuttle        (accuracy)        0.958            0.981
+
+The pattern is the useful part: the large lifts are on the datasets where the
+log pre-step does *not* help (Body Fat), the transform roughly matches min-max
+where it already does (Concrete, Glass), and it never fails catastrophically --
+unlike :class:`QuantileUniformScaler`, which reached R^2 -1.86 on Body Fat.
+:class:`PiecewiseLinearCDFScaler` at ``n_pieces=10`` reached 0.836 on Concrete,
+above both.
+
+**What this package does verify** is mechanical rather than empirical:
+`benchmarks/uniformity_scaling.py` measures marginal uniformity and downstream
+regression quality on synthetic marginals with dialled-in pathology -- and shows
+the gap tracking the pathology, which a single accuracy table cannot -- while
+`tests/test_uniformity_scaling.py` pins the mathematical properties.
 """
 
 import numpy as np

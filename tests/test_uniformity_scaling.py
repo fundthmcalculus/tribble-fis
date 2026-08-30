@@ -223,6 +223,14 @@ def test_round_trip_recovers_the_training_data(cls, pathological):
     `f * n` landed a few ulps above an integer -- max round-trip error 1.03 on
     the lognormal column, and silent. Hence a tolerance tight enough to catch
     an off-by-one-order-statistic rather than merely a float wobble.
+
+    An independent implementation of the same class in #224 had the stronger
+    form of this: `(cdf * n).astype(int)` is off by one for *every* input, so
+    `[1, 2, 3, 4, 5]` round-tripped to `[2, 3, 4, 5, 6]`. It shipped green past
+    a test named for the inverse transform, because that test compared shapes
+    and bounds rather than values. `TransformedTargetRegressor` inverts through
+    this path, so a target scaled that way returns shifted by one order
+    statistic on every prediction.
     """
     scaler = cls().fit(pathological)
     recovered = scaler.inverse_transform(scaler.transform(pathological))
@@ -288,8 +296,13 @@ def test_output_lands_in_feature_range_including_out_of_range_inputs(
     assert on_train.min() >= lo - 1e-12 and on_train.max() <= hi + 1e-12
     # The training extremes must *attain* the endpoints, not merely stay inside
     # them: MF placement on a domain the data never reaches wastes the tails.
-    assert np.allclose(on_train.min(axis=0)[:3], lo)
-    assert np.allclose(on_train.max(axis=0)[:3], hi)
+    # Every column, not a prefix of them -- the atom-heavy and discrete columns
+    # are exactly the ones where this fails. #224's `EmpiricalCDFScaler` used
+    # `rank / n` with no rescale, which put the minimum at `F(min)` -- 1/n on a
+    # continuous column, but 0.373 on a column that is 40% zeros, leaving the
+    # bottom 37% of feature_range unreachable by any input.
+    assert np.allclose(on_train.min(axis=0), lo)
+    assert np.allclose(on_train.max(axis=0), hi)
 
     wild = pathological * 100.0 - 500.0
     out = scaler.transform(wild)
@@ -336,7 +349,8 @@ def test_nan_passes_through_rather_than_becoming_the_maximum(cls):
     `np.searchsorted` places NaN at the far right of a sorted array, so the
     naive empirical CDF reports quantile 1.0 for a missing value -- a
     fabricated number rather than a missing one, and one that looks entirely
-    plausible in the output.
+    plausible in the output. Confirmed as a live defect in #224's independent
+    implementation, which returned exactly 1.0 for a NaN input.
     """
     rng = np.random.default_rng(3)
     values = rng.lognormal(0, 1, 100)
