@@ -704,7 +704,7 @@ wheels = [
 [[package]]
 name = "optimizers"
 version = "0.2.0"
-source = { git = "https://github.com/fundthmcalculus/optimizers.git?rev=7ba4fc02738af7045fa3b271f74dace877bd2d4d#7ba4fc02738af7045fa3b271f74dace877bd2d4d" }
+source = { git = "https://github.com/fundthmcalculus/optimizers.git?rev=644ba3406b95deff8b6364581ef393afdaecb801#644ba3406b95deff8b6364581ef393afdaecb801" }
 dependencies = [
     { name = "cloudpickle" },
     { name = "joblib" },
@@ -1169,7 +1169,7 @@ wheels = [
 [[package]]
 name = "tribble-clustering"
 version = "0.2.1"
-source = { git = "https://github.com/fundthmcalculus/clustering.git?rev=71dbcc3853bc48733ee46e5a2d78fd43d8d0af12#71dbcc3853bc48733ee46e5a2d78fd43d8d0af12" }
+source = { git = "https://github.com/fundthmcalculus/clustering.git?rev=d1a97ac2a0edcedce7e4415e9362172e1e3b3934#d1a97ac2a0edcedce7e4415e9362172e1e3b3934" }
 dependencies = [
     { name = "matplotlib" },
     { name = "numba" },
@@ -1210,14 +1210,14 @@ requires-dist = [
     { name = "matplotlib" },
     { name = "numba" },
     { name = "numpy", specifier = ">=2.4.6" },
-    { name = "optimizers", git = "https://github.com/fundthmcalculus/optimizers.git?rev=7ba4fc02738af7045fa3b271f74dace877bd2d4d" },
+    { name = "optimizers", git = "https://github.com/fundthmcalculus/optimizers.git?rev=644ba3406b95deff8b6364581ef393afdaecb801" },
     { name = "pandas" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.8.0" },
     { name = "scikit-learn" },
     { name = "sympy", marker = "extra == 'docs'", specifier = ">=1.14.0" },
-    { name = "tribble-clustering", git = "https://github.com/fundthmcalculus/clustering.git?rev=71dbcc3853bc48733ee46e5a2d78fd43d8d0af12" },
+    { name = "tribble-clustering", git = "https://github.com/fundthmcalculus/clustering.git?rev=d1a97ac2a0edcedce7e4415e9362172e1e3b3934" },
     { name = "ucimlrepo", specifier = ">=0.0.7" },
 ]
 provides-extras = ["dev", "docs", "cmapss"]
