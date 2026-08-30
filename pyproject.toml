@@ -26,7 +26,11 @@ dependencies = [
 # `refine_method="optimizers"` ignores its `seed` and returns a different model
 # on every call. See the note above `_run_optimizer_search` in
 # src/tribblefis/refine.py. When updating, run `uv lock --upgrade-package optimizers`.
-optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git", rev = "4d81121499a2c718f7d3cbd6566cb8a0604758ee" }
+# Bumped 4d81121 -> 7ba4fc0 (optimizers main HEAD) to match the revision the
+# downstream grad-school superproject pins as its submodule, so that repo's
+# reproduce/ preflight PIN-MATCH stops reporting the two as drifted. Forward of
+# the 3a57f91 floor above.
+optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git", rev = "7ba4fc02738af7045fa3b271f74dace877bd2d4d" }
 # Temporary: PyPI's tribble-clustering==0.1.8 is the latest published release
 # and its compiled `pcvat` extension is built with -march=native, which SIGILLs
 # on any CPU lacking whatever the build machine had (AVX-512, observed on some
@@ -36,7 +40,10 @@ optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git", rev = 
 # Pinned here to prevent silent drift (see issue #201). Remove this override
 # (and bump the >=0.1.8 floor) once a fixed release ships. When updating, run
 # `uv lock --upgrade-package tribble-clustering`.
-tribble-clustering = { git = "https://github.com/fundthmcalculus/clustering.git", rev = "1dcf331b17b6a455babff953414894d95fbba4c4" }
+# Bumped 1dcf331 -> 71dbcc3 (clustering main HEAD) to match the revision the
+# downstream grad-school superproject pins as its submodule, so that repo's
+# reproduce/ preflight PIN-MATCH stops reporting the two as drifted.
+tribble-clustering = { git = "https://github.com/fundthmcalculus/clustering.git", rev = "71dbcc3853bc48733ee46e5a2d78fd43d8d0af12" }
 
 [project.optional-dependencies]
 dev = [
