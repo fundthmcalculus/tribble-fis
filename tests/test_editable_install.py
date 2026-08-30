@@ -78,6 +78,45 @@ def test_a_different_checkout_is_rejected():
     assert "other-clone" in problem
 
 
+def test_a_different_checkout_is_not_told_to_run_uv_sync():
+    """The remedy has to be the one that works for *this* shape.
+
+    An earlier version shared one remedy block across both failures and told
+    everyone to run `uv sync`. That is right for a site-packages copy and wrong
+    here: something is ahead of the editable install on `sys.path`, and
+    `uv sync` does not reorder `sys.path`. The reader would run it, get the
+    identical error, and stop believing the message -- which costs more than
+    saying nothing would have.
+    """
+    problem = conftest.editable_install_problem(
+        Path("/home/dev/other-clone/src/tribblefis/__init__.py")
+    )
+    assert "uv sync" not in problem
+    assert "sys.path" in problem
+    assert "PYTHONPATH" in problem
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        None,
+        Path("/somewhere/.venv/lib/python3.11/site-packages/tribblefis/__init__.py"),
+        Path("/home/dev/other-clone/src/tribblefis/__init__.py"),
+    ],
+)
+def test_every_message_names_the_interpreter(origin):
+    """"Which python is this?" is the reader's first question.
+
+    The most common route into any of these states is running the wrong
+    interpreter -- a second venv, a global python, a shell still holding a stale
+    VIRTUAL_ENV. Every path in the message otherwise names a *package*, so
+    without this the reader has to go and find `sys.executable` by hand before
+    they can act.
+    """
+    problem = conftest.editable_install_problem(origin)
+    assert sys.executable in problem
+
+
 def test_missing_package_is_reported_as_a_missing_install():
     """`find_spec` returning None means "not installed", not "not editable"."""
     problem = conftest.editable_install_problem(None)
