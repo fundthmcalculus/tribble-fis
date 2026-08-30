@@ -8,7 +8,7 @@ from sklearn.pipeline import make_pipeline
 from tribblefis.gaussian_classifier import TribbleClassifier
 from tribblefis.gaussian_regressor import TribbleRegressor
 from tribblefis import scaling
-from tribblefis.scaling import MinMaxScaler, StandardScaler
+from tribblefis.scaling import EmpiricalCDFScaler, MinMaxScaler, StandardScaler
 
 
 def _wide_range_column(rng, n):
@@ -319,6 +319,102 @@ class TestStandardScaler(_SharedScalarTests, unittest.TestCase):
         )
         Xt = scaler.transform(X_test)
         self.assertGreater(Xt[0, X_test.columns.get_loc("narrow")], 1.0)
+
+
+class TestEmpiricalCDFScaler(unittest.TestCase):
+
+    def setUp(self):
+        rng = np.random.default_rng(0)
+        n = 200
+        self.X = pd.DataFrame(
+            {
+                "wide": _wide_range_column(rng, n),
+                "narrow": rng.uniform(10.0, 20.0, n),
+            }
+        )
+
+    def test_output_bounded_to_feature_range(self):
+        scaler = EmpiricalCDFScaler()
+        Xt = scaler.fit_transform(self.X)
+        self.assertGreaterEqual(Xt.min(), 0.0)
+        self.assertLessEqual(Xt.max(), 1.0)
+
+    def test_custom_feature_range(self):
+        scaler = EmpiricalCDFScaler(feature_range=(-1.0, 1.0))
+        Xt = scaler.fit_transform(self.X)
+        self.assertGreaterEqual(Xt.min(), -1.0)
+        self.assertLessEqual(Xt.max(), 1.0)
+
+    def test_approximate_inverse_transform(self):
+        scaler = EmpiricalCDFScaler()
+        Xt = scaler.fit_transform(self.X)
+        Xinv = scaler.inverse_transform(Xt)
+        # Inverse is approximate (quantised to training ranks), so atol is
+        # wider than for the parametric scalers.
+        for col_idx in range(self.X.shape[1]):
+            orig = self.X.to_numpy()[:, col_idx]
+            recovered = Xinv[:, col_idx]
+            # Each recovered value must be a training value.
+            train_vals = np.sort(orig)
+            for v in recovered:
+                self.assertIn(v, train_vals)
+
+    def test_ndarray_input(self):
+        scaler = EmpiricalCDFScaler()
+        scaler.fit_transform(self.X.to_numpy())
+        self.assertEqual(list(scaler.feature_names_in_), ["feature_0", "feature_1"])
+
+    def test_get_feature_names_out(self):
+        scaler = EmpiricalCDFScaler().fit(self.X)
+        np.testing.assert_array_equal(
+            scaler.get_feature_names_out(), np.array(["wide", "narrow"], dtype=object)
+        )
+
+    def test_sklearn_clone_and_get_params(self):
+        scaler = EmpiricalCDFScaler(feature_range=(0.0, 2.0))
+        cloned = clone(scaler)
+        self.assertEqual(cloned.get_params(), scaler.get_params())
+        self.assertEqual(cloned.get_params()["feature_range"], (0.0, 2.0))
+
+    def test_constant_feature_does_not_divide_by_zero(self):
+        X = self.X.copy()
+        X["constant"] = 5.0
+        scaler = EmpiricalCDFScaler().fit(X)
+        Xt = scaler.transform(X)
+        self.assertTrue(np.all(np.isfinite(Xt)))
+
+    def test_training_values_approximately_uniform(self):
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame({"skewed": rng.exponential(1.0, 1000)})
+        scaler = EmpiricalCDFScaler()
+        Xt = scaler.fit_transform(X)
+        # A uniform distribution on [0,1] has mean ≈ 0.5 and std ≈ 1/sqrt(12).
+        mean = Xt.mean()
+        self.assertAlmostEqual(mean, 0.5, delta=0.05)
+
+    def test_out_of_range_values_are_clipped(self):
+        scaler = EmpiricalCDFScaler().fit(self.X)
+        X_test = self.X.copy()
+        X_test.iloc[0, 0] = -1e10  # well below training min
+        X_test.iloc[1, 0] = 1e10   # well above training max
+        Xt = scaler.transform(X_test)
+        lo, hi = scaler.feature_range
+        self.assertAlmostEqual(Xt[0, 0], lo)
+        self.assertAlmostEqual(Xt[1, 0], hi)
+
+    def test_pipeline_with_classifier(self):
+        y = (self.X["wide"] > np.median(self.X["wide"])).astype(int)
+        pipe = make_pipeline(EmpiricalCDFScaler(), TribbleClassifier())
+        pipe.fit(self.X, y)
+        preds = pipe.predict(self.X)
+        self.assertEqual(len(preds), len(y))
+
+    def test_pipeline_with_regressor(self):
+        y = self.X["wide"] * 2 + self.X["narrow"]
+        pipe = make_pipeline(EmpiricalCDFScaler(), TribbleRegressor())
+        pipe.fit(self.X, y)
+        preds = pipe.predict(self.X)
+        self.assertEqual(len(preds), len(y))
 
 
 class TestBackwardsCompatibleAliases(unittest.TestCase):

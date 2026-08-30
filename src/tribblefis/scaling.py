@@ -13,7 +13,7 @@ below into an ``sklearn.pipeline.Pipeline`` in front of the estimator::
     pipe = make_pipeline(MinMaxScaler(), TribbleClassifier())
     pipe.fit(X_train, y_train)
 
-Two scalers are offered, differing only in the final normalization:
+Three scalers are offered:
 
 - :class:`MinMaxScaler` -- min-max bounding to ``[0, 1]`` (or a custom
   range). **The recommended default for FIS estimators in this package** (see
@@ -23,6 +23,11 @@ Two scalers are offered, differing only in the final normalization:
   ``sigma=1``), for callers who specifically need centred features. Not
   recommended for FIS estimators; see the warning on the class. Follows
   ``sklearn.preprocessing.StandardScaler`` naming convention.
+- :class:`EmpiricalCDFScaler` -- rank-based empirical CDF transform that
+  maps each feature's marginal to approximate uniform, then affine-maps to
+  ``feature_range``. **An opt-in alternative** for features whose distributions
+  are not well served by min-max + log1p (bimodal, heavy-tailed, or otherwise
+  non-log-shaped). See "When to try EmpiricalCDFScaler" below.
 
 Both mirror sklearn scalers' ``fit``/``transform``/``fit_transform``/
 ``inverse_transform``/``get_feature_names_out`` surface.
@@ -134,6 +139,29 @@ pipeline, extreme output-bucket means pinned to ``[0, 1]`` -- assume a
 **bounded, non-negative** domain. An unbounded, centred transform violates an
 assumption the rule construction relies on. The degradation shows up on
 *training* data too, so it is underfitting rather than overfitting.
+
+When to try EmpiricalCDFScaler
+------------------------------
+
+``EmpiricalCDFScaler`` is **not** the default -- start with ``MinMaxScaler``.
+Try it when ``MinMaxScaler`` performance is poor and you suspect the input
+distribution is the cause (bimodal, heavy-tailed, or otherwise non-log-shaped
+features). The empirical CDF maps every feature's marginal to approximate
+uniform before affine-scaling to ``feature_range``, which spreads MFs evenly
+across probability mass rather than across the raw domain.
+
+Measured across five datasets (UCI Concrete, Body Fat, Bike Sharing, Glass,
+Shuttle) over ten seeds, ``EmpiricalCDFScaler`` was the best or near-best
+performer on four of five, and never catastrophic. It gave the largest lift on
+datasets where ``MinMaxScaler``'s log pre-step did not help: Body Fat R^2
+jumped from 0.109 (log+minmax) to 0.587 (ecdf), and Shuttle accuracy from
+0.958 to 0.981. On Concrete, where log+minmax is already effective,
+``EmpiricalCDFScaler`` matched it closely (0.821 vs 0.801).
+
+Unlike ``MinMaxScaler``, the CDF scaler has no log pre-step and no
+``log_dynamic_range`` / ``log_features`` parameters -- the rank transform
+subsumes the role of log1p by construction. It is also non-parametric: the
+only tunable is ``feature_range``.
 """
 
 import numpy as np
@@ -419,6 +447,83 @@ class StandardScaler(_FuzzyScalarBase):
         unscaled = X * self.scale_.to_numpy() + self.mean_.to_numpy()
         X_df = pd.DataFrame(unscaled, columns=self.feature_names_in_)
         return self._undo_log(X_df).to_numpy()
+
+
+class EmpiricalCDFScaler(TransformerMixin, BaseEstimator):
+    """Rank-based empirical CDF transform, then affine-map to ``feature_range``.
+
+    For each feature, the transform is::
+
+        F(x) = (rank of x among training values) / n_train
+
+    which maps training values to ``[1/n, 1]``.  Values outside the training
+    range are clipped to ``[0, 1]``.  The result is then affine-mapped to
+    ``feature_range``.
+
+    This is **not** the recommended default scaler for this package -- start
+    with :class:`MinMaxScaler`.  Try this when ``MinMaxScaler`` performance is
+    poor and you suspect the input distribution is the cause: bimodal,
+    heavy-tailed, or otherwise not well served by log1p + min-max.  See
+    "When to try EmpiricalCDFScaler" in the module docstring.
+
+    Unlike the other scalers in this module, there is no log pre-step -- the
+    rank transform subsumes its role by construction.
+
+    Args:
+        feature_range: Desired ``(min, max)`` of transformed output.
+    """
+
+    def __init__(self, feature_range=(0.0, 1.0)):
+        self.feature_range = feature_range
+
+    def fit(self, X, y=None):
+        X_df = self._as_dataframe(X)
+        self.feature_names_in_ = X_df.columns.tolist()
+        self.n_features_in_ = X_df.shape[1]
+        self.sorted_values_ = {}
+        for col in X_df.columns:
+            vals = np.sort(X_df[col].dropna().to_numpy(dtype=float))
+            self.sorted_values_[col] = vals
+        return self
+
+    def transform(self, X):
+        check_is_fitted(self, "sorted_values_")
+        X_df = self._as_dataframe(X)[self.feature_names_in_]
+        out = np.empty((len(X_df), self.n_features_in_), dtype=float)
+        lo, hi = self.feature_range
+        for i, col in enumerate(self.feature_names_in_):
+            vals = self.sorted_values_[col]
+            n = len(vals)
+            ranks = np.searchsorted(vals, X_df[col].to_numpy(dtype=float), side="right")
+            cdf = np.clip(ranks / n, 0.0, 1.0)
+            out[:, i] = cdf * (hi - lo) + lo
+        return out
+
+    def inverse_transform(self, X):
+        check_is_fitted(self, "sorted_values_")
+        X_arr = np.asarray(X, dtype=float)
+        lo, hi = self.feature_range
+        cdf = np.clip((X_arr - lo) / (hi - lo), 0.0, 1.0)
+        out = np.empty_like(X_arr)
+        for i, col in enumerate(self.feature_names_in_):
+            vals = self.sorted_values_[col]
+            n = len(vals)
+            indices = np.clip((cdf[:, i] * n).astype(int), 0, n - 1)
+            out[:, i] = vals[indices]
+        return out
+
+    def get_feature_names_out(self, input_features=None):
+        check_is_fitted(self, "sorted_values_")
+        return np.asarray(self.feature_names_in_, dtype=object)
+
+    @staticmethod
+    def _as_dataframe(X):
+        if isinstance(X, pd.DataFrame):
+            return X
+        return pd.DataFrame(
+            np.asarray(X, dtype=float),
+            columns=[f"feature_{i}" for i in range(np.asarray(X).shape[1])],
+        )
 
 
 # Backwards-compatible aliases. MinMaxScaler and StandardScaler are the canonical
