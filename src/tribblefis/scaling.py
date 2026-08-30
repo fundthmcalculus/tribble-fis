@@ -13,7 +13,10 @@ below into an ``sklearn.pipeline.Pipeline`` in front of the estimator::
     pipe = make_pipeline(MinMaxScaler(), TribbleClassifier())
     pipe.fit(X_train, y_train)
 
-Two scalers are offered, differing only in the final normalization:
+Five scalers are offered, in two families.
+
+**Affine normalizers** -- a log1p pre-step on wide-dynamic-range features,
+then one linear map:
 
 - :class:`MinMaxScaler` -- min-max bounding to ``[0, 1]`` (or a custom
   range). **The recommended default for FIS estimators in this package** (see
@@ -24,8 +27,21 @@ Two scalers are offered, differing only in the final normalization:
   recommended for FIS estimators; see the warning on the class. Follows
   ``sklearn.preprocessing.StandardScaler`` naming convention.
 
-Both mirror sklearn scalers' ``fit``/``transform``/``fit_transform``/
-``inverse_transform``/``get_feature_names_out`` surface.
+**Uniformity-preserving transforms** -- reshape each marginal towards uniform,
+then bound to ``feature_range`` (see "Uniformity transforms" below):
+
+- :class:`EmpiricalCDFScaler` -- each value becomes the fraction of training
+  values at or below it. No hyperparameters, nothing to overfit.
+- :class:`PiecewiseLinearCDFScaler` -- the same idea approximated by
+  ``n_pieces`` equal-probability affine segments. Exactly invertible, and a
+  strict generalization of :class:`MinMaxScaler` (``n_pieces=1`` *is* min-max).
+- :class:`QuantileUniformScaler` -- wraps
+  ``sklearn.preprocessing.QuantileTransformer``. The textbook answer, and
+  fragile on small samples; see the warning on the class.
+
+All five mirror sklearn scalers' ``fit``/``transform``/``fit_transform``/
+``inverse_transform``/``get_feature_names_out`` surface, and compose into an
+``sklearn.pipeline.Pipeline`` identically.
 
 The older names ``UnitFuzzyScalar``, ``StandardFuzzyScalar``, ``UnitScalar``,
 and ``StandardScalar`` are retained as aliases for backwards compatibility, since
@@ -134,6 +150,46 @@ pipeline, extreme output-bucket means pinned to ``[0, 1]`` -- assume a
 **bounded, non-negative** domain. An unbounded, centred transform violates an
 assumption the rule construction relies on. The degradation shows up on
 *training* data too, so it is underfitting rather than overfitting.
+
+Uniformity transforms
+---------------------
+
+``log1p`` helps a feature whose content spans decades. It does nothing for a
+feature that is merely *non-uniform* in some other way -- multimodal,
+heavy-tailed, zero-inflated, clustered on a few discrete levels.
+
+The mechanism that makes this matter is specific to FIS rather than general
+preprocessing folklore. Membership functions here are placed from data
+statistics, so they tile the domain evenly only when the marginal is roughly
+uniform. On a skewed feature they bunch where the density is and leave the
+tails uncovered; on a bimodal one they straddle a gap that contains no data.
+Push the marginal towards uniform first and each membership function covers
+roughly equal probability mass by construction.
+
+That is the argument for the three uniformity scalers above. Two consequences
+of it are worth stating outright, because they are easy to trip over:
+
+- **These are not affine.** Distance in the output is *probability mass*, not
+  magnitude. Anything downstream reading the transformed value as a physical
+  quantity is reading it wrong, and ``inverse_transform`` is the only correct
+  way back.
+- **They subsume the log1p step rather than composing with it.** Rank is
+  invariant under any strictly increasing function, so ``log1p`` before an
+  empirical CDF changes its output by exactly nothing -- which is why these
+  classes take no ``log_features`` argument. See
+  :class:`_UniformityScalerBase` for the partial version of that argument for
+  :class:`PiecewiseLinearCDFScaler`.
+
+**Which to reach for.** :class:`MinMaxScaler` remains the documented default;
+the evidence for the uniformity family comes from experiments in a separate
+repository (issue #220) that this package cannot re-run in its own test suite,
+and swapping a default on numbers that cannot be reproduced here would be
+trading one weakly-grounded prior for another. What *is* verified here is
+mechanical: `benchmarks/uniformity_scaling.py` measures marginal uniformity and
+downstream regression quality on synthetic distributions with known pathology,
+and `tests/test_uniformity_scaling.py` pins the mathematical properties. Treat
+:class:`EmpiricalCDFScaler` as the first thing to try when a feature's marginal
+is visibly non-uniform and `MinMaxScaler` is underperforming.
 """
 
 import numpy as np
@@ -420,6 +476,400 @@ class StandardScaler(_FuzzyScalarBase):
         X_df = pd.DataFrame(unscaled, columns=self.feature_names_in_)
         return self._undo_log(X_df).to_numpy()
 
+
+class _UniformityScalerBase(_FuzzyScalarBase):
+    """Shared plumbing for the three uniformity-preserving scalers below.
+
+    Not part of the public API. Subclasses supply three per-column hooks --
+    :meth:`_fit_column`, :meth:`_map_column`, :meth:`_unmap_column` -- and
+    inherit the DataFrame bookkeeping, the ``feature_range`` affine, the
+    constant-feature convention and NaN propagation.
+
+    Why these have no ``log_features``
+    ----------------------------------
+
+    :class:`MinMaxScaler` and :class:`StandardScaler` both take log arguments;
+    these do not, and that is a property of the transform rather than an
+    omission.
+
+    :class:`EmpiricalCDFScaler` maps a value to *the fraction of training values
+    at or below it*. Rank is invariant under any strictly increasing function,
+    and ``log1p`` is one, so ``log1p`` composed with an empirical CDF is the
+    empirical CDF exactly -- to the last bit, not approximately. A
+    ``log_features`` argument there would be a control that provably does
+    nothing, which is worse than no control at all.
+    ``test_log1p_cannot_change_the_empirical_cdf`` pins this.
+
+    For :class:`PiecewiseLinearCDFScaler` the invariance is partial: the
+    breakpoints are quantiles, so *where* they sit is rank-determined and
+    unchanged by ``log1p``, but the interpolation between them happens in the
+    original value space and does move. The argument for leaving it out is
+    weaker there -- it is consistency with its sibling, plus the fact that
+    ``make_pipeline(MinMaxScaler(log_features=[...]), PiecewiseLinearCDFScaler())``
+    already expresses it for anyone who wants it.
+    """
+
+    def _validated_range(self):
+        """``feature_range``, checked at fit time per the sklearn convention
+        that ``__init__`` only stores its arguments."""
+        try:
+            lo, hi = self.feature_range
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"feature_range must be a (min, max) pair, got {self.feature_range!r}"
+            ) from None
+        if not hi > lo:
+            raise ValueError(f"feature_range must have min < max, got ({lo!r}, {hi!r})")
+        return float(lo), float(hi)
+
+    def _record_constants(self, X_df):
+        """Remember one representative value per column, for the inverse.
+
+        A constant column has no mapping to invert, and returning NaN for it
+        would make ``inverse_transform(transform(X))`` lose a column that was
+        perfectly well-defined -- just constant. Recorded at fit time because
+        that is the only moment the value is known.
+        """
+        self.constants_ = {}
+        for col in X_df.columns:
+            finite = X_df[col].to_numpy(dtype=float)
+            finite = finite[~np.isnan(finite)]
+            if finite.size:
+                self.constants_[col] = float(finite[0])
+
+    def fit(self, X, y=None):
+        X_df = self._as_dataframe(X)
+        self.feature_names_in_ = X_df.columns.tolist()
+        self.n_features_in_ = X_df.shape[1]
+        self._validated_range()
+        self._record_constants(X_df)
+        self.mappings_ = {
+            col: self._fit_column(X_df[col].to_numpy(dtype=float))
+            for col in self.feature_names_in_
+        }
+        return self
+
+    def transform(self, X):
+        check_is_fitted(self)
+        X_df = self._as_dataframe(X)[self.feature_names_in_]
+        lo, hi = self._validated_range()
+        out = np.empty((len(X_df), self.n_features_in_), dtype=float)
+        for j, col in enumerate(self.feature_names_in_):
+            values = X_df[col].to_numpy(dtype=float)
+            mapping = self.mappings_[col]
+            if mapping is None:
+                # Constant (or all-NaN) feature. MinMaxScaler sends these to the
+                # low end of the range rather than dividing by a zero spread;
+                # matching that keeps a pipeline's behaviour on a degenerate
+                # column independent of which scaler it happens to use.
+                u = np.where(np.isnan(values), np.nan, 0.0)
+            else:
+                u = self._map_column(mapping, values)
+            out[:, j] = lo + u * (hi - lo)
+        return out
+
+    def inverse_transform(self, X):
+        check_is_fitted(self)
+        X = np.asarray(X, dtype=float)
+        lo, hi = self._validated_range()
+        u = (X - lo) / (hi - lo)
+        out = np.empty_like(u, dtype=float)
+        for j, col in enumerate(self.feature_names_in_):
+            mapping = self.mappings_[col]
+            if mapping is None:
+                fill = self.constants_.get(col, np.nan)
+                out[:, j] = np.where(np.isnan(u[:, j]), np.nan, fill)
+            else:
+                out[:, j] = self._unmap_column(mapping, u[:, j])
+        return out
+
+
+class EmpiricalCDFScaler(_UniformityScalerBase):
+    """Maps each feature through its empirical CDF, then onto ``feature_range``.
+
+    A value becomes the fraction of training values at or below it, rescaled so
+    the training minimum lands on ``feature_range[0]`` and the maximum on
+    ``feature_range[1]``. On the training data the result is as close to uniform
+    as the sample allows -- exactly uniform when every value is distinct.
+
+    Why a FIS cares
+    ---------------
+
+    Gaussian membership functions are placed from data statistics, so they cover
+    the domain evenly only when the marginal distribution is roughly uniform. On
+    a skewed or clustered feature they bunch where the density is and leave the
+    tails uncovered. Spreading the data uniformly first makes each membership
+    function cover roughly equal probability mass by construction.
+
+    This is the most robust of the three uniformity scalers here: no
+    hyperparameter beyond ``feature_range``, and nothing to overfit -- the
+    "model" is the sorted training column.
+
+    What it costs
+    -------------
+
+    - **The inverse is approximate.** An empirical CDF is a step function, so
+      many inputs share an output and ``inverse_transform`` can only return the
+      training value at that quantile. Round-tripping the *training* data
+      recovers it exactly; round-tripping anything else snaps to the nearest
+      training value at or above it. If you need an exact inverse, use
+      :class:`PiecewiseLinearCDFScaler`, which is a genuine bijection.
+    - **Output is bounded, and out-of-range inputs are clamped.** Anything below
+      the training minimum maps to ``feature_range[0]`` and anything above the
+      maximum to ``feature_range[1]``. Bounded output is the point -- it is what
+      FIS rule construction assumes -- but the magnitude of an excursion past
+      the training range is discarded, exactly as the pre-log flooring described
+      in :mod:`tribblefis.scaling` discards it.
+    - **Distances stop meaning anything.** The transform is monotone but wildly
+      non-affine, so a gap of 0.1 in the output is a gap of equal *probability
+      mass*, not of equal magnitude. Anything downstream that reads the output
+      as a physical quantity is reading it wrong.
+
+    Args:
+        feature_range: Desired ``(min, max)`` of transformed data.
+    """
+
+    def __init__(self, feature_range=(0.0, 1.0)):
+        self.feature_range = feature_range
+
+    def _fit_column(self, values):
+        finite = np.sort(values[~np.isnan(values)])
+        if finite.size == 0:
+            return None
+        n = finite.size
+        # F(x) = (number of training values <= x) / n. At the minimum this is
+        # the count of ties on the minimum, not 1/n, and at the maximum it is
+        # exactly 1. Rescaling by that observed span -- rather than assuming
+        # (1/n, 1) -- is what pins the extremes onto feature_range even when the
+        # smallest value repeats, which on a zero-inflated feature is most of
+        # the column.
+        f_min = np.searchsorted(finite, finite[0], side="right") / n
+        span = 1.0 - f_min
+        if span <= 0:
+            return None  # every value identical
+        # The output each sorted position maps to, computed by the *same*
+        # arithmetic the forward map uses. The inverse then looks a value up in
+        # this table instead of recomputing a rank from it.
+        #
+        # The obvious inverse -- rank = ceil(f * n) - 1 -- is wrong in floating
+        # point, and quietly so: round-tripping the training data returned the
+        # *next* training value wherever f * n landed a few ulps above an
+        # integer (measured max round-trip error 1.03 on a lognormal column,
+        # against 0 expected). Comparing against the table that produced the
+        # value cannot drift, because both sides are the identical expression.
+        ranks = (np.arange(1, n + 1) / n - f_min) / span
+        return {
+            "sorted": finite,
+            "n": n,
+            "f_min": f_min,
+            "span": span,
+            "u_of_rank": np.clip(ranks, 0.0, 1.0),
+        }
+
+    def _map_column(self, mapping, values):
+        nan = np.isnan(values)
+        # searchsorted places NaN at the far right, which would report the
+        # maximum quantile for a missing value -- a fabricated number rather
+        # than a missing one. Substitute, then restore.
+        safe = np.where(nan, mapping["sorted"][0], values)
+        f = np.searchsorted(mapping["sorted"], safe, side="right") / mapping["n"]
+        u = np.clip((f - mapping["f_min"]) / mapping["span"], 0.0, 1.0)
+        return np.where(nan, np.nan, u)
+
+    def _unmap_column(self, mapping, u):
+        nan = np.isnan(u)
+        clipped = np.clip(np.where(nan, 0.0, u), 0.0, 1.0)
+        # The generalized inverse of a step CDF: the smallest training value
+        # whose output is at or above `u`. `u_of_rank` is non-decreasing (its
+        # leading entries tie at 0 when the minimum repeats), so side="left"
+        # picks the first index that qualifies.
+        idx = np.clip(
+            np.searchsorted(mapping["u_of_rank"], clipped, side="left"),
+            0,
+            mapping["n"] - 1,
+        )
+        return np.where(nan, np.nan, mapping["sorted"][idx])
+
+
+class PiecewiseLinearCDFScaler(_UniformityScalerBase):
+    """Approximates each feature's CDF with ``n_pieces`` equal-probability
+    affine segments.
+
+    Breakpoints are placed at the ``n_pieces + 1`` evenly spaced quantiles, and
+    each segment is mapped by a single affine function onto its share of
+    ``feature_range``. The transform is therefore continuous, strictly
+    increasing, and exactly invertible -- the "affine maps for
+    membership-function placement" idiom, with interpretable breakpoints a
+    reader can print.
+
+    ``n_pieces`` trades fidelity for smoothness:
+
+    - ``n_pieces=1`` degenerates to plain min-max bounding, exactly. The
+      breakpoints are the minimum and the maximum, and one affine map takes the
+      column to ``feature_range``. ``test_one_piece_is_exactly_min_max`` pins
+      that equivalence against :class:`MinMaxScaler`, which makes this class a
+      strict generalization rather than an alternative.
+    - Larger values track the empirical distribution more closely, approaching
+      :class:`EmpiricalCDFScaler` in the limit, and start fitting sample noise
+      in the tails the way any quantile estimate does.
+
+    Compared with :class:`EmpiricalCDFScaler` this keeps a genuine inverse and a
+    continuous derivative, at the cost of one hyperparameter and a coarser
+    approximation of the marginal.
+
+    Degenerate breakpoints
+    ----------------------
+
+    On a discrete or zero-inflated feature several adjacent quantiles can land
+    on the same value -- ``n_pieces=10`` on a column that is 40% zeros puts four
+    breakpoints on zero. Those collapse to a single breakpoint carrying the
+    *highest* of their targets, which is the right-continuous reading of a CDF
+    with an atom there, and keeps the mapping strictly increasing so the inverse
+    stays well-defined. The effective number of pieces is therefore at most
+    ``n_pieces`` and can be smaller; :attr:`n_pieces_` records what each feature
+    actually got.
+
+    Args:
+        n_pieces: Number of equal-probability segments. Must be >= 1.
+        feature_range: Desired ``(min, max)`` of transformed data.
+    """
+
+    def __init__(self, n_pieces=10, feature_range=(0.0, 1.0)):
+        self.n_pieces = n_pieces
+        self.feature_range = feature_range
+
+    def fit(self, X, y=None):
+        # Validated here rather than in __init__, per the sklearn convention
+        # that __init__ only stores its parameters (otherwise clone and
+        # get_params break). bool is excluded explicitly because it is an int
+        # subclass, and PiecewiseLinearCDFScaler(n_pieces=True) is a mistake
+        # that would otherwise run as n_pieces=1 and look like it worked.
+        if isinstance(self.n_pieces, bool) or not isinstance(
+            self.n_pieces, (int, np.integer)
+        ):
+            raise ValueError(f"n_pieces must be an integer, got {self.n_pieces!r}")
+        if self.n_pieces < 1:
+            raise ValueError(f"n_pieces must be >= 1, got {self.n_pieces}")
+        super().fit(X, y)
+        self.n_pieces_ = {
+            col: (0 if m is None else len(m["xs"]) - 1)
+            for col, m in self.mappings_.items()
+        }
+        return self
+
+    def _fit_column(self, values):
+        finite = values[~np.isnan(values)]
+        if finite.size == 0:
+            return None
+        probs = np.linspace(0.0, 1.0, self.n_pieces + 1)
+        breakpoints = np.quantile(finite, probs)
+        # Keep the last index of each run of equal breakpoints, so a repeated
+        # value carries the highest target it is entitled to. `np.interp`
+        # requires a strictly increasing `xp`; a tied pair would otherwise leave
+        # both the forward map and the inverse ill-defined at that value.
+        keep = np.append(np.diff(breakpoints) > 0, True)
+        xs, ys = breakpoints[keep], probs[keep]
+        if xs.size < 2:
+            return None  # every value identical
+        # Rescale the surviving targets back onto the full [0, 1]. Collapsing a
+        # run of tied breakpoints keeps the *highest* target of the run, so an
+        # atom at the minimum leaves ys[0] well above zero -- measured, a column
+        # that is 40% zeros produced ys = [0.4 ... 1.0] and mapped every zero to
+        # 0.4. The bottom 40% of feature_range was then unreachable by any
+        # input, which is precisely the wasted-tail problem this class exists to
+        # avoid, reproduced at the other end.
+        #
+        # ys is strictly increasing after the collapse, so the span is positive.
+        # At n_pieces=1 this is the identity (ys is already [0, 1]), which is
+        # what keeps the min-max equivalence exact.
+        ys = (ys - ys[0]) / (ys[-1] - ys[0])
+        return {"xs": xs, "ys": ys}
+
+    def _map_column(self, mapping, values):
+        # np.interp clamps outside [xs[0], xs[-1]] and propagates NaN, which is
+        # the wanted behaviour on both counts.
+        return np.interp(values, mapping["xs"], mapping["ys"])
+
+    def _unmap_column(self, mapping, u):
+        return np.interp(u, mapping["ys"], mapping["xs"])
+
+
+class QuantileUniformScaler(_UniformityScalerBase):
+    """Marginal uniformity via :class:`sklearn.preprocessing.QuantileTransformer`.
+
+    .. warning::
+
+        **Fragile on small samples. Prefer :class:`EmpiricalCDFScaler` unless
+        you have measured this one to be better on your data.**
+
+        A quantile transform estimates ``n_quantiles`` order statistics per
+        feature. When the sample is small relative to that, the estimate is
+        mostly noise and the transform encodes the training split rather than
+        the distribution. In the experiments reported on issue #220 this took
+        Body Fat (N=252, 13 features) to R^2 -1.86 -- worse than predicting the
+        training mean -- while :class:`EmpiricalCDFScaler` reached 0.587 on the
+        same cells.
+
+        It is included because it is the textbook answer and therefore the right
+        baseline to compare against, not because it is a good default here.
+
+    ``n_quantiles`` is capped at the number of training samples, which is what
+    sklearn does internally anyway; capping it here just avoids the warning and
+    makes the effective value readable as :attr:`n_quantiles_`.
+
+    Args:
+        n_quantiles: Number of quantiles to estimate. Capped at ``n_samples``.
+        feature_range: Desired ``(min, max)`` of transformed data.
+        subsample: Passed through to ``QuantileTransformer``.
+        random_state: Passed through to ``QuantileTransformer``; only has an
+            effect when ``subsample`` is smaller than the sample.
+    """
+
+    def __init__(
+        self,
+        n_quantiles=1000,
+        feature_range=(0.0, 1.0),
+        subsample=10_000,
+        random_state=None,
+    ):
+        self.n_quantiles = n_quantiles
+        self.feature_range = feature_range
+        self.subsample = subsample
+        self.random_state = random_state
+
+    def fit(self, X, y=None):
+        from sklearn.preprocessing import QuantileTransformer
+
+        X_df = self._as_dataframe(X)
+        self.feature_names_in_ = X_df.columns.tolist()
+        self.n_features_in_ = X_df.shape[1]
+        self._validated_range()
+        self.n_quantiles_ = max(1, min(int(self.n_quantiles), len(X_df)))
+        self.transformer_ = QuantileTransformer(
+            n_quantiles=self.n_quantiles_,
+            output_distribution="uniform",
+            subsample=self.subsample,
+            random_state=self.random_state,
+        )
+        # Fitted on bare values: passing the DataFrame would have
+        # QuantileTransformer record its own feature names and then validate
+        # against them separately from this class's, giving two sources of truth
+        # for one question.
+        self.transformer_.fit(X_df.to_numpy(dtype=float))
+        return self
+
+    def transform(self, X):
+        check_is_fitted(self)
+        X_df = self._as_dataframe(X)[self.feature_names_in_]
+        lo, hi = self._validated_range()
+        u = self.transformer_.transform(X_df.to_numpy(dtype=float))
+        return lo + u * (hi - lo)
+
+    def inverse_transform(self, X):
+        check_is_fitted(self)
+        lo, hi = self._validated_range()
+        u = (np.asarray(X, dtype=float) - lo) / (hi - lo)
+        return self.transformer_.inverse_transform(u)
 
 # Backwards-compatible aliases. MinMaxScaler and StandardScaler are the canonical
 # names following scikit-learn convention. The older FuzzyScalar and Scalar names
