@@ -704,7 +704,7 @@ wheels = [
 [[package]]
 name = "optimizers"
 version = "0.2.0"
-source = { git = "https://github.com/fundthmcalculus/optimizers.git?rev=10d8300123e2ccbbcb296fa7509435d0ba2d6e0f#10d8300123e2ccbbcb296fa7509435d0ba2d6e0f" }
+source = { git = "https://github.com/fundthmcalculus/optimizers.git?rev=c21d543f1b4458ff59b181365af38c1e17dd716b#c21d543f1b4458ff59b181365af38c1e17dd716b" }
 dependencies = [
     { name = "cloudpickle" },
     { name = "joblib" },
@@ -1167,8 +1167,8 @@ wheels = [
 
 [[package]]
 name = "tribble-clustering"
-version = "0.2.1"
-source = { git = "https://github.com/fundthmcalculus/clustering.git?rev=bc9c2f1b75fb7a7d4094fe38040c85b364548c1b#bc9c2f1b75fb7a7d4094fe38040c85b364548c1b" }
+version = "0.3.0"
+source = { git = "https://github.com/fundthmcalculus/clustering.git?rev=20264b3b5bf1851285794eb33acfb4506a87ae2e#20264b3b5bf1851285794eb33acfb4506a87ae2e" }
 dependencies = [
     { name = "matplotlib" },
     { name = "numba" },
@@ -1211,14 +1211,14 @@ requires-dist = [
     { name = "matplotlib" },
     { name = "numba" },
     { name = "numpy", specifier = ">=2.4.6" },
-    { name = "optimizers", git = "https://github.com/fundthmcalculus/optimizers.git?rev=10d8300123e2ccbbcb296fa7509435d0ba2d6e0f" },
+    { name = "optimizers", git = "https://github.com/fundthmcalculus/optimizers.git?rev=c21d543f1b4458ff59b181365af38c1e17dd716b" },
     { name = "pandas" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.8.0" },
     { name = "scikit-learn" },
     { name = "sympy", marker = "extra == 'docs'", specifier = ">=1.14.0" },
-    { name = "tribble-clustering", marker = "extra == 'clustering'", git = "https://github.com/fundthmcalculus/clustering.git?rev=bc9c2f1b75fb7a7d4094fe38040c85b364548c1b" },
+    { name = "tribble-clustering", marker = "extra == 'clustering'", git = "https://github.com/fundthmcalculus/clustering.git?rev=20264b3b5bf1851285794eb33acfb4506a87ae2e" },
     { name = "ucimlrepo", specifier = ">=0.0.7" },
 ]
 provides-extras = ["clustering", "dev", "docs", "cmapss"]
