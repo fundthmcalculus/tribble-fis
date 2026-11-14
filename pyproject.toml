@@ -29,7 +29,7 @@ dependencies = [
 # downstream grad-school superproject pins as its submodule, so that repo's
 # reproduce/ preflight PIN-MATCH stops reporting the two as drifted. Forward of
 # the 3a57f91 floor above.
-optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git", rev = "10d8300123e2ccbbcb296fa7509435d0ba2d6e0f" }
+optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git", rev = "c21d543f1b4458ff59b181365af38c1e17dd716b" }
 # Temporary: PyPI's tribble-clustering==0.1.8 is the latest published release
 # and its compiled `pcvat` extension is built with -march=native, which SIGILLs
 # on any CPU lacking whatever the build machine had (AVX-512, observed on some
@@ -51,7 +51,7 @@ optimizers = { git = "https://github.com/fundthmcalculus/optimizers.git", rev = 
 # *this revision*. The override is not what makes a compiler necessary. That
 # is why the dependency itself moved to the `clustering` extra in #231 rather
 # than this pin changing.
-tribble-clustering = { git = "https://github.com/fundthmcalculus/clustering.git", rev = "bc9c2f1b75fb7a7d4094fe38040c85b364548c1b" }
+tribble-clustering = { git = "https://github.com/fundthmcalculus/clustering.git", rev = "20264b3b5bf1851285794eb33acfb4506a87ae2e" }
 
 [project.optional-dependencies]
 # Nothing in `tribblefis` imports `tribbleclustering`, and
