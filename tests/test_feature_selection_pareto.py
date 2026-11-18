@@ -129,25 +129,8 @@ def test_classifier_user_ranking_changes_selection_and_choice_picks_subset():
     assert len(user_led.predict(X)) == len(X)
     with pytest.raises(ValueError):
         TribbleClassifier(top_n=2, user_ranking=user, pareto_choice=99).fit(X, y)
-
-
-def test_top_p_is_a_proportion_of_variables():
-    from tribblefis.feature_selection import subset_size
-
-    assert [subset_size(10, top_p=p) for p in (0.05, 0.3, 0.31, 1.0)] == [1, 3, 4, 10]
-    assert subset_size(10, top_n=3) == 3
-    for bad in ({}, {"top_n": 2, "top_p": 0.5}, {"top_p": 0.0}, {"top_p": 1.5}, {"top_n": 0}):
-        with pytest.raises(ValueError):
-            subset_size(10, **bad)
-    assert len(pareto_select_features(SCORES, None, top_p=0.5)[0].features) == 2
-
-    X, y = _toy()
-    user = ["noise", "weak", "mid", "strong"]
-    m = TribbleClassifier(top_p=0.5, user_ranking=user, pareto_choice=-1).fit(X, y)  # 2 of 4
-    assert len(m.top_features_) == 2 and "noise" in m.top_features_
-    # Without a user ranking top_p keeps its legacy meaning (score threshold).
-    legacy = TribbleClassifier(top_p=0.5).fit(X, y)
-    assert legacy.top_features_ == [f for f, v in legacy.feature_differentiators_ if v >= 0.5]
+    with pytest.raises(ValueError):
+        TribbleClassifier(user_ranking=user).fit(X, y)  # top_n unset
 
 
 def test_regressor_user_ranking_and_method():

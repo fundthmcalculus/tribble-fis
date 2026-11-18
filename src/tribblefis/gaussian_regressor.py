@@ -89,9 +89,8 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             user_ranking: Optional user feature importance (mapping, (feature, score)
                    pairs, or ordered names, best first). With it, `top_n` features
                    are chosen Pareto-optimally over (data score, user importance);
-                   see `tribblefis.feature_selection`. Subset size is `top_n` if > 0, else the
-                   proportion `top_p` of the variables (not a score threshold on
-                   this path). Requires detect_interactions=False.
+                   see `tribblefis.feature_selection`. Requires top_n > 0 and
+                   detect_interactions=False.
             pareto_choice: Which Pareto-optimal subset to use (0 = most data-driven,
                    -1 = most user-driven); all candidates land in `pareto_candidates_`.
             n_gaussians: Number of Gaussians per feature per label (0 for automatic).
@@ -299,14 +298,12 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self.feature_differentiators_, self.pareto_candidates_ = rank_features(
             X_df, y_partitioned["y_bucket"], method=self.scoring_method,
             top_n=top_n_for_correlation, correlation_threshold=self.correlation_threshold,
-            user_ranking=self.user_ranking, pareto_choice=self.pareto_choice, top_p=self.top_p,
+            user_ranking=self.user_ranking, pareto_choice=self.pareto_choice,
         )
 
         # Select top features
-        # With a user ranking the Pareto step already fixed the subset; keep all of it.
-        _select_n = len(self.feature_differentiators_) if self.user_ranking is not None else self.top_n
         self.top_n_actual_, self.top_features_ = take_top_features(
-            self.feature_differentiators_, top_p=self.top_p, top_n=_select_n
+            self.feature_differentiators_, top_p=self.top_p, top_n=self.top_n
         )
 
         # Detect candidate interacting pairs *before* the feature list is
