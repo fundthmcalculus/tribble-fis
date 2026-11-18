@@ -73,7 +73,8 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             Optional user feature importance (mapping, (feature, score) pairs, or
             ordered names, best first). With it, `top_n` features are chosen
             Pareto-optimally over (data score, user importance); see
-            `tribblefis.feature_selection`. Requires top_n > 0.
+            `tribblefis.feature_selection`. Subset size is `top_n` if > 0, else the proportion `top_p` of the variables
+            (on this path `top_p` is a proportion of variables, not a score threshold).
         pareto_choice : int
             Which Pareto-optimal subset to use: 0 = most data-driven, -1 = most
             user-driven. All candidates are kept in `pareto_candidates_`.
@@ -157,12 +158,14 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         self.feature_differentiators_, self.pareto_candidates_ = rank_features(
             X_df, y_series, method=self.scoring_method, top_n=self.top_n,
             correlation_threshold=self.correlation_threshold,
-            user_ranking=self.user_ranking, pareto_choice=self.pareto_choice,
+            user_ranking=self.user_ranking, pareto_choice=self.pareto_choice, top_p=self.top_p,
         )
 
         # 2. Select top features
+        # With a user ranking the Pareto step already fixed the subset; keep all of it.
+        _select_n = len(self.feature_differentiators_) if self.user_ranking is not None else self.top_n
         self.top_n_actual_, self.top_features_ = take_top_features(
-            self.feature_differentiators_, top_p=self.top_p, top_n=self.top_n
+            self.feature_differentiators_, top_p=self.top_p, top_n=_select_n
         )
 
         # 3. Create membership model (Gaussian or Trapezoid)

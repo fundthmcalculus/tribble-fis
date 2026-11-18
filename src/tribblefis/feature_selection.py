@@ -19,6 +19,7 @@ Two views are provided:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -30,6 +31,7 @@ __all__ = [
     "pareto_front",
     "pareto_select_features",
     "rank_features",
+    "subset_size",
 ]
 
 
@@ -112,11 +114,30 @@ def pareto_front(data_scores, user_ranking=None) -> list[tuple[Any, float, float
     return [(names[i], float(d[i]), float(u[i]), int(ranks[i])) for i in order]
 
 
+def subset_size(n_features: int, top_n: int | None = None, top_p: float | None = None) -> int:
+    """Subset size from a count (`top_n`) or a proportion of the variables (`top_p`).
+
+    Exactly one must be given. `top_p` in (0, 1] keeps ceil(top_p * n_features)
+    variables, at least one. Note this differs from the estimators' legacy
+    `top_p`, a per-feature *score* threshold.
+    """
+    if (top_n is None) == (top_p is None):
+        raise ValueError("give exactly one of top_n (count) or top_p (proportion of variables)")
+    if top_n is not None:
+        if top_n <= 0:
+            raise ValueError("top_n must be positive")
+        return min(int(top_n), n_features)
+    if not 0.0 < top_p <= 1.0:
+        raise ValueError("top_p must be in (0, 1]")
+    return max(1, min(n_features, math.ceil(top_p * n_features - 1e-9)))
+
+
 def pareto_select_features(
     data_scores,
     user_ranking=None,
-    top_n: int = 5,
+    top_n: int | None = None,
     n_weights: int = 101,
+    top_p: float | None = None,
 ) -> list[ParetoSelection]:
     """Distinct Pareto-optimal size-`top_n` subsets, ordered from data-led to user-led.
 
@@ -126,17 +147,18 @@ def pareto_select_features(
         Output of `calculate_gaussian_correlation`.
     user_ranking : optional
         See `normalize_user_ranking`. None -> a single subset, the plain top-N.
-    top_n : int
-        Subset size (clipped to the number of features).
+    top_n : int, optional
+        Subset size as a count (clipped to the number of features).
+    top_p : float, optional
+        Subset size as a proportion of the variables, in (0, 1]. Give exactly
+        one of `top_n` / `top_p`.
     n_weights : int
         Resolution of the weight sweep.
     """
-    if top_n <= 0:
-        raise ValueError("top_n must be positive")
     feats = [n for n, _ in data_scores]
     user = normalize_user_ranking(user_ranking, feats) if user_ranking is not None else None
     names, d, u = _objectives(data_scores, user)
-    k = min(top_n, len(names))
+    k = subset_size(len(names), top_n, top_p)
     if user is None:
         idx = np.argsort(-d, kind="stable")[:k]
         return [ParetoSelection(tuple(names[i] for i in idx), float(d[idx].sum()), 0.0, 1.0)]
@@ -173,6 +195,7 @@ def rank_features(
     correlation_threshold: float = 0.85,
     user_ranking=None,
     pareto_choice: int = 0,
+    top_p: float | None = None,
 ):
     """Feature ranking for the estimators: plain scoring, or Pareto against a user ranking.
 
@@ -181,6 +204,9 @@ def rank_features(
     so existing behaviour is unchanged. With one, every feature is scored, the
     Pareto-optimal size-`top_n` subsets are enumerated, and subset
     `pareto_choice` (0 = data-led ... last = user-led) becomes the result.
+    Subset size is `top_n` if positive, otherwise a proportion `top_p` of the
+    variables (ceil(top_p * n_features)); on this path `top_p` is that
+    proportion, not the legacy per-feature score threshold.
     The redundancy filter (`correlation_threshold`) is not applied on that path:
     the subset is chosen by the two objectives alone.
     """
@@ -190,10 +216,11 @@ def rank_features(
         return calculate_gaussian_correlation(
             X, y, method=method, top_n=top_n, correlation_threshold=correlation_threshold
         ), None
-    if top_n <= 0:
-        raise ValueError("user_ranking requires top_n > 0 (the size of the subset to choose)")
     scored = calculate_gaussian_correlation(X, y, method=method, top_n=-1)
-    candidates = pareto_select_features(scored, user_ranking, top_n=top_n)
+    if top_n > 0:
+        candidates = pareto_select_features(scored, user_ranking, top_n=top_n)
+    else:
+        candidates = pareto_select_features(scored, user_ranking, top_p=top_p)
     if not -len(candidates) <= pareto_choice < len(candidates):
         raise ValueError(
             f"pareto_choice={pareto_choice} out of range: {len(candidates)} Pareto-optimal subset(s) available"
