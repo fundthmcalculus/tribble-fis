@@ -24,7 +24,13 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-__all__ = ["ParetoSelection", "normalize_user_ranking", "pareto_front", "pareto_select_features"]
+__all__ = [
+    "ParetoSelection",
+    "normalize_user_ranking",
+    "pareto_front",
+    "pareto_select_features",
+    "rank_features",
+]
 
 
 @dataclass(frozen=True)
@@ -157,3 +163,40 @@ def pareto_select_features(
             for o in cands
         )
     ]
+
+
+def rank_features(
+    X,
+    y,
+    method: str = "wasserstein",
+    top_n: int = -1,
+    correlation_threshold: float = 0.85,
+    user_ranking=None,
+    pareto_choice: int = 0,
+):
+    """Feature ranking for the estimators: plain scoring, or Pareto against a user ranking.
+
+    Returns ``(differentiators, candidates)``. Without `user_ranking` this is
+    exactly ``calculate_gaussian_correlation(...)`` and `candidates` is ``None``,
+    so existing behaviour is unchanged. With one, every feature is scored, the
+    Pareto-optimal size-`top_n` subsets are enumerated, and subset
+    `pareto_choice` (0 = data-led ... last = user-led) becomes the result.
+    The redundancy filter (`correlation_threshold`) is not applied on that path:
+    the subset is chosen by the two objectives alone.
+    """
+    from .gauss_math import calculate_gaussian_correlation
+
+    if user_ranking is None:
+        return calculate_gaussian_correlation(
+            X, y, method=method, top_n=top_n, correlation_threshold=correlation_threshold
+        ), None
+    if top_n <= 0:
+        raise ValueError("user_ranking requires top_n > 0 (the size of the subset to choose)")
+    scored = calculate_gaussian_correlation(X, y, method=method, top_n=-1)
+    candidates = pareto_select_features(scored, user_ranking, top_n=top_n)
+    if not -len(candidates) <= pareto_choice < len(candidates):
+        raise ValueError(
+            f"pareto_choice={pareto_choice} out of range: {len(candidates)} Pareto-optimal subset(s) available"
+        )
+    chosen = set(candidates[pareto_choice].features)
+    return [(f, v) for f, v in scored if f in chosen], candidates

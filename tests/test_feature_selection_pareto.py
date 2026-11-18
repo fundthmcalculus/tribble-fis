@@ -80,3 +80,65 @@ def test_pareto_front_ranks():
 
 def test_top_n_clipped():
     assert len(pareto_select_features(SCORES, None, top_n=99)[0].features) == 4
+
+
+# ---- estimator wiring -------------------------------------------------------
+from tribblefis.gaussian_classifier import TribbleClassifier  # noqa: E402
+from tribblefis.gaussian_regressor import TribbleRegressor  # noqa: E402
+from sklearn.base import clone  # noqa: E402
+
+
+def _toy(n=300, seed=0):
+    rng = np.random.default_rng(seed)
+    y = rng.integers(0, 2, n)
+    X = pd.DataFrame(
+        {
+            "strong": y * 3.0 + rng.normal(0, 1, n),
+            "mid": y * 1.0 + rng.normal(0, 1, n),
+            "weak": y * 0.2 + rng.normal(0, 1, n),
+            "noise": rng.normal(0, 1, n),
+        }
+    )
+    return X, y
+
+
+def test_classifier_default_unchanged_by_new_params():
+    X, y = _toy()
+    base = TribbleClassifier(top_n=2).fit(X, y)
+    again = TribbleClassifier(top_n=2, scoring_method="wasserstein", user_ranking=None).fit(X, y)
+    assert base.top_features_ == again.top_features_
+    assert base.pareto_candidates_ is None
+    assert clone(again).get_params()["pareto_choice"] == 0
+
+
+@pytest.mark.parametrize("method", ["bhattacharyya", "higher_order"])
+def test_classifier_scoring_method_reaches_ranking(method):
+    X, y = _toy()
+    m = TribbleClassifier(top_n=2, scoring_method=method).fit(X, y)
+    assert m.top_features_[0] == "strong"
+
+
+def test_classifier_user_ranking_changes_selection_and_choice_picks_subset():
+    X, y = _toy()
+    user = ["noise", "weak", "mid", "strong"]
+    data_led = TribbleClassifier(top_n=2, user_ranking=user, pareto_choice=0).fit(X, y)
+    user_led = TribbleClassifier(top_n=2, user_ranking=user, pareto_choice=-1).fit(X, y)
+    assert len(data_led.pareto_candidates_) > 1
+    assert set(data_led.top_features_) == {"strong", "mid"}
+    assert "noise" in user_led.top_features_
+    assert len(user_led.predict(X)) == len(X)
+    with pytest.raises(ValueError):
+        TribbleClassifier(top_n=2, user_ranking=user, pareto_choice=99).fit(X, y)
+    with pytest.raises(ValueError):
+        TribbleClassifier(user_ranking=user).fit(X, y)  # top_n unset
+
+
+def test_regressor_user_ranking_and_method():
+    X, y = _toy()
+    yr = X["strong"] * 2 + X["mid"] + np.random.default_rng(1).normal(0, 0.1, len(X))
+    m = TribbleRegressor(top_n=2, scoring_method="higher_order", user_ranking={"noise": 1.0}, pareto_choice=-1)
+    m.fit(X, yr)
+    assert "noise" in m.top_features_ and len(m.pareto_candidates_) >= 1
+    assert len(m.predict(X)) == len(X)
+    with pytest.raises(ValueError):
+        TribbleRegressor(top_n=2, user_ranking=["noise"], detect_interactions=True).fit(X, yr)

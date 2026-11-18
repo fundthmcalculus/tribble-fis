@@ -6,6 +6,7 @@ from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.utils.validation import check_X_y, check_is_fitted
 
 from .gauss_data import DefaultNormCornorm, NormPair, resolve_norm_pair
+from .feature_selection import rank_features
 from .gauss_math import (
     calculate_gaussian_correlation,
     calculate_interaction_scores,
@@ -66,6 +67,9 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         rbf_gamma=1.0,
         rbf_radius=None,
         firing_exponent=1.0,
+        scoring_method="wasserstein",
+        user_ranking=None,
+        pareto_choice=0,
     ):
         """
         Initialize the TribbleRegressor.
@@ -80,6 +84,15 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                    absolute correlation with an already-selected feature is >=
                    this value, pulling in the next-best feature instead. Set to
                    <= 0.0 or >= 1.0 to disable.
+            scoring_method: Feature scorer: "wasserstein" (default), "bhattacharyya",
+                   "composite" or "higher_order".
+            user_ranking: Optional user feature importance (mapping, (feature, score)
+                   pairs, or ordered names, best first). With it, `top_n` features
+                   are chosen Pareto-optimally over (data score, user importance);
+                   see `tribblefis.feature_selection`. Requires top_n > 0 and
+                   detect_interactions=False.
+            pareto_choice: Which Pareto-optimal subset to use (0 = most data-driven,
+                   -1 = most user-driven); all candidates land in `pareto_candidates_`.
             n_gaussians: Number of Gaussians per feature per label (0 for automatic).
                 **No effect when `member_function="trap"` and the default
                 `trapz_method="fast"`**: that path is a histogram fitter with no
@@ -199,6 +212,10 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self.top_n = top_n
         self.top_p = top_p
         self.correlation_threshold = correlation_threshold
+        self.scoring_method = scoring_method
+        self.user_ranking = user_ranking
+        self.pareto_choice = pareto_choice
+        self.pareto_candidates_ = None
         self.n_gaussians = n_gaussians
         self.n_output_buckets = n_output_buckets
         # Equal-WIDTH output buckets by default. "quantile" restores the previous
@@ -276,9 +293,12 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         # When detect_interactions=True, we need all features to find interactions,
         # so only pass top_n when interaction detection is disabled
         top_n_for_correlation = -1 if self.detect_interactions else self.top_n
-        self.feature_differentiators_ = calculate_gaussian_correlation(
-            X_df, y_partitioned["y_bucket"], top_n=top_n_for_correlation,
-            correlation_threshold=self.correlation_threshold,
+        if self.user_ranking is not None and self.detect_interactions:
+            raise ValueError("user_ranking cannot be combined with detect_interactions=True")
+        self.feature_differentiators_, self.pareto_candidates_ = rank_features(
+            X_df, y_partitioned["y_bucket"], method=self.scoring_method,
+            top_n=top_n_for_correlation, correlation_threshold=self.correlation_threshold,
+            user_ranking=self.user_ranking, pareto_choice=self.pareto_choice,
         )
 
         # Select top features
