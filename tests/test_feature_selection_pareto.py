@@ -142,3 +142,13 @@ def test_regressor_user_ranking_and_method():
     assert len(m.predict(X)) == len(X)
     with pytest.raises(ValueError):
         TribbleRegressor(top_n=2, user_ranking=["noise"], detect_interactions=True).fit(X, yr)
+
+
+def test_user_ranking_needs_top_n_and_ignores_top_p():
+    X, y = _toy()
+    user = ["noise", "weak", "mid", "strong"]
+    with pytest.raises(ValueError, match="top_n"):
+        TribbleClassifier(user_ranking=user).fit(X, y)
+    a = TribbleClassifier(top_n=2, user_ranking=user, top_p=0.1).fit(X, y)
+    b = TribbleClassifier(top_n=2, user_ranking=user, top_p=0.99).fit(X, y)
+    assert a.top_features_ == b.top_features_ and len(a.top_features_) == 2

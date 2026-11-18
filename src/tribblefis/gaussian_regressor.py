@@ -89,7 +89,8 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             user_ranking: Optional user feature importance (mapping, (feature, score)
                    pairs, or ordered names, best first). With it, `top_n` features
                    are chosen Pareto-optimally over (data score, user importance);
-                   see `tribblefis.feature_selection`. Requires top_n > 0 and
+                   see `tribblefis.feature_selection`. `top_n` is required and is the maximum number
+                   of variables to keep (`top_p` is ignored). Requires
                    detect_interactions=False.
             pareto_choice: Which Pareto-optimal subset to use (0 = most data-driven,
                    -1 = most user-driven); all candidates land in `pareto_candidates_`.
