@@ -303,7 +303,37 @@ def fit_gaussians(
     return gaussians
 
 
-_VALID_DIFFERENTIATION_METHODS = {"bhattacharyya", "wasserstein", "composite"}
+_VALID_DIFFERENTIATION_METHODS = {"bhattacharyya", "wasserstein", "composite", "higher_order"}
+
+_STD_FLOOR = 1e-10
+
+
+def _standardized_moments(x: np.ndarray) -> tuple[float, float, float, float]:
+    """(mean, std, skewness, excess kurtosis); shape terms are 0 for ~constant data."""
+    x = np.asarray(x, dtype=float)
+    mu = float(np.mean(x))
+    sd = float(np.std(x))
+    if sd < _STD_FLOOR:
+        return mu, sd, 0.0, 0.0
+    z = (x - mu) / sd
+    return mu, sd, float(np.mean(z**3)), float(np.mean(z**4) - 3.0)
+
+
+def _higher_order_distance(a: np.ndarray, b: np.ndarray) -> float:
+    """Moment-matching distance through the 4th standardized moment.
+
+    Euclidean norm of four scale-free terms: location shift over pooled std,
+    log std ratio, skewness gap, and excess-kurtosis gap (halved, since kurtosis
+    gaps run roughly twice as large). It separates classes that share mean and
+    variance but differ in shape -- invisible to Bhattacharyya (Gaussian fit) and
+    weak for Wasserstein. 0 iff all four moments agree.
+    """
+    mu_a, sd_a, sk_a, ku_a = _standardized_moments(a)
+    mu_b, sd_b, sk_b, ku_b = _standardized_moments(b)
+    pooled = np.sqrt((sd_a**2 + sd_b**2) / 2)
+    shift = (mu_a - mu_b) / pooled if pooled > _STD_FLOOR else 0.0
+    log_ratio = float(np.log(max(sd_a, _STD_FLOOR) / max(sd_b, _STD_FLOOR)))
+    return float(np.sqrt(shift**2 + log_ratio**2 + (sk_a - sk_b) ** 2 + ((ku_a - ku_b) / 2) ** 2))
 
 
 def _pairwise_label_distance(
@@ -329,6 +359,9 @@ def _pairwise_label_distance(
     float
         Distance between the two distributions.
     """
+    if method == "higher_order":
+        return _higher_order_distance(data_label_ij, data_label_jk)
+
     if method in ("bhattacharyya", "composite"):
         # Fit Gaussian distributions
         mu_ij, std_ij = norm_fit(data_label_ij)
@@ -521,9 +554,11 @@ def calculate_gaussian_correlation(
         Feature data.
     y : pd.Series
         Labels.
-    method : {'wasserstein', 'bhattacharyya', 'composite'}, default='wasserstein'
+    method : {'wasserstein', 'bhattacharyya', 'composite', 'higher_order'}, default='wasserstein'
         Distance metric. Wasserstein is non-parametric; bhattacharyya is parametric
-        (cheaper, works for approximately Gaussian data); composite blends both.
+        (cheaper, works for approximately Gaussian data); composite blends both;
+        higher_order compares mean, spread, skewness and kurtosis (sees shape
+        differences the other two miss).
     top_n : int, default=-1
         If > 0, return only top N features; if <= 0, return all sorted descending.
     correlation_threshold : float, default=0.85

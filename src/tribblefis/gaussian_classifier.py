@@ -14,6 +14,7 @@ from .gauss_data import (
     DEFAULT_DEDUP_ATOL,
     SimpleGaussianClassifierModel,
 )
+from .feature_selection import rank_features
 from .gauss_math import (
     calculate_gaussian_correlation,
     take_top_features,
@@ -30,7 +31,8 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
 
     def __init__(self, top_n=-1, top_p=0.95, correlation_threshold=0.85, n_gaussians=0, norm_conorm=DefaultNormCornorm, member_function="gaussian", trapz_method="fast", random_state=42,
                  refine=False, refine_method="coordinate", refine_l2_shrink=0.05,
-                 t_norm=None, t_conorm=None, allow_mixed_norms=False, max_samples=None):
+                 t_norm=None, t_conorm=None, allow_mixed_norms=False, max_samples=None,
+                 scoring_method="wasserstein", user_ranking=None, pareto_choice=0):
         """Initialize TribbleClassifier.
 
         Parameters
@@ -64,6 +66,18 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             Ridge regularization for refinement antecedents.
         max_samples : int or None
             Max rows per (feature, label) for membership fitting. None=all.
+        scoring_method : str
+            Feature scorer: "wasserstein" (default), "bhattacharyya", "composite"
+            or "higher_order".
+        user_ranking : mapping, list or None
+            Optional user feature importance (mapping, (feature, score) pairs, or
+            ordered names, best first). With it, `top_n` features are chosen
+            Pareto-optimally over (data score, user importance); see
+            `tribblefis.feature_selection`. `top_n` is required and is the maximum number of variables
+            to keep; `top_p` is ignored on this path.
+        pareto_choice : int
+            Which Pareto-optimal subset to use: 0 = most data-driven, -1 = most
+            user-driven. All candidates are kept in `pareto_candidates_`.
         """
         self.is_fitted_: bool = False
         self.model_ = None
@@ -88,6 +102,10 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         self.refine_method = refine_method
         self.refine_l2_shrink = refine_l2_shrink
         self.refine_info_: dict | None = None
+        self.scoring_method = scoring_method
+        self.user_ranking = user_ranking
+        self.pareto_choice = pareto_choice
+        self.pareto_candidates_ = None
 
     def _anomaly_params(self) -> AnomalyParameters:
         # Resolved on demand from the current norm settings, NOT cached in
@@ -137,8 +155,10 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
 
         # 1. Calculate feature differentiators
         # Pass top_n to avoid computing scores for features we won't use
-        self.feature_differentiators_ = calculate_gaussian_correlation(
-            X_df, y_series, top_n=self.top_n, correlation_threshold=self.correlation_threshold
+        self.feature_differentiators_, self.pareto_candidates_ = rank_features(
+            X_df, y_series, method=self.scoring_method, top_n=self.top_n,
+            correlation_threshold=self.correlation_threshold,
+            user_ranking=self.user_ranking, pareto_choice=self.pareto_choice,
         )
 
         # 2. Select top features
