@@ -194,7 +194,189 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             self.feature_differentiators_, top_p=self.top_p, top_n=self.top_n
         )
 
-        # 3. Create membership model (Gaussian or Trapezoid)
+        self._build_model(X_df, y_series, y_array)
+
+        self.is_fitted_ = True
+        return self
+
+    def fit_growing(
+        self,
+        X,
+        y,
+        target,
+        metric="f1_macro",
+        validation=0.2,
+        max_n=None,
+        patience=None,
+        pos_label=None,
+        user_weight=0.5,
+        refit=True,
+    ):
+        """Fit by growing the model one ranked feature at a time until a held-out target is met.
+
+        Instead of choosing ``top_n`` by hand: rank the features ONCE, start with the best one,
+        and add the next-ranked feature (to the existing model) until the score on held-out rows
+        reaches ``target``. The size at which it does is the "right" ``top_n``. A feature's
+        memberships are fitted once, and the firing strengths are extended by one fold step per
+        feature, so this costs far less than refitting at every ``top_n`` (#242).
+
+        Everything that decides what is selected -- the ranking, the crossover-pair search when
+        ``detect_interactions`` is on, and the memberships -- uses the TRAINING part only, so the
+        held-out labels never influence the choice. ``top_n`` and ``top_p`` are ignored here.
+
+        Parameters
+        ----------
+        X, y : array-like
+            Training data (the held-out rows are split from it unless ``validation`` is a tuple).
+        target : float
+            Stop at the first size whose held-out ``metric`` is >= this. In (0, 1] for the named
+            metrics; any number for a callable.
+        metric : str or callable
+            ``"f1_macro"`` (default), ``"f1_weighted"``, ``"f1_micro"``, ``"accuracy"``,
+            ``"balanced_accuracy"``, ``"f1"`` (binary; needs ``pos_label`` unless labels are
+            {0, 1}), or ``metric(y_true, y_pred) -> float``.
+        validation : float or (X_val, y_val)
+            A fraction held out (stratified when possible, seeded by ``random_state``), or an
+            explicit held-out set.
+        max_n : int, optional
+            Most features to try (default: every ranked candidate).
+        patience : int, optional
+            Stop early, short of the target, after this many sizes in a row with no new best.
+        pos_label : optional
+            Positive class for ``metric="f1"``.
+        user_weight : float in [0, 1]
+            Only with ``user_ranking``: the order is ``(1 - w) * data score + w * user importance``.
+            For a fixed weight that ranking is a single order whose top-k is a prefix, which is what
+            growth needs (Pareto subsets of different sizes are not nested). 0 ignores the user.
+        refit : bool
+            Refit the final model on ALL the data with the chosen features (default). If False
+            the model built on the training part is kept and ``refine`` is not applied.
+
+        Sets ``n_features_selected_``, ``target_reached_`` (False means the target was not met and
+        the best size seen is used, with a warning), ``growth_history_`` (a DataFrame: n, feature
+        added, held-out score, best so far, step and cumulative seconds), ``growth_order_`` (the
+        order tried), ``growth_skipped_`` (features skipped by the redundancy filter) and
+        ``growth_seconds_``. Only ``member_function="gaussian"`` is supported.
+        """
+        import warnings
+
+        from sklearn.model_selection import train_test_split
+
+        from .feature_selection import normalize_user_ranking
+        from .gauss_data import GaussianMixtureModel
+        from .gauss_math import _select_uncorrelated_top_n, calculate_gaussian_correlation
+        from .growth import grow_features, metric_function
+
+        if self.member_function != "gaussian":
+            raise NotImplementedError(
+                "fit_growing supports member_function='gaussian' only "
+                f"(got {self.member_function!r}); the trapezoid/triangular builders are not wired in"
+            )
+        if not np.isfinite(target) or (isinstance(metric, str) and not 0 < target <= 1):
+            raise ValueError(f"target must be in (0, 1] for metric {metric!r}, got {target!r}")
+        if not 0.0 <= user_weight <= 1.0:
+            raise ValueError("user_weight must be in [0, 1]")
+        metric_fn = metric_function(metric, pos_label)  # fail on a bad metric BEFORE any work is done
+
+        names = X.columns.tolist() if isinstance(X, pd.DataFrame) else [f"feature_{i}" for i in range(X.shape[1])]
+        self.feature_names_in_ = names
+        X_array, y_array = check_X_y(X, y)
+        check_classification_targets(y_array)
+        self.classes_ = np.unique(y_array)
+        X_df = pd.DataFrame(X_array, columns=names)
+        y_series = pd.Series(y_array)
+        if metric == "f1" and pos_label is None and not set(self.classes_.tolist()) <= {0, 1}:
+            raise ValueError("metric='f1' needs pos_label when the classes are not {0, 1}")
+
+        # Held-out rows. Index is reset so every pandas step below aligns by position.
+        if isinstance(validation, tuple):
+            Xv, yv = validation
+            Xv_array, yv_array = check_X_y(Xv, yv)
+            X_tr, y_tr = X_df, y_series
+            X_va, y_va = pd.DataFrame(Xv_array, columns=names), pd.Series(yv_array)
+        else:
+            if not 0.0 < validation < 1.0:
+                raise ValueError("validation must be a fraction in (0, 1) or an (X_val, y_val) tuple")
+            try:
+                X_tr, X_va, y_tr, y_va = train_test_split(
+                    X_df, y_series, test_size=validation, stratify=y_series, random_state=self.random_state
+                )
+            except ValueError:  # a class too small to stratify
+                X_tr, X_va, y_tr, y_va = train_test_split(
+                    X_df, y_series, test_size=validation, random_state=self.random_state
+                )
+            X_tr, X_va = X_tr.reset_index(drop=True), X_va.reset_index(drop=True)
+            y_tr, y_va = y_tr.reset_index(drop=True), y_va.reset_index(drop=True)
+
+        # Crossover columns, searched on the training part only.
+        self.cross_pairs_ = []
+        if self.detect_interactions:
+            self.cross_pairs_ = find_cross_pairs(
+                X_tr, y_tr, max_cross=self.max_cross_features,
+                n_permutations=self.interaction_n_permutations, random_state=self.random_state,
+            )
+            X_tr = add_cross_columns(X_tr, self.cross_pairs_)
+            X_va = add_cross_columns(X_va, self.cross_pairs_)
+
+        # The ONE ranking.
+        scored = calculate_gaussian_correlation(X_tr, y_tr, method=self.scoring_method, top_n=-1)
+        ranked = list(scored)
+        if self.user_ranking is not None:
+            user = normalize_user_ranking(self.user_ranking, [f for f, _ in ranked])
+            ranked = sorted(
+                ranked,
+                key=lambda fs: (-((1 - user_weight) * fs[1] + user_weight * user[fs[0]]), -fs[1], -user[fs[0]]),
+            )
+
+        # Same redundancy handling as top_n: skip a candidate correlated with one already kept.
+        skipped = []
+        if 0.0 < self.correlation_threshold < 1.0:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                kept = _select_uncorrelated_top_n(X_tr, ranked, len(ranked), self.correlation_threshold)
+            order = [f for f, _ in kept]
+            kept_set = set(order)
+            skipped = [f for f, _ in ranked if f not in kept_set]
+        else:
+            order = [f for f, _ in ranked]
+
+        result = grow_features(
+            X_tr, y_tr, X_va, y_va, order,
+            target=target, metric=metric_fn,
+            norms=self._anomaly_params().norms(), max_n=max_n, patience=patience,
+            n_gaussians=self.n_gaussians, max_samples=self.max_samples, random_state=self.random_state,
+        )
+        n_selected = result["n_selected"]
+        chosen = order[:n_selected]
+
+        self.growth_history_ = result["history"]
+        self.growth_order_ = order
+        self.growth_skipped_ = skipped
+        self.n_features_selected_ = n_selected
+        self.target_reached_ = result["target_reached"]
+        self.growth_seconds_ = float(result["history"]["cumulative_seconds"].iloc[-1])
+        chosen_set = set(chosen)
+        self.feature_differentiators_ = [(f, s) for f, s in scored if f in chosen_set]
+        self.pareto_candidates_ = None
+        self.top_features_ = list(chosen)
+        self.top_n_actual_ = n_selected
+
+        if refit:
+            self._build_model(add_cross_columns(X_df, self.cross_pairs_), y_series, y_array)
+        else:
+            self.model_ = GaussianMixtureModel(
+                feature_models={f: result["feature_models"][f] for f in chosen}
+            )
+        self.is_fitted_ = True
+        return self
+
+    def _build_model(self, X_df, y_series, y_array):
+        """Fit the membership model (and optionally refine it) on ``self.top_features_``.
+
+        The shared tail of `fit` and `fit_growing`: both decide WHICH features to use, then
+        build the model the same way.
+        """
+        # Create membership model (Gaussian or Trapezoid)
         if self.member_function == "gaussian":
             self.model_ = create_gaussian_membership_dict(
                 X_df, y_series, top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians,
@@ -239,8 +421,6 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
                 verbose=False,
             )
 
-        self.is_fitted_ = True
-        return self
 
     def _with_cross_columns(self, X_df):
         """Append the crossover columns chosen at fit time (a no-op when there are none)."""
