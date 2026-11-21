@@ -363,22 +363,189 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                     stacklevel=2,
                 )
 
-        # Create membership model (Gaussian, trapezoid, or triangular)
+        self.model_ = self._fit_memberships(X_df, y_partitioned["y_bucket"], self.top_features_)
+        self._solve(X_df, y_partitioned)
+
+        self.is_fitted_ = True
+        return self
+
+    def fit_growing(
+        self,
+        X,
+        y,
+        target,
+        metric="r2",
+        validation=0.2,
+        max_n=None,
+        patience=None,
+        user_weight=0.5,
+        refit=True,
+        higher_is_better=None,
+    ):
+        """Fit by growing the model one ranked feature at a time until a held-out target is met (#248).
+
+        The regression analogue of `TribbleClassifier.fit_growing`: rank the features ONCE (on the
+        output buckets, as `fit` does), start with the best one, and add the next-ranked feature until
+        the held-out score meets ``target``. The size at which it does is the "right" ``top_n``.
+
+        What is reused is the ranking and each feature's memberships (fitted once; a feature fitted
+        alone equals the same feature in a joint fit). What is NOT is the consequent solve: adding a
+        feature rescales every row's firing strength and widens every rule's design block, so the
+        ridge normal equations are re-solved at each step, with the same `_solve` that `fit` uses --
+        the held-out score after k features is exactly that of a model refit with ``top_n=k``.
+
+        Everything that decides the selection (the output partition, the ranking, the memberships,
+        the consequents) uses the TRAINING part only; ``top_n`` and ``top_p`` are ignored.
+
+        Parameters
+        ----------
+        X, y : array-like
+            Training data (held-out rows are split from it unless ``validation`` is a tuple).
+        target : float
+            Stop at the first size meeting it: ``score >= target`` for ``r2`` (and any
+            higher-is-better metric), ``score <= target`` for ``rmse``/``mae`` (a ceiling).
+        metric : str or callable
+            ``"r2"`` (default), ``"rmse"``, ``"mae"``, or ``metric(y_true, y_pred) -> float`` with
+            ``higher_is_better`` stated.
+        validation : float or (X_val, y_val)
+            A fraction held out (seeded by ``random_state``), or an explicit held-out set.
+        max_n, patience, user_weight, refit
+            As in `TribbleClassifier.fit_growing`.
+        higher_is_better : bool, optional
+            Required for a callable metric; checked against the named ones.
+
+        Requires a concrete ``tsk_order`` (``"auto"`` chooses by cross-validation per fit, far too
+        costly per step) and ``detect_interactions=False``. Sets ``n_features_selected_``,
+        ``target_reached_``, ``growth_history_``, ``growth_order_``, ``growth_skipped_`` and
+        ``growth_seconds_``.
+        """
+        import copy
+
+        from sklearn.model_selection import train_test_split
+
+        from .gauss_data import GaussianMixtureModel
+        from .growth import grow_features, growth_order, regression_metric_function
+
+        metric_fn, higher = regression_metric_function(metric, higher_is_better)  # fail fast
+        if self.detect_interactions:
+            raise ValueError(
+                "fit_growing does not support detect_interactions=True (the feature order changes at "
+                "every step, and cross_pairs_ index into it); fit with it normally instead"
+            )
+        if self.tsk_order == "auto":
+            raise ValueError(
+                "fit_growing needs a concrete tsk_order ('0th', '1st', '2nd', '3rd' or 'full-2nd'): "
+                "'auto' selects it by cross-validation per fit, which is far too costly at every step"
+            )
+        if self.member_function not in ("gaussian", "trap", "triangular"):
+            raise ValueError(f"Unknown member_function: {self.member_function!r}")
+        if self.member_function == "trap" and self.trapz_method not in ("fast", "em"):
+            raise ValueError(f"Unknown trapz_method: {self.trapz_method!r}")
+        if not np.isfinite(target) or (metric == "r2" and target > 1) or (
+            isinstance(metric, str) and metric in ("rmse", "mae") and target <= 0
+        ):
+            raise ValueError(f"target {target!r} is not valid for metric {metric!r}")
+        if not 0.0 <= user_weight <= 1.0:
+            raise ValueError("user_weight must be in [0, 1]")
+
+        names = X.columns.tolist() if isinstance(X, pd.DataFrame) else [f"feature_{i}" for i in range(X.shape[1])]
+        self.feature_names_in_ = names
+        y_flat = y.values.flatten() if isinstance(y, (pd.Series, pd.DataFrame)) else np.asarray(y).flatten()
+        X_array, y_array = check_X_y(X, y_flat, multi_output=False, y_numeric=True)
+        X_df = pd.DataFrame(X_array, columns=names)
+        y_series = pd.Series(y_array, name="y_value")
+
+        if isinstance(validation, tuple):
+            Xv, yv = validation
+            yv_flat = yv.values.flatten() if isinstance(yv, (pd.Series, pd.DataFrame)) else np.asarray(yv).flatten()
+            Xv_array, yv_array = check_X_y(Xv, yv_flat, multi_output=False, y_numeric=True)
+            X_tr, y_tr = X_df, y_series
+            X_va, y_va = pd.DataFrame(Xv_array, columns=names), pd.Series(yv_array, name="y_value")
+        else:
+            if not 0.0 < validation < 1.0:
+                raise ValueError("validation must be a fraction in (0, 1) or an (X_val, y_val) tuple")
+            X_tr, X_va, y_tr, y_va = train_test_split(X_df, y_series, test_size=validation, random_state=self.random_state)
+            X_tr, X_va = X_tr.reset_index(drop=True), X_va.reset_index(drop=True)
+            y_tr, y_va = y_tr.reset_index(drop=True), y_va.reset_index(drop=True)
+
+        # The output partition and the ranking come from the training part only.
+        y_part_tr, y_mean_tr = partition_output(self.n_output_buckets, y_tr, method=self.output_partition)
+        order, skipped, scored = growth_order(
+            X_tr, y_part_tr["y_bucket"], method=self.scoring_method,
+            correlation_threshold=self.correlation_threshold,
+            user_ranking=self.user_ranking, user_weight=user_weight,
+        )
+
+        self.interaction_pairs_ = []
+        self.cross_pairs_ = None
+        feature_models: dict = {}
+
+        def solve_at(n, X_rows, y_part, y_mean):
+            """Put the first ``n`` features' model on the estimator and solve its consequents on these rows."""
+            self.top_features_ = list(order[:n])
+            self.top_n_actual_ = n
+            self.model_ = GaussianMixtureModel(feature_models={f: feature_models[f] for f in self.top_features_})
+            # Start every solve from the partition's own means. Defensive: today's solve does not depend on
+            # this input (carrying the previous step's result forward changes no score -- checked), but
+            # that is a property of solve_tsk_consequents, not a contract.
+            self.y_bucket_mean_ = copy.deepcopy(y_mean)
+            self._solve(X_rows, y_part)
+            self.is_fitted_ = True
+
+        def evaluate(n, name):
+            feature_models[name] = self._fit_memberships(X_tr, y_part_tr["y_bucket"], [name]).feature_models[name]
+            solve_at(n, X_tr, y_part_tr, y_mean_tr)
+            return float(metric_fn(y_va, self.predict(X_va)))
+
+        result = grow_features(
+            order, target=target, evaluate=evaluate, max_n=max_n, patience=patience, higher_is_better=higher
+        )
+        n_selected = result["n_selected"]
+        chosen = order[:n_selected]
+
+        self.growth_history_ = result["history"]
+        self.growth_order_ = order
+        self.growth_skipped_ = skipped
+        self.n_features_selected_ = n_selected
+        self.target_reached_ = result["target_reached"]
+        self.growth_seconds_ = float(result["history"]["cumulative_seconds"].iloc[-1])
+        chosen_set = set(chosen)
+        self.feature_differentiators_ = [(f, s) for f, s in scored if f in chosen_set]
+        self.pareto_candidates_ = None
+
+        if refit:
+            y_part, y_mean = partition_output(self.n_output_buckets, y_series, method=self.output_partition)
+            self.top_features_ = list(chosen)
+            self.top_n_actual_ = n_selected
+            self.y_bucket_mean_ = y_mean
+            self.model_ = self._fit_memberships(X_df, y_part["y_bucket"], chosen)
+            self._solve(X_df, y_part)
+            self.is_fitted_ = True
+        else:
+            solve_at(n_selected, X_tr, y_part_tr, y_mean_tr)
+        return self
+
+    def _fit_memberships(self, X_df, y_bucket, features):
+        """Fit the memberships (Gaussian, trapezoid or triangular, per ``member_function``) for ``features``.
+
+        Fitted on the OUTPUT BUCKETS of the target. One call per feature builds exactly what a joint
+        call builds for that feature, which is what lets `fit_growing` fit each feature once.
+        """
         if self.member_function == "gaussian":
-            self.model_ = create_gaussian_membership_dict(
-                X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians,
+            return create_gaussian_membership_dict(
+                X_df, y_bucket, top_n_var_names=features, n_gaussians=self.n_gaussians,
                 max_samples=self.max_samples, random_state=self.random_state,
             )
         elif self.member_function == "trap":
             if self.trapz_method == "fast":
                 from .trapz_math_fast import create_trapz_membership_dict_fast
-                self.model_ = create_trapz_membership_dict_fast(
-                    X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_
+                return create_trapz_membership_dict_fast(
+                    X_df, y_bucket, top_n_var_names=features
                 )
             elif self.trapz_method == "em":
                 from .trapz_math import create_trapz_membership_dict
-                self.model_ = create_trapz_membership_dict(
-                    X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_, n_trapezoids=self.n_gaussians,
+                return create_trapz_membership_dict(
+                    X_df, y_bucket, top_n_var_names=features, n_trapezoids=self.n_gaussians,
                     max_samples=self.max_samples, random_state=self.random_state,
                     width_reg=self.trapz_width_reg,
                 )
@@ -387,14 +554,21 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         elif self.member_function == "triangular":
             # Triangle is degenerate trapezoid; reuse EM code with shape="triangle".
             from .trapz_math import create_trapz_membership_dict
-            self.model_ = create_trapz_membership_dict(
-                X_df, y_partitioned["y_bucket"], top_n_var_names=self.top_features_, n_trapezoids=self.n_gaussians,
+            return create_trapz_membership_dict(
+                X_df, y_bucket, top_n_var_names=features, n_trapezoids=self.n_gaussians,
                 max_samples=self.max_samples, random_state=self.random_state, shape="triangle",
                 width_reg=self.trapz_width_reg,
             )
         else:
             raise ValueError(f"Unknown member_function: {self.member_function}")
 
+    def _solve(self, X_df, y_partitioned):
+        """Everything after the memberships: rule count, RBF centres, the ``tsk_order`` choice, the consequent solve.
+
+        Uses ``self.model_``, ``self.top_features_``, ``self.y_bucket_mean_`` and ``self.cross_pairs_``; the
+        shared tail of `fit` and `fit_growing`. ``solve_tsk_consequents`` returns an updated
+        ``y_bucket_mean_`` as a NEW array (its input is not modified).
+        """
         self.n_rules_ = self.model_.n_rules
 
         # TODO(#85): self.model_ is a GaussianMixtureModel built the same way as
@@ -458,9 +632,6 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
             rbf_radius=self.rbf_radius,
             firing_exponent=self.firing_exponent,
         )
-
-        self.is_fitted_ = True
-        return self
 
     def predict(self, X):
         """

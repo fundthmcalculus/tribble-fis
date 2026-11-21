@@ -53,8 +53,6 @@ size. Seconds are host-specific; the ratios transfer. An earlier ad-hoc run of t
 | Refinement | Not applied per step (expensive). With `refit=True` (default) the final model is refit on all rows with the chosen features, and `refine` then applies as in `fit` (Gaussian only). |
 
 ## Limits
-* **Classification only.** The regression analogue (a target R2/RMSE) is not done (#248): its
-  consequents are solved by least squares and must be re-solved at every step.
 * **All membership builders work** (`gaussian`, `trap` with `trapz_method="fast"` or `"em"`,
   `triangular`; #247). A feature fitted alone is identical to the same feature in a joint call for every
   one (checked on a grid of evaluations), and the growth oracle and the unrolled-fold equivalence are
@@ -68,3 +66,41 @@ size. Seconds are host-specific; the ratios transfer. An earlier ad-hoc run of t
   set, and report the final model on data that took no part in the choice.
 * `top_n` and `top_p` are ignored here; `correlation_threshold` still drives the redundancy skip. A
   result of one feature means the target was easy on this split, not that one feature is enough in general.
+
+## Regression: `TribbleRegressor.fit_growing` (#248)
+```python
+reg = TribbleRegressor(tsk_order="1st")          # a concrete order; "auto" is refused (see below)
+reg.fit_growing(X, y, target=0.90, metric="r2")  # or metric="rmse"/"mae" (a CEILING) or a callable
+```
+Same shape as the classifier (ranked once, held-out target, smallest size wins, best size + warning if never
+met, `growth_history_`, `user_weight`, `refit`), with these differences:
+
+* **The prediction is not an argmax.** `y_hat = sum_r w_r (mean_r + basis(X) @ corr_r)`, with the
+  coefficients solved by ridge normal equations. Adding a feature rescales every row's firing strength and widens
+  every rule's design block, so the consequents are **re-solved at every step**, with the same `_solve` and
+  `predict` a normal `fit` uses. Memberships (fitted once per feature, on the output buckets) and the
+  ranking are what is reused. The held-out score after k features is exactly that of a model refit with
+  `top_n=k` (tested for every k, with and without `pin_extremes`).
+* **Metric direction.** `r2` is a floor (`score >= target`); `rmse` and `mae` are ceilings (`score <= target`)
+  and "best" means lowest. A callable must say which with `higher_is_better`.
+* **A concrete `tsk_order` is required.** `"auto"` picks the order by cross-validation inside every fit, far too
+  costly at each step. `detect_interactions=True` is refused (the feature order changes every step, and
+  `cross_pairs_` index into it).
+* The output partition (`partition_output`), the ranking, the memberships and the consequents all use the
+  training part only.
+
+Measured with `python -m benchmarks.grow_regressor` (synthetic, 24 features, 1st-order consequents; the script
+asserts both arms agree on every held-out score and on the stopping size first):
+
+| comparison | size | growing | refit sweep | ratio |
+|---|---|---|---|---|
+| to target R2 >= 0.90 (sweep stops at the same size) | 4 | 0.21 s | 0.59 s | 2.8x |
+| walking all 24 sizes | 24 | 1.07 s | 11.84 s | 11.1x |
+
+The per-step cost is flat (0.040 s first, 0.044 s last), so growth is linear and the sweep is not. #248
+guessed the solve would dominate; at 1st order it does not. Not measured: `full-2nd`, whose cross terms grow
+quadratically with the features and may change that. `solve_tsk_consequents` delegates to
+`solve_tsk_consequents_from_firing`, which takes precomputed firing strengths, so the running fold could in
+principle feed the solve and skip the per-step fold; with a flat 0.04 s per step there is little to gain at 1st
+order, and it is not done.
+
