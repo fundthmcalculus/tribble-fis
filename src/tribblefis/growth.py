@@ -23,11 +23,25 @@ from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
+)
 
+from . import gauss_math as _gm
 from .gauss_math import t_conorm, t_norm
 
-__all__ = ["RunningFiringStrengths", "metric_function", "grow_features"]
+__all__ = [
+    "RunningFiringStrengths",
+    "metric_function",
+    "regression_metric_function",
+    "growth_order",
+    "grow_features",
+]
 
 
 class RunningFiringStrengths:
@@ -85,57 +99,107 @@ def metric_function(metric: str | Callable, pos_label=None) -> Callable:
     return table[metric]
 
 
+def regression_metric_function(metric: str | Callable, higher_is_better: bool | None = None) -> tuple[Callable, bool]:
+    """``(metric(y_true, y_pred) -> float, higher_is_better)`` for a regressor.
+
+    Names: ``r2`` (higher is better), ``rmse`` and ``mae`` (lower is better). A callable needs
+    ``higher_is_better`` stated, because the target is a floor for some metrics and a ceiling for others.
+    """
+    if callable(metric):
+        if higher_is_better is None:
+            raise ValueError("a callable metric needs higher_is_better=True/False (is the target a floor or a ceiling?)")
+        return metric, bool(higher_is_better)
+    table = {
+        "r2": (r2_score, True),
+        "rmse": (lambda yt, yp: float(np.sqrt(mean_squared_error(yt, yp))), False),
+        "mae": (mean_absolute_error, False),
+    }
+    if metric not in table:
+        raise ValueError(f"metric must be a callable or one of {sorted(table)}, got {metric!r}")
+    fn, direction = table[metric]
+    if higher_is_better is not None and bool(higher_is_better) != direction:
+        raise ValueError(f"metric {metric!r} is {'higher' if direction else 'lower'}-is-better; got higher_is_better={higher_is_better}")
+    return fn, direction
+
+
+def growth_order(
+    X_train: pd.DataFrame,
+    y_rank,
+    *,
+    method: str,
+    correlation_threshold: float,
+    user_ranking=None,
+    user_weight: float = 0.5,
+) -> tuple[list, list, list]:
+    """The ONE ranking growth walks: ``(order, skipped, scored)``.
+
+    ``scored`` is the data ranking (``calculate_gaussian_correlation`` on the TRAINING rows, looked
+    up at call time). With a ``user_ranking`` the order is ``(1 - w) * data + w * user`` -- for a fixed
+    weight a single order whose top-k is a prefix, which growth needs. The redundancy filter
+    then skips a candidate correlated with one already kept (as ``top_n`` does), and what it skipped is returned.
+    """
+    from .feature_selection import normalize_user_ranking
+
+    scored = list(_gm.calculate_gaussian_correlation(X_train, y_rank, method=method, top_n=-1))
+    ranked = scored
+    if user_ranking is not None:
+        user = normalize_user_ranking(user_ranking, [f for f, _ in ranked])
+        ranked = sorted(
+            ranked,
+            key=lambda fs: (-((1 - user_weight) * fs[1] + user_weight * user[fs[0]]), -fs[1], -user[fs[0]]),
+        )
+    skipped: list = []
+    if 0.0 < correlation_threshold < 1.0:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            kept = _gm._select_uncorrelated_top_n(X_train, ranked, len(ranked), correlation_threshold)
+        order = [f for f, _ in kept]
+        kept_set = set(order)
+        skipped = [f for f, _ in ranked if f not in kept_set]
+    else:
+        order = [f for f, _ in ranked]
+    return order, skipped, scored
+
+
 def grow_features(
-    X_val: pd.DataFrame,
-    y_val,
     order: list,
     *,
     target: float,
-    metric: Callable,
-    norms,
+    evaluate: Callable[[int, Any], float],
     max_n: int | None = None,
     patience: int | None = None,
-    fit_feature: Callable[[Any], Any],
+    higher_is_better: bool = True,
 ) -> dict:
-    """Add ``order``'s features one at a time; stop at the first size whose held-out score >= ``target``.
+    """Add ``order``'s features one at a time; stop at the first size whose held-out score meets ``target``.
 
-    ``fit_feature(name)`` returns a one-feature model fitted on the TRAINING rows only (the
-    estimator binds the builder, the training frame and its settings); it is scored on ``X_val``. Returns a dict:
-    ``history`` (one row per size: n, feature, score, best_so_far, step_seconds,
-    cumulative_seconds), ``n_selected``, ``target_reached``, ``feature_models`` (the fitted
-    memberships of every feature tried) and ``labels``.
+    ``evaluate(n, name)`` does the whole step -- fit the new feature on the TRAINING rows, extend the
+    model by it, and return the held-out score -- so the classifier (a running firing-strength fold)
+    and the regressor (re-solving its consequents) share this loop. With ``higher_is_better`` the
+    target is a floor (``score >= target``); otherwise a ceiling (``score <= target``), and "best"
+    means lowest.
 
-    Stopping: the smallest size meeting ``target`` wins and growth stops there. If the target is
-    never met the best-scoring size is returned (earliest on ties) with ``target_reached=False``
-    and a warning. ``patience`` (optional) ends growth early, without reaching the target, after
-    that many sizes in a row with no new best score.
+    Returns ``history`` (n, feature, score, best_so_far, step_seconds, cumulative_seconds),
+    ``n_selected`` and ``target_reached``. Stopping: the smallest size meeting the target wins. If it is
+    never met the best size is returned (earliest on ties) with ``target_reached=False`` and a
+    warning. ``patience`` (optional) ends growth early, without reaching the target, after that many
+    sizes in a row with no new best.
     """
     limit = len(order) if max_n is None else min(int(max_n), len(order))
     if limit < 1:
         raise ValueError("there is nothing to grow: no candidate features (or max_n < 1)")
-    y_val = np.asarray(y_val)
+    sign = 1.0 if higher_is_better else -1.0
 
-    feature_models: dict = {}
     rows: list[dict] = []
-    running: RunningFiringStrengths | None = None
-    best, best_n, stale = -np.inf, 0, 0
+    best, best_n, stale = -np.inf, 0, 0  # `best` is in sign-adjusted units: larger is always better
     reached_n: int | None = None
     started = time.perf_counter()
 
     for n, name in enumerate(order[:limit], start=1):
         step = time.perf_counter()
-        # One feature's memberships, fitted once. (A feature fitted alone equals the same
-        # feature in a joint fit -- checked for the Gaussian, trapezoid and triangular builders --
-        # so growing does not change what a fresh fit would build.)
-        fitted = fit_feature(name)
-        feature_models[name] = fitted.feature_models[name]
-        if running is None:
-            running = RunningFiringStrengths(X_val, feature_models[name].ordered_keys, norms)
-        running.add(name, feature_models[name])
-        score = float(metric(y_val, running.predict()))
-
-        if score > best:
-            best, best_n, stale = score, n, 0
+        score = float(evaluate(n, name))
+        adjusted = sign * score
+        if adjusted > best:
+            best, best_n, stale = adjusted, n, 0
         else:
             stale += 1
         now = time.perf_counter()
@@ -144,12 +208,12 @@ def grow_features(
                 n=n,
                 feature=name,
                 score=score,
-                best_so_far=best,
+                best_so_far=sign * best,
                 step_seconds=now - step,
                 cumulative_seconds=now - started,
             )
         )
-        if score >= target:
+        if adjusted >= sign * target:
             reached_n = n
             break
         if patience is not None and stale >= patience:
@@ -158,7 +222,7 @@ def grow_features(
     reached = reached_n is not None
     if not reached:
         warnings.warn(
-            f"target {target:g} not reached on the held-out rows (best {best:.4f} at n={best_n}, "
+            f"target {target:g} not reached on the held-out rows (best {sign * best:.4f} at n={best_n}, "
             f"tried {len(rows)} of {len(order)} ranked features); returning the best size seen.",
             UserWarning,
             stacklevel=3,
@@ -167,6 +231,4 @@ def grow_features(
         history=pd.DataFrame(rows),
         n_selected=reached_n if reached else best_n,
         target_reached=reached,
-        feature_models=feature_models,
-        labels=list(running.labels) if running is not None else [],
     )

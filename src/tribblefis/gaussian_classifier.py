@@ -263,10 +263,8 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
 
         from sklearn.model_selection import train_test_split
 
-        from .feature_selection import normalize_user_ranking
         from .gauss_data import GaussianMixtureModel
-        from .gauss_math import _select_uncorrelated_top_n, calculate_gaussian_correlation
-        from .growth import grow_features, metric_function
+        from .growth import RunningFiringStrengths, grow_features, growth_order, metric_function
 
         if self.member_function not in ("gaussian", "trap", "triangular"):
             raise ValueError(f"Unknown member_function: {self.member_function!r}")  # before any work is done
@@ -318,34 +316,25 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             X_tr = add_cross_columns(X_tr, self.cross_pairs_)
             X_va = add_cross_columns(X_va, self.cross_pairs_)
 
-        # The ONE ranking.
-        scored = calculate_gaussian_correlation(X_tr, y_tr, method=self.scoring_method, top_n=-1)
-        ranked = list(scored)
-        if self.user_ranking is not None:
-            user = normalize_user_ranking(self.user_ranking, [f for f, _ in ranked])
-            ranked = sorted(
-                ranked,
-                key=lambda fs: (-((1 - user_weight) * fs[1] + user_weight * user[fs[0]]), -fs[1], -user[fs[0]]),
-            )
-
-        # Same redundancy handling as top_n: skip a candidate correlated with one already kept.
-        skipped = []
-        if 0.0 < self.correlation_threshold < 1.0:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                kept = _select_uncorrelated_top_n(X_tr, ranked, len(ranked), self.correlation_threshold)
-            order = [f for f, _ in kept]
-            kept_set = set(order)
-            skipped = [f for f, _ in ranked if f not in kept_set]
-        else:
-            order = [f for f, _ in ranked]
-
-        result = grow_features(
-            X_va, y_va, order,
-            target=target, metric=metric_fn,
-            norms=self._anomaly_params().norms(), max_n=max_n, patience=patience,
-            fit_feature=lambda name: self._fit_memberships(X_tr, y_tr, [name]),
+        # The ONE ranking (shared with the regressor).
+        order, skipped, scored = growth_order(
+            X_tr, y_tr, method=self.scoring_method, correlation_threshold=self.correlation_threshold,
+            user_ranking=self.user_ranking, user_weight=user_weight,
         )
+
+        norms = self._anomaly_params().norms()
+        feature_models: dict = {}
+        running: list = []  # the one RunningFiringStrengths, created at the first step
+
+        def evaluate(n, name):
+            fm = self._fit_memberships(X_tr, y_tr, [name]).feature_models[name]
+            feature_models[name] = fm
+            if not running:
+                running.append(RunningFiringStrengths(X_va, fm.ordered_keys, norms))
+            running[0].add(name, fm)
+            return float(metric_fn(y_va, running[0].predict()))
+
+        result = grow_features(order, target=target, evaluate=evaluate, max_n=max_n, patience=patience)
         n_selected = result["n_selected"]
         chosen = order[:n_selected]
 
@@ -365,7 +354,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             self._build_model(add_cross_columns(X_df, self.cross_pairs_), y_series, y_array)
         else:
             self.model_ = GaussianMixtureModel(
-                feature_models={f: result["feature_models"][f] for f in chosen}
+                feature_models={f: feature_models[f] for f in chosen}
             )
         self.is_fitted_ = True
         return self
