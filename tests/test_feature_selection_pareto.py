@@ -152,3 +152,32 @@ def test_user_ranking_needs_top_n_and_ignores_top_p():
     a = TribbleClassifier(top_n=2, user_ranking=user, top_p=0.1).fit(X, y)
     b = TribbleClassifier(top_n=2, user_ranking=user, top_p=0.99).fit(X, y)
     assert a.top_features_ == b.top_features_ and len(a.top_features_) == 2
+
+
+# ---- front ranks against an independent oracle --------------------------------
+def _oracle_ranks(objs):
+    """Brute-force non-dominated sorting, maximisation: rank = peel count."""
+    objs = np.asarray(objs, float)
+    left, ranks, r = list(range(len(objs))), {}, 0
+    while left:
+        front = [
+            i
+            for i in left
+            if not any(
+                (objs[j] >= objs[i]).all() and (objs[j] > objs[i]).any() for j in left if j != i
+            )
+        ]
+        for i in front:
+            ranks[i] = r
+        left = [i for i in left if i not in front]
+        r += 1
+    return np.array([ranks[i] for i in range(len(objs))])
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_front_ranks_match_oracle_including_ties(seed):
+    from tribblefis.feature_selection import _nondominated_ranks
+
+    rng = np.random.default_rng(seed)
+    objs = rng.integers(0, 6, size=(40, 2)).astype(float)  # small grid -> many duplicates/ties
+    assert (_nondominated_ranks(objs) == _oracle_ranks(objs)).all()

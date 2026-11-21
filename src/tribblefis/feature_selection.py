@@ -24,6 +24,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
+from optimizers.archive.metrics import non_dominated_mask
 
 __all__ = [
     "ParetoSelection",
@@ -88,21 +89,20 @@ def _objectives(data_scores, user_scores):
 
 
 def _nondominated_ranks(objs: np.ndarray) -> np.ndarray:
-    """Front index per row (0 = Pareto front); maximisation on every column."""
-    n = len(objs)
-    ranks = np.full(n, -1)
-    remaining = np.arange(n)
-    r = 0
+    """Front index per row (0 = Pareto front); maximisation on every column.
+
+    Peels successive fronts using ``optimizers.archive.metrics.non_dominated_mask`` -- the
+    dominance test this project already ships, which minimises, so the objectives are negated.
+    """
+    cost = -np.asarray(objs, dtype=float)
+    ranks = np.full(len(cost), -1)
+    remaining = np.arange(len(cost))
+    rank = 0
     while len(remaining):
-        sub = objs[remaining]
-        front = []
-        for i in range(len(remaining)):
-            dominated = np.any(np.all(sub >= sub[i], axis=1) & np.any(sub > sub[i], axis=1))
-            if not dominated:
-                front.append(i)
-        ranks[remaining[front]] = r
-        remaining = np.delete(remaining, front)
-        r += 1
+        front = non_dominated_mask(cost[remaining])
+        ranks[remaining[front]] = rank
+        remaining = remaining[~front]
+        rank += 1
     return ranks
 
 
