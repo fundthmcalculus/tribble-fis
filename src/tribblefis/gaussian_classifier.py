@@ -14,7 +14,7 @@ from .gauss_data import (
     DEFAULT_DEDUP_ATOL,
     SimpleGaussianClassifierModel,
 )
-from .feature_selection import rank_features
+from .feature_selection import add_cross_columns, find_cross_pairs, rank_features
 from .gauss_math import (
     calculate_gaussian_correlation,
     take_top_features,
@@ -32,7 +32,8 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
     def __init__(self, top_n=-1, top_p=0.95, correlation_threshold=0.85, n_gaussians=0, norm_conorm=DefaultNormCornorm, member_function="gaussian", trapz_method="fast", random_state=42,
                  refine=False, refine_method="coordinate", refine_l2_shrink=0.05,
                  t_norm=None, t_conorm=None, allow_mixed_norms=False, max_samples=None,
-                 scoring_method="wasserstein", user_ranking=None, pareto_choice=0):
+                 scoring_method="wasserstein", user_ranking=None, pareto_choice=0,
+                 detect_interactions=False, max_cross_features=3, interaction_n_permutations=20):
         """Initialize TribbleClassifier.
 
         Parameters
@@ -68,7 +69,8 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             Max rows per (feature, label) for membership fitting. None=all.
         scoring_method : str
             Feature scorer: "wasserstein" (default), "bhattacharyya", "composite"
-            or "higher_order".
+            "higher_order" or "interaction" (a feature scores as its own separation plus its best
+            partner's excess joint separation, so an XOR-like pair ranks near the top).
         user_ranking : mapping, list or None
             Optional user feature importance (mapping, (feature, score) pairs, or
             ordered names, best first). With it, `top_n` features are chosen
@@ -78,6 +80,18 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         pareto_choice : int
             Which Pareto-optimal subset to use: 0 = most data-driven, -1 = most
             user-driven. All candidates are kept in `pareto_candidates_`.
+        detect_interactions : bool
+            Find feature pairs that matter only jointly (XOR-like) and append their PRODUCT as new
+            "crossover" columns, which then compete in the normal ranking. A classifier that
+            combines per-feature memberships cannot use such a pair any other way: even when both
+            members are selected, XOR classes share every marginal. Pairs are scored by the
+            vectorised engine of `calculate_interaction_scores` and must clear a permutation null
+            (see `feature_selection.find_cross_pairs`); with no interaction present, about
+            1 / (interaction_n_permutations + 1) of datasets still get a spurious column.
+        max_cross_features : int
+            At most this many cross columns are added (strongest pairs first).
+        interaction_n_permutations : int
+            Label shuffles used for the null floor; more is a tighter false-alarm rate and a slower fit.
         """
         self.is_fitted_: bool = False
         self.model_ = None
@@ -106,6 +120,10 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         self.user_ranking = user_ranking
         self.pareto_choice = pareto_choice
         self.pareto_candidates_ = None
+        self.detect_interactions = detect_interactions
+        self.max_cross_features = max_cross_features
+        self.interaction_n_permutations = interaction_n_permutations
+        self.cross_pairs_: list = []
 
     def _anomaly_params(self) -> AnomalyParameters:
         # Resolved on demand from the current norm settings, NOT cached in
@@ -152,6 +170,16 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         # We need X as DataFrame for the internal functions
         X_df = pd.DataFrame(X_array, columns=self.feature_names_in_)
         y_series = pd.Series(y_array)
+
+        # Crossover features: product columns for the strongest interacting pairs, built from the
+        # ORIGINAL columns, then ranked/selected like any other column.
+        self.cross_pairs_ = []
+        if self.detect_interactions:
+            self.cross_pairs_ = find_cross_pairs(
+                X_df, y_series, max_cross=self.max_cross_features,
+                n_permutations=self.interaction_n_permutations, random_state=self.random_state,
+            )
+            X_df = add_cross_columns(X_df, self.cross_pairs_)
 
         # 1. Calculate feature differentiators
         # Pass top_n to avoid computing scores for features we won't use
@@ -214,6 +242,10 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         self.is_fitted_ = True
         return self
 
+    def _with_cross_columns(self, X_df):
+        """Append the crossover columns chosen at fit time (a no-op when there are none)."""
+        return add_cross_columns(X_df, getattr(self, "cross_pairs_", None) or [])
+
     def predict(self, X):
         """Predict class labels.
 
@@ -233,6 +265,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             X_df = X.copy()
         else:
             X_df = pd.DataFrame(X, columns=self.feature_names_in_)
+        X_df = self._with_cross_columns(X_df)
 
         return tsk_predict(X_df, self.model_, self._anomaly_params())
 
@@ -255,6 +288,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             X_df = X.copy()
         else:
             X_df = pd.DataFrame(X, columns=self.feature_names_in_)
+        X_df = self._with_cross_columns(X_df)
 
         firing_strengths, labels = tsk_firing_strengths(X_df, self.model_, self._anomaly_params())
 
@@ -296,6 +330,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             X_df = X.copy()
         else:
             X_df = pd.DataFrame(X, columns=self.feature_names_in_)
+        X_df = self._with_cross_columns(X_df)
 
         return tsk_firing_strengths(X_df, self.model_, anomaly_details=anomaly_details)
 
@@ -309,6 +344,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             X_df = X.copy()
         else:
             X_df = pd.DataFrame(X, columns=self.feature_names_in_)
+        X_df = self._with_cross_columns(X_df)
         y_series = pd.Series(y)
 
         new_model = create_gaussian_membership_dict(
