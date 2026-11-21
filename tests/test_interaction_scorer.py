@@ -31,9 +31,9 @@ from tribblefis.feature_selection import rank_features
 from tribblefis.gauss_math import (
     calculate_gaussian_correlation,
     calculate_interaction_scores,
-    calculate_pairwise_lift,
 )
 from tribblefis.gaussian_classifier import TribbleClassifier
+from tribblefis.gaussian_regressor import TribbleRegressor
 
 MARGINAL = ("wasserstein", "bhattacharyya", "composite", "higher_order")
 
@@ -85,18 +85,30 @@ def test_scores_are_affine_invariant():
         assert moved[k] == pytest.approx(base[k], abs=1e-6), k
 
 
-def test_pairwise_lift_view():
+def test_gaussian_engine_of_calculate_interaction_scores():
     X, y = make("xor", 0)
-    pairs = calculate_pairwise_lift(X, y)
-    assert len(pairs) == X.shape[1] * (X.shape[1] - 1) // 2
-    assert set(pairs[0][:2]) == {"x1", "x2"}
-    assert all(lift >= 0 for *_, lift in pairs)
-    assert [p[2] for p in pairs] == sorted((p[2] for p in pairs), reverse=True)
-    assert len(calculate_pairwise_lift(X, y, top=3)) == 3
-    # the 1-D-product screen is a different tool and must refuse the pairwise method
     fd = calculate_gaussian_correlation(X, y, method="wasserstein")
-    with pytest.raises(ValueError, match="calculate_pairwise_lift"):
+    pairs = calculate_interaction_scores(X, y, fd, engine="gaussian")
+    assert len(pairs) == X.shape[1] * (X.shape[1] - 1) // 2
+    assert set(pairs[0][:2]) == {"x1", "x2"} and pairs[0][2] == pytest.approx(1.0)
+    lifts = [p[2] for p in pairs]
+    assert lifts == sorted(lifts, reverse=True) and min(lifts) >= 0
+    assert len(calculate_interaction_scores(X, y, fd, engine="gaussian", max_pairs=3)) == 3  # a cap, not an error
+    # the default engine is the original, untouched
+    assert calculate_interaction_scores(X, y, fd) == calculate_interaction_scores(X, y, fd, engine="product")
+    with pytest.raises(ValueError, match="engine='gaussian'"):
         calculate_interaction_scores(X, y, fd, method="interaction")
+    with pytest.raises(ValueError, match="engine must be"):
+        calculate_interaction_scores(X, y, fd, engine="nope")
+
+
+def test_gaussian_engine_has_no_pair_cap():
+    X, y = make("xor", 0, n=1500, noise=77)  # 80 features -> 3,160 pairs, over the product engine's 2,000
+    fd = calculate_gaussian_correlation(X, y, method="wasserstein")
+    with pytest.raises(ValueError, match="max_pairs"):
+        calculate_interaction_scores(X, y, fd)
+    top = calculate_interaction_scores(X, y, fd, engine="gaussian")
+    assert set(top[0][:2]) == {"x1", "x2"}
 
 
 def test_degenerate_inputs_do_not_crash():
@@ -141,13 +153,57 @@ def _acc(X, y, seed, **kw):
 
 
 def test_selecting_the_pair_is_not_enough_but_a_cross_column_is():
-    """E4: the honest limit of this change, pinned so it is not mistaken for a solved problem."""
+    """E4: the honest limit of selection alone, pinned so it is not mistaken for a solved problem."""
     X, y = make("xor", 0, n=3000)
     # Selection finds the pair, but the classifier still cannot use it (~chance).
     assert _acc(X, y, 0, scoring_method="interaction") < 0.6
-    # Build the cross column from the strongest pair, as the pairwise view allows ...
-    a, b, _ = calculate_pairwise_lift(X, y, top=1)[0]
-    Xc = X.assign(cross=X[a] * X[b])
-    # ... and every scorer, including the original, then succeeds.
+    # An explicit product column fixes it, for every scorer.
+    Xc = X.assign(cross=X["x1"] * X["x2"])
     assert _acc(Xc, y, 0, scoring_method="interaction") > 0.95
     assert _acc(Xc, y, 0, scoring_method="wasserstein") > 0.95
+
+
+def test_classifier_detect_interactions_builds_the_crossover_column():
+    X, y = make("xor", 0, n=3000)
+    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.25, random_state=0)
+    base = TribbleClassifier(top_n=2, correlation_threshold=0.0).fit(Xtr, ytr)
+    m = TribbleClassifier(top_n=2, correlation_threshold=0.0, detect_interactions=True).fit(Xtr, ytr)
+    assert accuracy_score(yte, base.predict(Xte)) < 0.6  # without it: chance
+    assert m.cross_pairs_ and set(m.cross_pairs_[0]) == {"x1", "x2"}
+    assert "x1*x2" in m.top_features_
+    assert accuracy_score(yte, m.predict(Xte)) > 0.95
+    # every post-fit entry point builds the same column: DataFrame, ndarray, proba, firing strengths
+    assert (m.predict(Xte.to_numpy()) == m.predict(Xte)).all()
+    assert m.predict_proba(Xte).shape == (len(Xte), 2)
+    fs, _ = m.firing_strengths(Xte)
+    assert len(fs) == len(Xte)
+    assert m.get_params()["max_cross_features"] == 3 and m.get_params()["interaction_n_permutations"] == 20
+
+
+def test_classifier_without_interactions_is_unchanged():
+    """No positive-lift pair -> no cross columns, and the model is the detect_interactions=False model."""
+    X, y = make("additive", 0, n=2000)
+    off = TribbleClassifier(top_n=3, correlation_threshold=0.0).fit(X, y)
+    on = TribbleClassifier(top_n=3, correlation_threshold=0.0, detect_interactions=True).fit(X, y)
+    assert on.cross_pairs_ == []
+    assert on.top_features_ == off.top_features_
+    assert (on.predict(X) == off.predict(X)).all()
+    # and the off path never builds anything
+    assert off.cross_pairs_ == []
+
+
+@pytest.mark.parametrize("engine", ["product", "gaussian"])
+def test_regressor_engine_option_on_the_product_problem(engine):
+    """y = x0 * x1: at top_n=1 univariate ranking keeps one half and R2 collapses; detection rescues it."""
+    r = np.random.default_rng(0)
+    n = 1500
+    X = pd.DataFrame({"x0": r.uniform(-1, 1, n), "x1": r.uniform(-1, 1, n)})
+    for i in range(3):
+        X[f"noise{i}"] = r.uniform(-1, 1, n)
+    y = X.x0 * X.x1 + r.normal(0, 0.02, n)
+    kw = dict(tsk_order="full-2nd", top_n=1, n_output_buckets=6, random_state=0)
+    without = TribbleRegressor(**kw).fit(X, y)
+    with_ = TribbleRegressor(**kw, detect_interactions=True, select_interactions=True, interaction_engine=engine).fit(X, y)
+    r2 = lambda m: 1 - ((y - m.predict(X)) ** 2).sum() / ((y - y.mean()) ** 2).sum()  # noqa: E731
+    assert r2(without) < 0.3
+    assert r2(with_) > 0.95

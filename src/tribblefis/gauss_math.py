@@ -686,30 +686,6 @@ def _interaction_feature_scores(X: pd.DataFrame, y: pd.Series) -> list[tuple[Any
     return list(zip(X.columns, (sep1 + best).tolist()))
 
 
-def calculate_pairwise_lift(
-    X: pd.DataFrame, y: pd.Series, top: int | None = None
-) -> list[tuple[Any, Any, float]]:
-    """Every feature pair's joint-separation lift (closed form, vectorised), best first.
-
-    This is the pair-level view behind ``method="interaction"``, for callers that want the
-    *partners* and not just the per-feature score (e.g. to build cross features from the
-    strongest pairs). Lift is summed over label pairs and is not normalised. ``top`` keeps
-    only the best pairs, which matters for wide data: M features give M(M-1)/2 pairs.
-
-    Unlike `calculate_interaction_scores` (which scores the product ``z_i * z_j`` with a
-    1-D metric and so sees only multiplicative structure) this compares the class-conditional
-    2-D Gaussians, so it also sees pairs whose classes differ only in correlation.
-    """
-    _, lift = _pairwise_separation(X, y)
-    names = list(X.columns)
-    iu, ju = np.triu_indices(len(names), k=1)
-    vals = lift[iu, ju]
-    order = np.argsort(-vals, kind="stable")
-    if top is not None:
-        order = order[:top]
-    return [(names[iu[k]], names[ju[k]], float(vals[k])) for k in order]
-
-
 def calculate_gaussian_correlation(
     X,
     y,
@@ -800,6 +776,8 @@ def calculate_interaction_scores(
     method: str = "wasserstein",
     candidate_pool: list[Any] | None = None,
     max_pairs: int = 2000,
+    engine: str = "product",
+    normalize: bool = True,
 ) -> list[tuple[Any, Any, float]]:
     """Score every candidate feature *pair* for interaction "lift" beyond either alone.
 
@@ -816,7 +794,21 @@ def calculate_interaction_scores(
     candidate_pool : list[str] | None, default=None
         Feature subset for pairs; None considers all in `feature_differentiators`.
     max_pairs : int, default=2000
-        Maximum allowed pair count; raises ValueError if exceeded.
+        ``engine="product"``: maximum allowed pair count; raises ValueError if exceeded.
+        ``engine="gaussian"``: the number of best pairs returned (never an error).
+    engine : {'product', 'gaussian'}, default='product'
+        ``"product"`` (the original) scores the column ``z_i * z_j`` with the 1-D `method`, so it
+        sees multiplicative structure only and costs one Python-level distance computation per
+        pair per label pair. ``"gaussian"`` compares the class-conditional 2-D Gaussians in closed
+        form -- it sees mean, spread and the class-conditional *correlation* -- vectorised over all
+        pairs at once (60 features: 6.0 s -> 0.05 s; no 63-feature cap). `method` and the scores in
+        `feature_differentiators` are not used by it (it computes its own marginals); the latter
+        only defines the candidate pool. Same return shape either way.
+    normalize : bool, default=True
+        ``engine="gaussian"`` only: divide by the largest lift so the best pair reads 1.0. Pass
+        False for raw lifts (Bhattacharyya separation summed over label pairs), the scale a
+        permutation null is compared on -- a *relative* score cannot tell "the strongest of
+        nothing" from a real interaction.
 
     Returns
     -------
@@ -834,17 +826,33 @@ def calculate_interaction_scores(
     Lift = score(z_i * z_j) - max(score(i), score(j)), measuring joint separation
     beyond either feature alone. See Friedman's H-statistic for similar concept.
     """
-    if method in _PAIRWISE_METHODS:
-        raise ValueError(
-            f"{method!r} is a pairwise scorer, not a 1-D metric: use calculate_pairwise_lift(X, y) "
-            "for the pair-level view, or calculate_gaussian_correlation(method=...) for per-feature scores"
-        )
-    if method not in _VALID_DIFFERENTIATION_METHODS:
-        raise ValueError(f"method must be one of {_VALID_DIFFERENTIATION_METHODS}, got {method!r}")
+    if engine not in ("product", "gaussian"):
+        raise ValueError(f"engine must be 'product' or 'gaussian', got {engine!r}")
+    if engine == "product":
+        if method in _PAIRWISE_METHODS:
+            raise ValueError(
+                f"{method!r} is a pairwise scorer, not a 1-D metric: pass engine='gaussian' for the "
+                "vectorised pair lift, or calculate_gaussian_correlation(method=...) for per-feature scores"
+            )
+        if method not in _VALID_DIFFERENTIATION_METHODS:
+            raise ValueError(f"method must be one of {_VALID_DIFFERENTIATION_METHODS}, got {method!r}")
 
     individual_score = {col: score for col, score in feature_differentiators}
     pool = list(candidate_pool) if candidate_pool is not None else list(individual_score)
     pool = [f for f in pool if f in individual_score]
+
+    if engine == "gaussian":
+        if len(pool) < 2:
+            return []
+        _, lift = _pairwise_separation(X[pool], y)
+        iu, ju = np.triu_indices(len(pool), k=1)
+        vals = lift[iu, ju]
+        order = np.argsort(-vals, kind="stable")[:max_pairs]
+        ranked = [(pool[iu[k]], pool[ju[k]], float(vals[k])) for k in order]
+        if normalize and ranked and ranked[0][2] > 0:
+            top = ranked[0][2]
+            ranked = [(fi, fj, lift_ / top) for fi, fj, lift_ in ranked]
+        return ranked
 
     pairs = list(combinations(pool, 2))
     if len(pairs) > max_pairs:
