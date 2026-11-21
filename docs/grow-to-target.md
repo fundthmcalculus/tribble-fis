@@ -57,13 +57,17 @@ size. Seconds are host-specific; the ratios transfer. An earlier ad-hoc run of t
   `triangular`; #247). A feature fitted alone is identical to the same feature in a joint call for every
   one (checked on a grid of evaluations), and the growth oracle and the unrolled-fold equivalence are
   tested for each. Growth is only as cheap as the builder it calls: the EM trapezoid and triangular
-  builders cost seconds per fit (26 s and 15 s for one four-feature fit on 600 rows), so fitting each
-  feature once matters most there. `refine` is Gaussian-only in any case.
-* The growth loop folds with NumPy. On the compiled-kernel path a held-out row can flip on a 1-ULP `exp`
-  difference, so a score can differ from `predict` by a few rows; the NumPy path is exact.
-* The held-out score is one split. It is an estimate with its own noise, and "the smallest size
-  meeting the target" on it is optimistic by selection. For a tighter claim pass a larger `validation`
-  set, and report the final model on data that took no part in the choice.
+  builders cost seconds per fit, so fitting each feature once saves the most there (27 s and 15 s over a
+  four-size sweep; see "Basic measurements"). `refine` is Gaussian-only in any case.
+* The growth loop folds with NumPy while `predict` may use the compiled kernel, so in principle a held-out
+  row could flip on a 1-ULP `exp` difference. Measured: no held-out prediction differed (70 comparisons,
+  compiled kernel verified active). The tests keep a few-row tolerance on the compiled leg as a defensive
+  measure only; the NumPy path is exact.
+* The held-out score is one split: an estimate with its own noise (about 3 F1 points per run in the
+  measurement below). Selecting "the smallest size meeting the target" on it showed no detectable
+  optimism (+0.006 to +0.010 held-out minus untouched test, standard error 0.007, 20 seeds), but one run can
+  still be off by several points. For a tighter claim pass a larger `validation` set, and report the final
+  model on data that took no part in the choice.
 * `top_n` and `top_p` are ignored here; `correlation_threshold` still drives the redundancy skip. A
   result of one feature means the target was easy on this split, not that one feature is enough in general.
 
@@ -98,9 +102,22 @@ asserts both arms agree on every held-out score and on the stopping size first):
 | walking all 24 sizes | 24 | 1.07 s | 11.84 s | 11.1x |
 
 The per-step cost is flat (0.040 s first, 0.044 s last), so growth is linear and the sweep is not. #248
-guessed the solve would dominate; at 1st order it does not. Not measured: `full-2nd`, whose cross terms grow
-quadratically with the features and may change that. `solve_tsk_consequents` delegates to
+guessed the solve would dominate; at 1st order it does not. At `full-2nd` the cross terms grow quadratically
+and it does: per-step cost is flat to about 6 features, then climbs to 10-12x the 1st-order step at 24
+features (0.47 s vs 0.047 s at 1,875 rows; 0.95 s vs 0.08 s at 7,500). `solve_tsk_consequents` delegates to
 `solve_tsk_consequents_from_firing`, which takes precomputed firing strengths, so the running fold could in
 principle feed the solve and skip the per-step fold; with a flat 0.04 s per step there is little to gain at 1st
-order, and it is not done.
+order, and it is not done. At `full-2nd` the cost is the solve itself, which this would not remove.
+
+## Basic measurements (not runs of record)
+`python -m benchmarks.grow_basic_measurements` (about 3 minutes). One 4-core Xeon, synthetic data, a few seeds:
+ratios transfer, seconds do not. Growing scores matched the refit sweep exactly in every case.
+
+| item | result |
+|---|---|
+| Regressor, 10 sizes, 1,875 rows | 1st: 0.44 s vs 2.39 s sweep (5.4x); full-2nd: 0.53 s vs 2.37 s (4.5x) |
+| Regressor growth to 24 features, 7,500 rows | 1st 1.7 s; full-2nd 7.0 s (last step 0.95 s) |
+| Classifier, 14 sizes, 750 held-out rows, 5 seeds | growth vs sweep 7.4x (NumPy), 7.6x (compiled); max score diff 0 on both |
+| Builders, 4 features, 300 rows (growth vs sweep) | gaussian 2.3-3.1x; trap fast 2.1x; triangular 3.7x (saves 15 s); trap EM 3.7-4.0x (saves 26-27 s) |
+| Selection optimism, 20 seeds | reachable target: +0.006 +/- 0.007 (SE); unreachable: +0.010 +/- 0.007; per-run sd 0.031 |
 

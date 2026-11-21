@@ -10,9 +10,10 @@ Expectations registered before the first run:
   G4  the features are ranked once, not once per size;
   G5  the ranking/crossover search/memberships never see the held-out labels.
 
-On the compiled-kernel CI leg the oracle's ``predict`` goes through libm ``exp`` while growth folds with
-NumPy, so a row can flip on a 1-ULP difference: equality is asserted exactly on the NumPy path and
-within a few rows on the compiled one.
+On the compiled-kernel CI leg the oracle's ``predict`` may go through libm ``exp`` while growth folds with
+NumPy, so in principle a row could flip on a 1-ULP difference. Measured on one host: no held-out
+prediction differed (70 comparisons). Equality is asserted exactly on the NumPy path; the compiled leg keeps
+a few-row tolerance as a defensive measure only.
 """
 
 import numpy as np
@@ -74,7 +75,7 @@ def test_history_equals_the_refit_oracle_at_every_size(data, oracle):  # G1
 
 def test_stops_at_the_oracles_first_size_meeting_the_target(data, oracle):  # G2
     # A target in the middle of the LARGEST gap between the oracle's scores: no size's score is within
-    # half that gap of it, so kernel noise (compiled leg) cannot change which size is first.
+    # half that gap of it, so any kernel noise (compiled leg) cannot change which size is first.
     vals = np.sort(oracle)
     gap = int(np.argmax(np.diff(vals)))
     target = float((vals[gap] + vals[gap + 1]) / 2)
