@@ -250,13 +250,14 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             growth needs (Pareto subsets of different sizes are not nested). 0 ignores the user.
         refit : bool
             Refit the final model on ALL the data with the chosen features (default). If False
-            the model built on the training part is kept and ``refine`` is not applied.
+            the model built on the training part is kept and ``refine`` is not applied (refinement
+            is Gaussian-only in any case).
 
         Sets ``n_features_selected_``, ``target_reached_`` (False means the target was not met and
         the best size seen is used, with a warning), ``growth_history_`` (a DataFrame: n, feature
         added, held-out score, best so far, step and cumulative seconds), ``growth_order_`` (the
         order tried), ``growth_skipped_`` (features skipped by the redundancy filter) and
-        ``growth_seconds_``. Only ``member_function="gaussian"`` is supported.
+        ``growth_seconds_``. Works for every ``member_function`` (gaussian, trap, triangular).
         """
         import warnings
 
@@ -267,11 +268,10 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         from .gauss_math import _select_uncorrelated_top_n, calculate_gaussian_correlation
         from .growth import grow_features, metric_function
 
-        if self.member_function != "gaussian":
-            raise NotImplementedError(
-                "fit_growing supports member_function='gaussian' only "
-                f"(got {self.member_function!r}); the trapezoid/triangular builders are not wired in"
-            )
+        if self.member_function not in ("gaussian", "trap", "triangular"):
+            raise ValueError(f"Unknown member_function: {self.member_function!r}")  # before any work is done
+        if self.member_function == "trap" and self.trapz_method not in ("fast", "em"):
+            raise ValueError(f"Unknown trapz_method: {self.trapz_method!r}")
         if not np.isfinite(target) or (isinstance(metric, str) and not 0 < target <= 1):
             raise ValueError(f"target must be in (0, 1] for metric {metric!r}, got {target!r}")
         if not 0.0 <= user_weight <= 1.0:
@@ -341,10 +341,10 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             order = [f for f, _ in ranked]
 
         result = grow_features(
-            X_tr, y_tr, X_va, y_va, order,
+            X_va, y_va, order,
             target=target, metric=metric_fn,
             norms=self._anomaly_params().norms(), max_n=max_n, patience=patience,
-            n_gaussians=self.n_gaussians, max_samples=self.max_samples, random_state=self.random_state,
+            fit_feature=lambda name: self._fit_memberships(X_tr, y_tr, [name]),
         )
         n_selected = result["n_selected"]
         chosen = order[:n_selected]
@@ -370,28 +370,27 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         self.is_fitted_ = True
         return self
 
-    def _build_model(self, X_df, y_series, y_array):
-        """Fit the membership model (and optionally refine it) on ``self.top_features_``.
+    def _fit_memberships(self, X_df, y_series, features):
+        """Fit the memberships (Gaussian, trapezoid or triangular, per ``member_function``) for ``features``.
 
-        The shared tail of `fit` and `fit_growing`: both decide WHICH features to use, then
-        build the model the same way.
+        One call per feature builds exactly what a joint call builds for that feature (checked for
+        every builder), which is what lets `fit_growing` fit each feature once.
         """
-        # Create membership model (Gaussian or Trapezoid)
         if self.member_function == "gaussian":
-            self.model_ = create_gaussian_membership_dict(
-                X_df, y_series, top_n_var_names=self.top_features_, n_gaussians=self.n_gaussians,
+            return create_gaussian_membership_dict(
+                X_df, y_series, top_n_var_names=features, n_gaussians=self.n_gaussians,
                 max_samples=self.max_samples, random_state=self.random_state,
             )
         elif self.member_function == "trap":
             if self.trapz_method == "fast":
                 from .trapz_math_fast import create_trapz_membership_dict_fast
-                self.model_ = create_trapz_membership_dict_fast(
-                    X_df, y_series, top_n_var_names=self.top_features_
+                return create_trapz_membership_dict_fast(
+                    X_df, y_series, top_n_var_names=features
                 )
             elif self.trapz_method == "em":
                 from .trapz_math import create_trapz_membership_dict
-                self.model_ = create_trapz_membership_dict(
-                    X_df, y_series, top_n_var_names=self.top_features_, n_trapezoids=self.n_gaussians,
+                return create_trapz_membership_dict(
+                    X_df, y_series, top_n_var_names=features, n_trapezoids=self.n_gaussians,
                     max_samples=self.max_samples, random_state=self.random_state,
                 )
             else:
@@ -399,12 +398,20 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         elif self.member_function == "triangular":
             # Triangle is degenerate trapezoid; reuse EM code with shape="triangle".
             from .trapz_math import create_trapz_membership_dict
-            self.model_ = create_trapz_membership_dict(
-                X_df, y_series, top_n_var_names=self.top_features_, n_trapezoids=self.n_gaussians,
+            return create_trapz_membership_dict(
+                X_df, y_series, top_n_var_names=features, n_trapezoids=self.n_gaussians,
                 max_samples=self.max_samples, random_state=self.random_state, shape="triangle",
             )
         else:
             raise ValueError(f"Unknown member_function: {self.member_function}")
+
+    def _build_model(self, X_df, y_series, y_array):
+        """Fit the membership model (and optionally refine it) on ``self.top_features_``.
+
+        The shared tail of `fit` and `fit_growing`: both decide WHICH features to use, then
+        build the model the same way.
+        """
+        self.model_ = self._fit_memberships(X_df, y_series, self.top_features_)
 
         # Optionally refine antecedents on discriminative objective (zeroth-order TSK).
         if self.refine and self.member_function == "gaussian":

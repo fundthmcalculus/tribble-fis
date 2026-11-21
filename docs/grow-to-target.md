@@ -50,11 +50,17 @@ size. Seconds are host-specific; the ratios transfer. An earlier ad-hoc run of t
 | Redundancy filter | Same as `top_n`: a candidate correlated with an already-kept feature is skipped and growth continues down the ranking. The skipped features are in `growth_skipped_`. |
 | User ranking (#239) | Pareto subsets of different sizes are not nested, so they have no growth order. For a **fixed weight** the weighted-sum ranking is a single order whose top-k is a prefix: `user_weight` w gives `(1 - w) * data score + w * user importance` (0 ignores the user, 1 follows them). |
 | Crossover columns | `detect_interactions=True` works here: the pair search runs on the training part, the product columns join the ranking, and a pair that only helps jointly can be the *first* feature grown (XOR reaches F1 0.95 at size 1). |
-| Refinement | Not applied per step (expensive). With `refit=True` (default) the final model is refit on all rows with the chosen features, and `refine` then applies as in `fit`. |
+| Refinement | Not applied per step (expensive). With `refit=True` (default) the final model is refit on all rows with the chosen features, and `refine` then applies as in `fit` (Gaussian only). |
 
 ## Limits
-* **`member_function="gaussian"` only.** The trapezoid and triangular builders are not wired in
-  (`NotImplementedError`). Classification only; the regression analogue (a target R2/RMSE) is not done.
+* **Classification only.** The regression analogue (a target R2/RMSE) is not done (#248): its
+  consequents are solved by least squares and must be re-solved at every step.
+* **All membership builders work** (`gaussian`, `trap` with `trapz_method="fast"` or `"em"`,
+  `triangular`; #247). A feature fitted alone is identical to the same feature in a joint call for every
+  one (checked on a grid of evaluations), and the growth oracle and the unrolled-fold equivalence are
+  tested for each. Growth is only as cheap as the builder it calls: the EM trapezoid and triangular
+  builders cost seconds per fit (26 s and 15 s for one four-feature fit on 600 rows), so fitting each
+  feature once matters most there. `refine` is Gaussian-only in any case.
 * The growth loop folds with NumPy. On the compiled-kernel path a held-out row can flip on a 1-ULP `exp`
   difference, so a score can differ from `predict` by a few rows; the NumPy path is exact.
 * The held-out score is one split. It is an estimate with its own noise, and "the smallest size

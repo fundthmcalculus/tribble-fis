@@ -255,8 +255,10 @@ def test_callable_metric_and_binary_f1():
 def test_argument_validation(data):
     Xtr, Xva, ytr, yva = data
     base = TribbleClassifier(random_state=0)
-    with pytest.raises(NotImplementedError, match="gaussian"):
-        TribbleClassifier(member_function="trap").fit_growing(Xtr, ytr, target=0.5)
+    with pytest.raises(ValueError, match="member_function"):
+        TribbleClassifier(member_function="nope").fit_growing(Xtr, ytr, target=0.5)
+    with pytest.raises(ValueError, match="trapz_method"):
+        TribbleClassifier(member_function="trap", trapz_method="nope").fit_growing(Xtr, ytr, target=0.5)
     for bad_target in (0.0, 1.5, float("nan")):
         with pytest.raises(ValueError, match="target"):
             base.fit_growing(Xtr, ytr, target=bad_target)
@@ -269,3 +271,61 @@ def test_argument_validation(data):
     with pytest.raises(ValueError, match="metric"):
         base.fit_growing(Xtr, ytr, target=0.5, metric="nope")
     assert not hasattr(base, "n_features_selected_")  # a failed call leaves nothing half-set that matters
+
+
+# ---- every membership builder (#247) -----------------------------------------------------------
+# Expectation registered before running: a feature's memberships are independent of which other features
+# are in the call for EVERY builder (measured 5/5 for each), so the growth oracle and the unrolled-fold
+# equivalence hold for gaussian, trapezoid (fast and EM) and triangular exactly as for Gaussian.
+# The EM builders cost seconds per fit, so these use a few features and a few hundred rows.
+MEMBER_FUNCTIONS = [
+    pytest.param("gaussian", "fast", id="gaussian"),
+    pytest.param("trap", "fast", id="trap-fast"),
+    pytest.param("trap", "em", id="trap-em"),
+    pytest.param("triangular", "fast", id="triangular"),
+]
+
+
+@pytest.fixture(scope="module")
+def small():
+    X, y = make_classification(
+        n_samples=300, n_features=3, n_informative=3, n_redundant=0, n_classes=3,
+        n_clusters_per_class=1, class_sep=1.5, random_state=1,
+    )
+    X, y = pd.DataFrame(X, columns=["a", "b", "c"]), pd.Series(y)
+    Xtr, Xva, ytr, yva = train_test_split(X, y, test_size=0.25, random_state=1, stratify=y)
+    return tuple(v.reset_index(drop=True) for v in (Xtr, Xva, ytr, yva))
+
+
+@pytest.mark.parametrize("member_function,trapz_method", MEMBER_FUNCTIONS)
+def test_growth_equals_the_refit_oracle_for_every_member_function(small, member_function, trapz_method):
+    Xtr, Xva, ytr, yva = small
+    kw = dict(member_function=member_function, trapz_method=trapz_method, correlation_threshold=0.0, random_state=42)
+    with pytest.warns(UserWarning, match="not reached"):
+        g = TribbleClassifier(**kw).fit_growing(Xtr, ytr, target=1.0, validation=(Xva, yva), refit=False)
+    oracle = [
+        f1m(yva, TribbleClassifier(top_n=k, **kw).fit(Xtr, ytr).predict(Xva)) for k in range(1, Xtr.shape[1] + 1)
+    ]
+    assert len(g.growth_history_) == len(oracle)
+    assert np.max(np.abs(g.growth_history_["score"].to_numpy() - oracle)) <= TOL
+    # refit=False keeps the model that was scored: its held-out score IS the history's at that size
+    n = g.n_features_selected_
+    assert abs(f1m(yva, g.predict(Xva)) - g.growth_history_["score"].iloc[n - 1]) <= TOL
+
+
+@pytest.mark.parametrize("member_function,trapz_method", MEMBER_FUNCTIONS)
+def test_running_fold_equals_the_joint_model_for_every_member_function(small, member_function, trapz_method):
+    """Per-feature builds folded one at a time equal tsk_firing_strengths on the JOINT build."""
+    Xtr, Xva, ytr, _ = small
+    clf = TribbleClassifier(member_function=member_function, trapz_method=trapz_method, random_state=42)
+    names = list(Xtr.columns)
+    joint = clf._fit_memberships(Xtr, ytr, names)
+    norms = AnomalyParameters().norms()
+    run = None
+    for name in names:
+        one = clf._fit_memberships(Xtr, ytr, [name]).feature_models[name]
+        run = run or RunningFiringStrengths(Xva, one.ordered_keys, norms)
+        run.add(name, one)
+    ref, labels = gm.tsk_firing_strengths(Xva, joint, norms=norms)
+    np.testing.assert_allclose(run.strengths, ref, rtol=1e-9, atol=1e-12)
+    assert run.labels == list(labels)
