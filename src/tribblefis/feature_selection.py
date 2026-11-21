@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+import pandas as pd
 from optimizers.archive.metrics import non_dominated_mask
 
 __all__ = [
@@ -31,6 +32,9 @@ __all__ = [
     "pareto_front",
     "pareto_select_features",
     "rank_features",
+    "find_cross_pairs",
+    "add_cross_columns",
+    "cross_name",
 ]
 
 
@@ -200,3 +204,54 @@ def rank_features(
         )
     chosen = set(candidates[pareto_choice].features)
     return [(f, v) for f, v in scored if f in chosen], candidates
+
+
+def cross_name(a, b) -> str:
+    """Column name of the product feature built from ``a`` and ``b``."""
+    return f"{a}*{b}"
+
+
+def find_cross_pairs(
+    X,
+    y,
+    max_cross: int = 3,
+    n_permutations: int = 20,
+    random_state: int = 0,
+) -> list[tuple]:
+    """Feature pairs whose joint class separation is real, for building product (crossover) columns.
+
+    Pair lifts come from the vectorised engine of `calculate_interaction_scores`
+    (``engine="gaussian"``), RAW and not normalised. A relative threshold cannot say whether the
+    best pair is an interaction or merely the largest of many noise lifts, so the floor is a
+    permutation null: shuffle ``y`` ``n_permutations`` times, take the largest lift seen in any
+    shuffle, and keep only real pairs strictly above it (at most ``max_cross``, strongest first).
+    With no interaction present a pair clears the floor with probability about
+    ``1 / (n_permutations + 1)`` per dataset, so the default 20 gives ~5 % false alarms.
+    """
+    from .gauss_math import calculate_interaction_scores
+
+    if max_cross <= 0 or X.shape[1] < 2:
+        return []
+    pool = [(c, 0.0) for c in X.columns]  # the gaussian engine computes its own marginals
+
+    def raw(yy):
+        return calculate_interaction_scores(X, yy, pool, engine="gaussian", normalize=False)
+
+    real = raw(y)
+    if not real:
+        return []
+    rng = np.random.default_rng(random_state)
+    yv = y.to_numpy()
+    floor = 0.0
+    for _ in range(max(0, n_permutations)):
+        null = raw(pd.Series(rng.permutation(yv), index=y.index))
+        if null:
+            floor = max(floor, null[0][2])
+    return [(fi, fj) for fi, fj, lift in real[:max_cross] if lift > floor]
+
+
+def add_cross_columns(X, pairs):
+    """``X`` plus one product column per ``(a, b)`` pair (original columns untouched)."""
+    if not pairs:
+        return X
+    return X.assign(**{cross_name(a, b): X[a] * X[b] for a, b in pairs})

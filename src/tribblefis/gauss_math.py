@@ -539,6 +539,153 @@ def _select_uncorrelated_top_n(
     return selected
 
 
+def _finalise_ranking(X, feature_differentiators, top_n, correlation_threshold):
+    """Drop non-finite scores, sort, apply `top_n` (+ redundancy filter), normalise, print.
+
+    The shared tail of `calculate_gaussian_correlation`, so the univariate scorers and the
+    pairwise `interaction` scorer rank, filter and report identically.
+    """
+    # Remove nan and inf
+    feature_differentiators = [(col, diff_s) for (col, diff_s) in feature_differentiators if np.isfinite(diff_s)]
+    # Sort features by differentiation score (descending)
+    feature_differentiators.sort(key=lambda x: x[1], reverse=True)
+
+    # When top_n is specified, only keep the top N before normalization
+    # This reduces downstream processing when only a subset is needed
+    if top_n > 0:
+        if 0.0 < correlation_threshold < 1.0:
+            feature_differentiators = _select_uncorrelated_top_n(
+                X, feature_differentiators, top_n, correlation_threshold
+            )
+        else:
+            feature_differentiators = feature_differentiators[:top_n]
+
+    # Normalize feature differentiators
+    if feature_differentiators:
+        max_score = feature_differentiators[0][1]
+        if max_score > 0:
+            feature_differentiators = [(col, diff_s / max_score) for (col, diff_s) in feature_differentiators]
+
+    print("\nFeatures Ranked by Differentiation Strength:")
+    print("=" * 80)
+    for rank, (feature, score) in enumerate(feature_differentiators, 1):
+        print(f"{rank:2d}. {str(feature):30s} - Score: {score:.4f}")
+    print("=" * 80)
+
+    return feature_differentiators
+
+
+#: Scorers that look at pairs of features at once (a feature's score can come from a partner).
+_PAIRWISE_METHODS = {"interaction"}
+_VALID_SCORING_METHODS = _VALID_DIFFERENTIATION_METHODS | _PAIRWISE_METHODS
+
+#: Variance floor added to every class-conditional variance of the (globally standardised)
+#: features. A perfectly class-pure indicator would otherwise have zero within-class
+#: variance and an infinite Bhattacharyya distance; this keeps it large but finite.
+_PAIRWISE_VAR_FLOOR = 1e-3
+
+
+def _standardised_matrix(X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Numeric, mean-imputed, globally standardised copy of X, and a mask of usable columns.
+
+    Categorical / string columns are integer-coded exactly as the univariate scorers do.
+    Missing values are mean-imputed: pairwise covariance has no per-column `dropna()`
+    equivalent, so this is the one place the pairwise scorer treats NaN differently from
+    the others. A constant (or all-NaN) column is marked unusable and scores 0.
+    """
+    cols = []
+    for c in X.columns:
+        s = X[c]
+        enc = _encode_if_categorical(s.dropna(), s)
+        cols.append(enc.reindex(s.index).to_numpy(dtype=float))
+    A = np.column_stack(cols) if cols else np.empty((len(X), 0))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN column
+        mean = np.nanmean(A, axis=0)
+    mean = np.where(np.isfinite(mean), mean, 0.0)
+    A = np.where(np.isnan(A), mean, A)
+    sd = A.std(axis=0)
+    usable = sd > _SMALL_THRESHOLD
+    A = (A - mean) / np.where(usable, sd, 1.0)
+    return A, usable
+
+
+def _pairwise_separation(X: pd.DataFrame, y: pd.Series) -> tuple[np.ndarray, np.ndarray]:
+    """Per-feature class separation and pairwise *lift*, summed over label pairs.
+
+    Each class is modelled as a Gaussian over the (standardised) features. For a label pair
+    (a, b) and a feature pair (i, j) the closed-form Bhattacharyya distance of the 2-D
+    Gaussians -- which sees mean AND variance AND the *cross-covariance* -- is turned into a
+    separation ``1 - exp(-D)`` in [0, 1). The marginal separations come from the 1-D
+    Gaussians the same way. The lift is the part of the joint separation the better marginal
+    does not already explain::
+
+        lift_ij = max(0, sep_ij - max(sep_i, sep_j))
+
+    The Bhattacharyya distance is affine-invariant and never decreases when a variable is
+    added, so lift is >= 0 in exact arithmetic and a noise column paired with an informative
+    one has ~0 lift. XOR-like classes share every marginal and every mean but have opposite
+    correlations, which is what this sees.
+
+    Returns ``(sep1, lift)``: ``sep1`` has shape (M,), ``lift`` (M, M) with a zero diagonal;
+    unusable (constant) columns have zero separation and zero lift.
+    """
+    if len(y) != len(X):
+        raise ValueError(f"X has {len(X)} rows but y has {len(y)}")
+    if not y.index.equals(X.index):
+        y = y.reindex(X.index)
+        if y.isna().any():
+            raise ValueError("y has no label for some rows of X (index mismatch)")
+    A, usable = _standardised_matrix(X)
+    n_features = A.shape[1]
+    yv = y.to_numpy()
+
+    stats = []
+    for lab in pd.unique(yv):
+        rows = A[yv == lab]
+        if len(rows) < 2:
+            continue  # a covariance needs at least two rows; the class is left out
+        stats.append((rows.mean(axis=0), np.atleast_2d(np.cov(rows, rowvar=False))))
+
+    sep1 = np.zeros(n_features)
+    lift = np.zeros((n_features, n_features))
+    for ia, ib in combinations(range(len(stats)), 2):
+        ma, ca = stats[ia]
+        mb, cb = stats[ib]
+        va = np.diag(ca) + _PAIRWISE_VAR_FLOOR
+        vb = np.diag(cb) + _PAIRWISE_VAR_FLOOR
+        d = ma - mb
+
+        s1 = (va + vb) / 2.0
+        db1 = d**2 / (8.0 * s1) + 0.5 * np.log(s1 / np.sqrt(va * vb))
+        sep_i = -np.expm1(-np.maximum(db1, 0.0))
+
+        sii, sjj = s1[:, None], s1[None, :]
+        sij = (ca + cb) / 2.0
+        det_s = sii * sjj - sij**2
+        det_a = va[:, None] * va[None, :] - ca**2
+        det_b = vb[:, None] * vb[None, :] - cb**2
+        di, dj = d[:, None], d[None, :]
+        quad = (sjj * di**2 - 2.0 * sij * di * dj + sii * dj**2) / det_s
+        db2 = quad / 8.0 + 0.5 * np.log(det_s / np.sqrt(det_a * det_b))
+        sep_ij = -np.expm1(-np.maximum(db2, 0.0))
+
+        sep1 += sep_i
+        lift += np.maximum(0.0, sep_ij - np.maximum(sep_i[:, None], sep_i[None, :]))
+
+    np.fill_diagonal(lift, 0.0)
+    sep1 = np.where(usable, sep1, 0.0)
+    lift = lift * usable[:, None] * usable[None, :]
+    return sep1, lift
+
+
+def _interaction_feature_scores(X: pd.DataFrame, y: pd.Series) -> list[tuple[Any, float]]:
+    """``score_i = sep_i + max_j lift_ij``: a feature's own separation plus its best partner's excess."""
+    sep1, lift = _pairwise_separation(X, y)
+    best = lift.max(axis=1) if lift.shape[1] > 1 else np.zeros_like(sep1)
+    return list(zip(X.columns, (sep1 + best).tolist()))
+
+
 def calculate_gaussian_correlation(
     X,
     y,
@@ -554,11 +701,15 @@ def calculate_gaussian_correlation(
         Feature data.
     y : pd.Series
         Labels.
-    method : {'wasserstein', 'bhattacharyya', 'composite', 'higher_order'}, default='wasserstein'
+    method : {'wasserstein', 'bhattacharyya', 'composite', 'higher_order', 'interaction'}, default='wasserstein'
         Distance metric. Wasserstein is non-parametric; bhattacharyya is parametric
         (cheaper, works for approximately Gaussian data); composite blends both;
         higher_order compares mean, spread, skewness and kurtosis (sees shape
-        differences the other two miss).
+        differences the other two miss). All four score each feature ON ITS OWN, so a
+        feature that matters only jointly with another (XOR-like) looks like noise to them.
+        interaction scores a feature as its own separation plus its best partner's excess
+        joint separation (closed-form 2-D Gaussian Bhattacharyya, so it also sees classes that
+        differ only in correlation); O(M^2) pairs, vectorised. NaN is mean-imputed on that path.
     top_n : int, default=-1
         If > 0, return only top N features; if <= 0, return all sorted descending.
     correlation_threshold : float, default=0.85
@@ -577,8 +728,11 @@ def calculate_gaussian_correlation(
     ValueError
         If method is not recognized.
     """
-    if method not in _VALID_DIFFERENTIATION_METHODS:
-        raise ValueError(f"method must be one of {_VALID_DIFFERENTIATION_METHODS}, got {method!r}")
+    if method not in _VALID_SCORING_METHODS:
+        raise ValueError(f"method must be one of {_VALID_SCORING_METHODS}, got {method!r}")
+
+    if method in _PAIRWISE_METHODS:
+        return _finalise_ranking(X, _interaction_feature_scores(X, y), top_n, correlation_threshold)
 
     # Taken from the ORIGINAL y, before the conversion below, so the label
     # enumeration order -- which decides the order the pairwise scores are
@@ -612,34 +766,7 @@ def calculate_gaussian_correlation(
     with ThreadPoolExecutor(max_workers=1) as executor:
         feature_differentiators = list(executor.map(process_column, X.columns))
 
-    # Remove nan and inf
-    feature_differentiators = [(col, diff_s) for (col, diff_s) in feature_differentiators if np.isfinite(diff_s)]
-    # Sort features by differentiation score (descending)
-    feature_differentiators.sort(key=lambda x: x[1], reverse=True)
-
-    # When top_n is specified, only keep the top N before normalization
-    # This reduces downstream processing when only a subset is needed
-    if top_n > 0:
-        if 0.0 < correlation_threshold < 1.0:
-            feature_differentiators = _select_uncorrelated_top_n(
-                X, feature_differentiators, top_n, correlation_threshold
-            )
-        else:
-            feature_differentiators = feature_differentiators[:top_n]
-
-    # Normalize feature differentiators
-    if feature_differentiators:
-        max_score = feature_differentiators[0][1]
-        if max_score > 0:
-            feature_differentiators = [(col, diff_s / max_score) for (col, diff_s) in feature_differentiators]
-
-    print("\nFeatures Ranked by Differentiation Strength:")
-    print("=" * 80)
-    for rank, (feature, score) in enumerate(feature_differentiators, 1):
-        print(f"{rank:2d}. {str(feature):30s} - Score: {score:.4f}")
-    print("=" * 80)
-
-    return feature_differentiators
+    return _finalise_ranking(X, feature_differentiators, top_n, correlation_threshold)
 
 
 def calculate_interaction_scores(
@@ -649,6 +776,8 @@ def calculate_interaction_scores(
     method: str = "wasserstein",
     candidate_pool: list[Any] | None = None,
     max_pairs: int = 2000,
+    engine: str = "product",
+    normalize: bool = True,
 ) -> list[tuple[Any, Any, float]]:
     """Score every candidate feature *pair* for interaction "lift" beyond either alone.
 
@@ -665,7 +794,21 @@ def calculate_interaction_scores(
     candidate_pool : list[str] | None, default=None
         Feature subset for pairs; None considers all in `feature_differentiators`.
     max_pairs : int, default=2000
-        Maximum allowed pair count; raises ValueError if exceeded.
+        ``engine="product"``: maximum allowed pair count; raises ValueError if exceeded.
+        ``engine="gaussian"``: the number of best pairs returned (never an error).
+    engine : {'product', 'gaussian'}, default='product'
+        ``"product"`` (the original) scores the column ``z_i * z_j`` with the 1-D `method`, so it
+        sees multiplicative structure only and costs one Python-level distance computation per
+        pair per label pair. ``"gaussian"`` compares the class-conditional 2-D Gaussians in closed
+        form -- it sees mean, spread and the class-conditional *correlation* -- vectorised over all
+        pairs at once (60 features: 6.0 s -> 0.05 s; no 63-feature cap). `method` and the scores in
+        `feature_differentiators` are not used by it (it computes its own marginals); the latter
+        only defines the candidate pool. Same return shape either way.
+    normalize : bool, default=True
+        ``engine="gaussian"`` only: divide by the largest lift so the best pair reads 1.0. Pass
+        False for raw lifts (Bhattacharyya separation summed over label pairs), the scale a
+        permutation null is compared on -- a *relative* score cannot tell "the strongest of
+        nothing" from a real interaction.
 
     Returns
     -------
@@ -683,12 +826,33 @@ def calculate_interaction_scores(
     Lift = score(z_i * z_j) - max(score(i), score(j)), measuring joint separation
     beyond either feature alone. See Friedman's H-statistic for similar concept.
     """
-    if method not in _VALID_DIFFERENTIATION_METHODS:
-        raise ValueError(f"method must be one of {_VALID_DIFFERENTIATION_METHODS}, got {method!r}")
+    if engine not in ("product", "gaussian"):
+        raise ValueError(f"engine must be 'product' or 'gaussian', got {engine!r}")
+    if engine == "product":
+        if method in _PAIRWISE_METHODS:
+            raise ValueError(
+                f"{method!r} is a pairwise scorer, not a 1-D metric: pass engine='gaussian' for the "
+                "vectorised pair lift, or calculate_gaussian_correlation(method=...) for per-feature scores"
+            )
+        if method not in _VALID_DIFFERENTIATION_METHODS:
+            raise ValueError(f"method must be one of {_VALID_DIFFERENTIATION_METHODS}, got {method!r}")
 
     individual_score = {col: score for col, score in feature_differentiators}
     pool = list(candidate_pool) if candidate_pool is not None else list(individual_score)
     pool = [f for f in pool if f in individual_score]
+
+    if engine == "gaussian":
+        if len(pool) < 2:
+            return []
+        _, lift = _pairwise_separation(X[pool], y)
+        iu, ju = np.triu_indices(len(pool), k=1)
+        vals = lift[iu, ju]
+        order = np.argsort(-vals, kind="stable")[:max_pairs]
+        ranked = [(pool[iu[k]], pool[ju[k]], float(vals[k])) for k in order]
+        if normalize and ranked and ranked[0][2] > 0:
+            top = ranked[0][2]
+            ranked = [(fi, fj, lift_ / top) for fi, fj, lift_ in ranked]
+        return ranked
 
     pairs = list(combinations(pool, 2))
     if len(pairs) > max_pairs:

@@ -70,6 +70,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         scoring_method="wasserstein",
         user_ranking=None,
         pareto_choice=0,
+        interaction_engine="product",
     ):
         """
         Initialize the TribbleRegressor.
@@ -85,13 +86,18 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                    this value, pulling in the next-best feature instead. Set to
                    <= 0.0 or >= 1.0 to disable.
             scoring_method: Feature scorer: "wasserstein" (default), "bhattacharyya",
-                   "composite" or "higher_order".
+                   "composite", "higher_order" or "interaction" (pairwise: sees
+                   features that matter only jointly).
             user_ranking: Optional user feature importance (mapping, (feature, score)
                    pairs, or ordered names, best first). With it, `top_n` features
                    are chosen Pareto-optimally over (data score, user importance);
                    see `tribblefis.feature_selection`. `top_n` is required and is the maximum number
                    of variables to keep (`top_p` is ignored). Requires
                    detect_interactions=False.
+            interaction_engine: Pair scorer used when detect_interactions=True: "product" (the
+                   default, unchanged) or "gaussian", the vectorised closed-form 2-D Gaussian lift
+                   (60 features: ~6 s -> ~0.05 s, and no 63-feature pair cap). See
+                   `gauss_math.calculate_interaction_scores`.
             pareto_choice: Which Pareto-optimal subset to use (0 = most data-driven,
                    -1 = most user-driven); all candidates land in `pareto_candidates_`.
             n_gaussians: Number of Gaussians per feature per label (0 for automatic).
@@ -216,6 +222,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self.scoring_method = scoring_method
         self.user_ranking = user_ranking
         self.pareto_choice = pareto_choice
+        self.interaction_engine = interaction_engine
         self.pareto_candidates_ = None
         self.n_gaussians = n_gaussians
         self.n_output_buckets = n_output_buckets
@@ -316,6 +323,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         if self.detect_interactions:
             interaction_scores = calculate_interaction_scores(
                 X_df, y_partitioned["y_bucket"], self.feature_differentiators_,
+                engine=self.interaction_engine,
             )
             self.interaction_pairs_ = take_top_interactions(
                 interaction_scores, top_p=self.interaction_top_p
