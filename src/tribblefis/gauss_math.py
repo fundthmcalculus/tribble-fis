@@ -636,7 +636,7 @@ def calculate_gaussian_correlation(
     print("\nFeatures Ranked by Differentiation Strength:")
     print("=" * 80)
     for rank, (feature, score) in enumerate(feature_differentiators, 1):
-        print(f"{rank:2d}. {feature:30s} - Score: {score:.4f}")
+        print(f"{rank:2d}. {str(feature):30s} - Score: {score:.4f}")
     print("=" * 80)
 
     return feature_differentiators
