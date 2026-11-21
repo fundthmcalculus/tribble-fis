@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
 
-from .gauss_math import create_gaussian_membership_dict, t_conorm, t_norm
+from .gauss_math import t_conorm, t_norm
 
 __all__ = ["RunningFiringStrengths", "metric_function", "grow_features"]
 
@@ -86,8 +86,6 @@ def metric_function(metric: str | Callable, pos_label=None) -> Callable:
 
 
 def grow_features(
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
     X_val: pd.DataFrame,
     y_val,
     order: list,
@@ -97,13 +95,12 @@ def grow_features(
     norms,
     max_n: int | None = None,
     patience: int | None = None,
-    n_gaussians=0,
-    max_samples=None,
-    random_state: int = 42,
+    fit_feature: Callable[[Any], Any],
 ) -> dict:
     """Add ``order``'s features one at a time; stop at the first size whose held-out score >= ``target``.
 
-    Memberships are fitted on ``X_train`` only and scored on ``X_val``. Returns a dict:
+    ``fit_feature(name)`` returns a one-feature model fitted on the TRAINING rows only (the
+    estimator binds the builder, the training frame and its settings); it is scored on ``X_val``. Returns a dict:
     ``history`` (one row per size: n, feature, score, best_so_far, step_seconds,
     cumulative_seconds), ``n_selected``, ``target_reached``, ``feature_models`` (the fitted
     memberships of every feature tried) and ``labels``.
@@ -128,15 +125,9 @@ def grow_features(
     for n, name in enumerate(order[:limit], start=1):
         step = time.perf_counter()
         # One feature's memberships, fitted once. (A feature fitted alone equals the same
-        # feature in a joint fit, so growing does not change what a fresh fit would build.)
-        fitted = create_gaussian_membership_dict(
-            X_train,
-            y_train,
-            top_n_var_names=[name],
-            n_gaussians=n_gaussians,
-            max_samples=max_samples,
-            random_state=random_state,
-        )
+        # feature in a joint fit -- checked for the Gaussian, trapezoid and triangular builders --
+        # so growing does not change what a fresh fit would build.)
+        fitted = fit_feature(name)
         feature_models[name] = fitted.feature_models[name]
         if running is None:
             running = RunningFiringStrengths(X_val, feature_models[name].ordered_keys, norms)
