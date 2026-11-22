@@ -142,11 +142,31 @@ def test_lambda_zero_is_importance_weighted_mean():
     assert wowa(xs, ps, 0.0) == pytest.approx(np.sum(x * p) / p.sum(), abs=1e-6)
 
 
-def test_large_lambda_tends_to_max_and_negative_to_min():
-    x, p, xs, ps = _random_wowa_case()
-    span = x.max() - x.min()
-    assert wowa(xs, ps, 200.0) == pytest.approx(x.max(), abs=2e-2 * span)
-    assert wowa(xs, ps, -200.0) == pytest.approx(x.min(), abs=2e-2 * span)
+def test_extreme_lambda_approaches_max_and_min_at_the_bounded_rate():
+    """lam -> +inf gives the max, lam -> -inf the min -- but at a rate set by
+    the importance of the extreme sample, because Q'(0) is finite (that is the
+    point of this quantifier, see the leak test below):
+
+        |WOWA - max| <= span * exp(-lam * p_top)      (lam > 0)
+        |WOWA - min| <= span * exp(-|lam| * p_bottom) (lam < 0)
+
+    An earlier version asserted a fixed tolerance on one random draw; it held
+    or failed depending on which draw xdist handed it. This checks the bound
+    on many draws, including tiny extreme-sample importances."""
+    rng = np.random.default_rng(1270)
+    for _ in range(200):
+        x = rng.normal(size=7)
+        p = rng.uniform(0.001, 1.0, size=7)
+        order, xs = _desc(x)
+        ps = p[order] / p.sum()
+        span = x.max() - x.min()
+        for lam in (20.0, 200.0):
+            assert x.max() - wowa(xs, ps, lam) <= span * np.exp(-lam * ps[0]) / -np.expm1(-lam) + 1e-12
+            assert wowa(xs, ps, -lam) - x.min() <= span * np.exp(-lam * ps[-1]) / -np.expm1(-lam) + 1e-12
+    # And with comparable importances the limit is effectively reached.
+    xs = np.sort(rng.normal(size=7))[::-1]
+    assert wowa(xs, np.ones(7), 200.0) == pytest.approx(xs[0], abs=1e-9)
+    assert wowa(xs, np.ones(7), -200.0) == pytest.approx(xs[-1], abs=1e-9)
 
 
 def test_uniform_importance_matches_yager_owa_weights():

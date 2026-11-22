@@ -123,7 +123,7 @@ they live in the benchmark (§7), per the repo's benchmark convention.
 | Group | Property | Tests |
 |---|---|---|
 | A. Axioms | min ≤ WOWA ≤ max; idempotent; monotone in every argument; symmetric under uniform importance; importance scale-invariant; zero mass rejected | 6 (×λ grid) |
-| B. Special cases | Q is a RIM quantifier for λ∈[−200,200]; dQ/dx, dQ/dλ vs finite differences; λ=0 → weighted mean; λ→±∞ → max/min; uniform importance → Yager OWA weights; orness formula; **leak regression vs power quantifier**; crisp limit = hand tercile means; crisp limit + λ=±200 = per-third max/min | 9 |
+| B. Special cases | Q is a RIM quantifier for λ∈[−200,200]; dQ/dx, dQ/dλ vs finite differences; λ=0 → weighted mean; λ→±∞ → max/min within the exact bound `span·e^{−|λ|·p_extreme}` (200 draws); uniform importance → Yager OWA weights; orness formula; **leak regression vs power quantifier**; crisp limit = hand tercile means; crisp limit + λ=±200 = per-third max/min | 9 |
 | C. Partition | Ruspini (sums to 1, non-negative); crisp limit = nearest centre; underflowing segment stays finite | 3 |
 | D. Inputs | padding cannot leak across lengths; array/list/DataFrame agree, names propagate; length-1 sequence; validation (6 cases); transform feature mismatch; misaligned/non-finite y | 6 |
 | E. Learning | full-objective analytic gradient vs finite differences; surrogate = sklearn `Ridge` on same folds; objective never worsens; learned segment lands within 0.08 of a planted phase with loss halved; spike target → orness > 0.8; ablation switches freeze params; unsupervised fit = soft even partition; segments sorted, report consistent | 8 |
