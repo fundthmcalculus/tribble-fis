@@ -130,3 +130,71 @@ cost (the `O(n_choose_2)` scoring pass -- see the `interaction-score*`
 benchmark workloads in `benchmarks/workloads.py`) for a shortlist that
 correctly comes back near-empty; it does not need to be enabled by default,
 which is why every new parameter defaults to off.
+
+## A faster pair engine, and a per-feature metric built on it
+
+`calculate_interaction_scores(..., engine="gaussian")` (default stays `"product"`, unchanged)
+compares the class-conditional **2-D Gaussians** of each pair in closed form instead of scoring a
+product column with a 1-D metric. The Bhattacharyya distance between two Gaussians sees mean,
+spread and the class-conditional *correlation*, and the whole `n_choose_2` grid is one vectorised
+NumPy expression per label pair. Lift keeps its meaning (joint separation beyond the better
+marginal; `>= 0`, because the distance never shrinks when a variable is added). It is
+affine-invariant, so no feature scaling is needed.
+
+| features | pairs | `product` (Wasserstein) | `gaussian` |
+|---|---|---|---|
+| 11 | 55 | rank 1, 0.20 s | rank 1, 0.01 s |
+| 30 | 435 | rank 1, 1.50 s | rank 1, 0.06 s |
+| 60 | 1,770 | rank 1, 5.58 s | rank 1, 0.05 s |
+
+*(XOR, n = 20,000, rank of the true pair; `benchmarks/interaction_engine_comparison.py`. Seconds are
+host-specific, the ranks are not.)* Detection is the same on this problem; the difference is cost
+and the cap: `product` refuses more than 63 features by default (`max_pairs=2000`), while for
+`gaussian` `max_pairs` is the number of best pairs *returned*, never an error.
+
+The same computation backs `calculate_gaussian_correlation(method="interaction")`: each feature
+scores as its own separation plus its best partner's *excess* joint separation, so a noise column
+paired with an informative one earns about nothing. Unlike the four univariate scorers it ranks an
+XOR pair first, where they put it at noise level (mean rank ~6 of 11).
+
+## Crossover features for `TribbleClassifier`
+
+`TribbleRegressor` could already use an interaction: `full-2nd` consequents contain the cross
+term. `TribbleClassifier` could not -- it combines per-feature memberships, and XOR classes share
+every marginal, so **selecting both members of an XOR pair does not help** (accuracy 0.518 vs
+chance, measured). `detect_interactions=True` therefore appends the **product** of each strong pair
+as a new column, built from the original columns and recomputed at `predict` time, and the cross
+columns then compete in the normal ranking like any other feature (`max_cross_features`, default 3).
+
+The floor matters. Lifts are normalised by the largest lift, so the best pair of pure noise reads
+1.0 and passes any relative threshold -- a first version of this did exactly that. A pair is kept
+only if its **raw** lift beats the largest lift seen in `interaction_n_permutations` (default 20)
+label shuffles, so with no interaction a spurious pair appears with probability about
+`1 / (n_permutations + 1)`.
+
+Measured (`benchmarks/interaction_engine_comparison.py`, 100 datasets per row):
+
+| | result |
+|---|---|
+| false alarms, no interaction (noise; additive) at n = 500 / 2,000 and 11 / 50 features | 32 of 600 datasets (5.3 %; 3-7 % per setting) |
+| power, XOR at n = 300 to 20,000, up to 50 features | pair found first in every run (30/30 per setting) |
+| cost of detection (20 permutations) | 0.04-0.06 s at 11 features, 0.19 s at 50, 0.53 s at 47 features and n = 20,000 |
+| XOR classification accuracy, `top_n=2`, n = 3,000, ten seeds | 0.506 ± 0.016 without, **0.991 ± 0.003** with `detect_interactions=True` |
+
+**On real data it did not help.** Leak-free PhiUSIIL (47 features, ten seeds, `top_n` 5 and 10,
+Wasserstein and Bhattacharyya): pairs cleared the floor in 9 of 10 seeds (2.4 on average), but no
+cross column ever won a slot in the selection, so accuracy was identical to four digits on all
+ten seeds in all four configurations, at about 0.5 s extra per fit. That is a null result on one
+dataset, not a verdict on the feature.
+
+## Limits
+
+- Pairs only. A three-way parity (`y = [x0 * x1 * x2 > 0]`) has no pairwise signal and stays
+  invisible to every method here.
+- The Gaussian engine models each class as a Gaussian per pair. It finds structure that shows up in
+  the means, variances and correlations; a pair separated only by higher moments can be missed.
+  Missing values are mean-imputed on this path (pairwise covariance has no per-column `dropna()`).
+- The cross column is a raw product. The ~5 % false-alarm rate above applies per dataset when there
+  is genuinely no interaction.
+- `TribbleSequenceClassifier` wraps `TribbleClassifier` layers; crossover columns there are
+  untested.
