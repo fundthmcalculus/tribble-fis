@@ -120,3 +120,98 @@ def projected_gradient_solve(
         step = min(t * 2.0, scale)
 
     return SubSolveResult(x=best_x, fun=best_f)
+
+
+def projected_lbfgs_solve(
+    fun_grad: typing.Callable, x0: np.ndarray, bounds, max_evals: int = 300,
+    memory: int = 10, tol: float = 1e-9,
+) -> SubSolveResult:
+    """Box-bounded limited-memory BFGS for a problem with an exact gradient.
+
+    The sibling of `projected_gradient_solve` for problems with more than a
+    handful of parameters on very different curvature scales, where
+    steepest descent zig-zags and stalls. Added for
+    `temporal_aggregation.FuzzyTemporalAggregator` (issue #127): on its
+    surrogate objective, steepest descent plateaued at a CV loss ~40% above
+    what curvature-aware descent reaches from the same start and budget.
+
+    Directions come from the standard two-loop L-BFGS recursion; each trial
+    point is projected onto the box and accepted under an Armijo condition on
+    the *projected* step. A direction that is not a descent direction resets
+    the memory to steepest descent. Curvature pairs with ``s.y <= 0`` are
+    skipped, so the implicit Hessian stays positive definite.
+
+    Same contract as `projected_gradient_solve`: `fun_grad(x)` returns
+    `(value, gradient)`, the evaluation budget is exact, and the result is
+    never worse than `x0`.
+    """
+    lo = np.array([b[0] for b in bounds], dtype=float)
+    hi = np.array([b[1] for b in bounds], dtype=float)
+    x = np.clip(np.asarray(x0, dtype=float), lo, hi)
+    scale = float(np.mean(hi - lo)) or 1.0
+
+    f, g = fun_grad(x)
+    f = float(f)
+    best_x, best_f = x, f
+    n_evals = 1
+    s_hist: list[np.ndarray] = []
+    y_hist: list[np.ndarray] = []
+
+    while n_evals < max_evals:
+        if np.max(np.abs(x - np.clip(x - g, lo, hi))) < tol:
+            break  # projected-gradient stationarity
+        # Two-loop recursion.
+        q = g.copy()
+        rhos = [1.0 / float(np.dot(yv, sv)) for sv, yv in zip(s_hist, y_hist)]
+        alphas = []
+        for sv, yv, rho in zip(reversed(s_hist), reversed(y_hist), reversed(rhos)):
+            a = rho * float(np.dot(sv, q))
+            alphas.append(a)
+            q -= a * yv
+        if s_hist:
+            q *= float(np.dot(s_hist[-1], y_hist[-1])) / float(np.dot(y_hist[-1], y_hist[-1]))
+        else:
+            q *= 0.25 * scale / max(float(np.linalg.norm(g)), 1e-300)
+        for sv, yv, rho, a in zip(s_hist, y_hist, rhos, reversed(alphas)):
+            b = rho * float(np.dot(yv, q))
+            q += (a - b) * sv
+        d = -q
+        # Do not push against an active bound.
+        d = np.where(((x <= lo) & (d < 0)) | ((x >= hi) & (d > 0)), 0.0, d)
+        if float(np.dot(g, d)) >= 0.0:
+            s_hist.clear()
+            y_hist.clear()
+            d = -g * (0.25 * scale / max(float(np.linalg.norm(g)), 1e-300))
+
+        t = 1.0
+        accepted = False
+        while n_evals < max_evals:
+            x_new = np.clip(x + t * d, lo, hi)
+            step = x_new - x
+            if np.max(np.abs(step)) < 1e-14 * scale:
+                break
+            f_new, g_new = fun_grad(x_new)
+            f_new = float(f_new)
+            n_evals += 1
+            if f_new <= f + 1e-4 * float(np.dot(g, step)):
+                accepted = True
+                break
+            t *= 0.5
+        if not accepted:
+            if s_hist:          # retry once from steepest descent
+                s_hist.clear()
+                y_hist.clear()
+                continue
+            break
+        yv = g_new - g
+        if float(np.dot(step, yv)) > 1e-12:
+            s_hist.append(step)
+            y_hist.append(yv)
+            if len(s_hist) > memory:
+                s_hist.pop(0)
+                y_hist.pop(0)
+        x, f, g = x_new, f_new, g_new
+        if f < best_f:
+            best_x, best_f = x, f
+
+    return SubSolveResult(x=best_x, fun=best_f)
