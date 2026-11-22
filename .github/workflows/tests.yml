@@ -70,7 +70,7 @@ jobs:
       # legs -- most of the wall-clock this workflow was burning before a
       # single test ran.
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v10.4.0
         with:
           enable-cache: true
           cache-suffix: ${{ matrix.kernel }}
