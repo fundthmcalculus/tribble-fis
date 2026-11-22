@@ -97,6 +97,7 @@ from tribblefis.temporal_aggregation import FuzzyTemporalAggregator, TribbleTime
 agg = FuzzyTemporalAggregator(n_segments=3).fit(cycles, y)   # cycles: list of (T_i, F)
 Z = agg.transform(cycles)          # DataFrame, columns "{sensor}__seg{k}"
 agg.segment_report()               # centre, width, lambda, orness per segment x sensor
+agg.placement_report(X)            # #127 uniformity diagnostic: sample mass per segment, entropy
 
 model = TribbleTimeSeriesRegressor(n_segments=3).fit(cycles, y)   # MimoGaussianPredictor head
 model.predict(test_cycles)         # ndarray for 1-D y, DataFrame for multi-output
@@ -126,6 +127,7 @@ they live in the benchmark (§7), per the repo's benchmark convention.
 | B. Special cases | Q is a RIM quantifier for λ∈[−200,200]; dQ/dx, dQ/dλ vs finite differences; λ=0 → weighted mean; λ→±∞ → max/min within the exact bound `span·e^{−|λ|·p_extreme}` (200 draws); uniform importance → Yager OWA weights; orness formula; **leak regression vs power quantifier**; crisp limit = hand tercile means; crisp limit + λ=±200 = per-third max/min | 9 |
 | C. Partition | Ruspini (sums to 1, non-negative); crisp limit = nearest centre; underflowing segment stays finite | 3 |
 | D. Inputs | padding cannot leak across lengths; array/list/DataFrame agree, names propagate; length-1 sequence; validation (6 cases); transform feature mismatch; misaligned/non-finite y | 6 |
+| E2. Placement diagnostic | mass sums to 1; even partition on uniform marginal is exactly uniform; bunched centres flagged (entropy, max deviation); K=1 trivially uniform; unfitted and empty input rejected | 5 |
 | E. Learning | full-objective analytic gradient vs finite differences; surrogate = sklearn `Ridge` on same folds; objective never worsens; learned segment lands within 0.08 of a planted phase with loss halved; spike target → orness > 0.8; ablation switches freeze params; unsupervised fit = soft even partition; segments sorted, report consistent | 8 |
 | F. Contract | deterministic under seed; end-to-end single- and multi-output with default MIMO head; custom base estimator cloned not mutated; `get_params`/`clone` round-trip | 5 |
 | Solver | quadratic minimum; Rosenbrock (beats steepest descent at equal budget); active box constraints; never worse than start; exact budget | 4 |
@@ -154,9 +156,16 @@ Benchmark protocol (`benchmarks/temporal_aggregation.py`, not in CI):
   where a fourth basin reached 0.078 (scipy L-BFGS-B found the same spread from
   the same starts, so this is the landscape, not the solver). `n_restarts`
   trades fit time for this.
-- **Surrogate ≠ downstream model.** Segments are chosen for a linear head, then
-  frozen for the FIS. End-to-end learning through `TribbleRegressor` would
-  need its gradient and is out of scope.
+- **Surrogate ≠ downstream model. Decision: stays linear (#127 item 3).**
+  Segments are chosen for a ridge head, then frozen for `MimoGaussianPredictor`.
+  End-to-end learning was not implemented because the downstream fit is not
+  differentiable in the aggregator's parameters: it ranks features, partitions
+  outputs and selects `top_n` (discrete), then solves consequents in closed
+  form. Making it end-to-end would need a new learner or a derivative-free
+  outer loop, not a change to this module. The gap is measured in the table
+  section 7: the ridge head reaches R² 0.905 on the learned features, while the
+  FIS head reaches 0.687 ± 0.069 on the same features. Reopen this if that gap
+  matters for a workload.
 - **Fit cost.** Seconds to tens of seconds for hundreds of cycles; O(N·K·F·L)
   memory per evaluation. Not tuned for full-rate N-CMAPSS (subsample first).
 - **Shared segments across sensors.** Centres/widths are shared; only the

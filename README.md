@@ -72,6 +72,7 @@ model = TribbleTimeSeriesRegressor(n_segments=3)   # MimoGaussianPredictor head
 model.fit(train_cycles, y_train)                    # list of (T_i, F) arrays/DataFrames
 y_pred = model.predict(test_cycles)
 print(model.aggregator_.segment_report())           # where each segment sits, its orness
+print(model.aggregator_.placement_report(train_cycles)["normalized_entropy"])  # 1 = even coverage of sampled time
 ```
 
 ## Optional compiled kernel

@@ -614,6 +614,57 @@ class FuzzyTemporalAggregator(TransformerMixin, BaseEstimator):
                 })
         return pd.DataFrame(rows)
 
+    def placement_report(self, X) -> dict:
+        """Uniformity diagnostic for where the learned segments sit on the data (#127).
+
+        Each sampled time point ``tau`` (pooled over sequences and features) is
+        split across segments by the Ruspini partition. ``mass_k`` is the
+        fraction of sampled time that segment ``k`` sees. Even coverage is
+        ``1/K`` per segment; a segment with near-zero mass is starved and a
+        cluster of centres in one dense region is bunching.
+
+        This is a diagnostic, not a penalty: a learned placement is meant to
+        concentrate on the signal, so low uniformity is not an error by itself.
+        Compare it with the even-partition baseline and with downstream error.
+
+        Args:
+            X: sequences, same format as :meth:`fit`.
+
+        Returns:
+            dict with ``segments`` (DataFrame: segment, center, width, mass,
+            even_mass, deviation), ``normalized_entropy`` (1 = even coverage,
+            0 = all mass in one segment), and ``max_deviation`` (largest
+            ``|mass_k - 1/K|``).
+        """
+        check_is_fitted(self, "centers_")
+        seqs = pad_sequences(X)
+        tau = seqs.tau[seqs.mask]
+        if tau.size == 0:
+            raise ValueError("no sampled time points to place segments against")
+        mu = temporal_partition(tau, self.centers_, self.widths_)
+        mass = mu.mean(axis=0)
+        mass = mass / mass.sum()
+        k = len(mass)
+        even = np.full(k, 1.0 / k)
+        if k == 1:
+            entropy = 1.0
+        else:
+            nz = mass[mass > 0]
+            entropy = float(-np.sum(nz * np.log(nz)) / np.log(k))
+        segments = pd.DataFrame({
+            "segment": np.arange(k),
+            "center": self.centers_,
+            "width": self.widths_,
+            "mass": mass,
+            "even_mass": even,
+            "deviation": mass - even,
+        })
+        return {
+            "segments": segments,
+            "normalized_entropy": entropy,
+            "max_deviation": float(np.max(np.abs(mass - even))),
+        }
+
 
 # --------------------------------------------------------------------------
 # Estimator

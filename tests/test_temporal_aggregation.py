@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from sklearn.base import clone
+from sklearn.exceptions import NotFittedError
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import KFold
 
@@ -409,6 +410,60 @@ def test_segments_reported_in_centre_order():
     report = agg.segment_report()
     assert len(report) == 3 * 2
     np.testing.assert_allclose(report["orness"], quantifier_orness(report["lambda"]))
+
+
+# ------------------------------------------- E2. placement uniformity (#127 #2)
+
+def _uniform_grid_sequences(n_seq=4, length=30):
+    """Every sequence samples tau on the same symmetric grid (uniform marginal)."""
+    return [np.zeros((length, 1)) for _ in range(n_seq)]
+
+
+def test_placement_mass_is_a_distribution_over_segments():
+    seqs, y = _planted(seed=8)
+    agg = FuzzyTemporalAggregator(**FAST).fit(seqs, y)
+    rep = agg.placement_report(seqs)
+    seg = rep["segments"]
+    assert len(seg) == 3
+    np.testing.assert_allclose(seg["mass"].sum(), 1.0, atol=1e-12)
+    assert np.all(seg["mass"] >= 0)
+    np.testing.assert_allclose(seg["deviation"], seg["mass"] - seg["even_mass"])
+    assert 0.0 <= rep["normalized_entropy"] <= 1.0
+    assert rep["max_deviation"] == pytest.approx(np.max(np.abs(seg["deviation"])))
+
+
+def test_even_partition_on_uniform_marginal_is_perfectly_uniform():
+    agg = FuzzyTemporalAggregator(n_segments=3).fit(_uniform_grid_sequences())
+    rep = agg.placement_report(_uniform_grid_sequences())
+    np.testing.assert_allclose(rep["segments"]["mass"], 1 / 3, atol=1e-6)
+    assert rep["normalized_entropy"] == pytest.approx(1.0, abs=1e-6)
+    assert rep["max_deviation"] < 1e-6
+
+
+def test_bunched_centres_are_flagged_as_starved_segments():
+    agg = FuzzyTemporalAggregator(n_segments=3).fit(_uniform_grid_sequences())
+    # Pile every centre into the first 10% of time: two segments see almost
+    # no sampled time, the diagnostic must say so.
+    agg.centers_ = np.array([0.02, 0.05, 0.08])
+    agg.widths_ = np.array([0.02, 0.02, 0.02])
+    rep = agg.placement_report(_uniform_grid_sequences())
+    assert rep["normalized_entropy"] < 0.5
+    assert rep["max_deviation"] > 0.4
+
+
+def test_single_segment_placement_is_trivially_uniform():
+    agg = FuzzyTemporalAggregator(n_segments=1).fit(_uniform_grid_sequences())
+    rep = agg.placement_report(_uniform_grid_sequences())
+    assert rep["normalized_entropy"] == 1.0
+    assert rep["max_deviation"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_placement_report_requires_fit_and_samples():
+    with pytest.raises(NotFittedError):
+        FuzzyTemporalAggregator().placement_report(_uniform_grid_sequences())
+    agg = FuzzyTemporalAggregator(n_segments=2).fit(_uniform_grid_sequences())
+    with pytest.raises(ValueError):
+        agg.placement_report([np.zeros((0, 1))])
 
 
 # ------------------------------------------------- F. estimator contract
