@@ -157,6 +157,22 @@ Benchmark protocol (`benchmarks/temporal_aggregation.py`, not in CI):
   where a fourth basin reached 0.078 (scipy L-BFGS-B found the same spread from
   the same starts, so this is the landscape, not the solver). `n_restarts`
   trades fit time for this.
+- **Derivative-free backward search (`search="backward"`).** TRIBBLE-style:
+  the target is cut into `n_buckets` first, then candidate Gaussian windows
+  (centre x width x quantifier, 171 candidates) are scored by how well their
+  aggregate separates those buckets (the #253 pair scorers). No gradient and
+  no head fit in the loop; about 1 s per fit. Measured on the planted
+  generator, 8 seeds, 3 segments, MIMO head, held-out R²:
+
+  | arm | mean R² | wins vs even | time/fit |
+  |---|---|---|---|
+  | even partition | −2.22 | — | 0.9 s |
+  | backward (derivative-free) | −1.51 | 6/8 | 1.1 s |
+  | ridge (gradient) | −1.05 | ridge beats backward 5/8 | 8 s |
+
+  The derivative-free search beats the even partition but not the gradient
+  ridge arm here. The base MIMO head is weak on this generator (most R² is
+  negative), so treat this as a limited test.
 - **Surrogate ≠ downstream model (#127 item 3: implemented as an option).**
   `head="ridge"` (default) fits segments against a ridge head with an exact
   gradient. `head="downstream"` fits them against the real `base_estimator`
