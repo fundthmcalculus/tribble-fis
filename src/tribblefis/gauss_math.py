@@ -477,6 +477,7 @@ def _select_uncorrelated_top_n(
     ranked_features: list[tuple[Any, Any]],
     top_n: int,
     correlation_threshold: float,
+    redundant_out: list | None = None,
 ) -> list[tuple[Any, Any]]:
     """Greedily select the top N ranked features, skipping redundant ones.
 
@@ -485,7 +486,8 @@ def _select_uncorrelated_top_n(
     `correlation_threshold`. A rejected candidate is dropped with a warning and
     the walk continues further down the ranking to fill the slot, so the
     returned list still has `top_n` entries whenever enough uncorrelated
-    features exist.
+    features exist. It can be shorter only when the ranking runs out of
+    uncorrelated candidates.
 
     Parameters
     ----------
@@ -498,6 +500,9 @@ def _select_uncorrelated_top_n(
     correlation_threshold : float
         Features correlated at or above this threshold (in absolute value)
         are treated as redundant.
+    redundant_out : list or None
+        If given, one dict per dropped feature is appended:
+        ``{"feature", "partner", "correlation"}``.
 
     Returns
     -------
@@ -533,13 +538,17 @@ def _select_uncorrelated_top_n(
                 f"{correlation_threshold} (redundant).",
                 stacklevel=2,
             )
+            if redundant_out is not None:
+                redundant_out.append(
+                    {"feature": col, "partner": redundant_with, "correlation": float(corr)}
+                )
             continue
         selected.append((col, score))
 
     return selected
 
 
-def _finalise_ranking(X, feature_differentiators, top_n, correlation_threshold):
+def _finalise_ranking(X, feature_differentiators, top_n, correlation_threshold, redundant_out=None):
     """Drop non-finite scores, sort, apply `top_n` (+ redundancy filter), normalise, print.
 
     The shared tail of `calculate_gaussian_correlation`, so the univariate scorers and the
@@ -555,7 +564,7 @@ def _finalise_ranking(X, feature_differentiators, top_n, correlation_threshold):
     if top_n > 0:
         if 0.0 < correlation_threshold < 1.0:
             feature_differentiators = _select_uncorrelated_top_n(
-                X, feature_differentiators, top_n, correlation_threshold
+                X, feature_differentiators, top_n, correlation_threshold, redundant_out
             )
         else:
             feature_differentiators = feature_differentiators[:top_n]
@@ -692,6 +701,7 @@ def calculate_gaussian_correlation(
     method: str = "wasserstein",
     top_n: int = -1,
     correlation_threshold: float = 0.85,
+    redundant_out: list | None = None,
 ) -> list[tuple[Any, Any]]:
     """Calculate distance metric between distributions for each feature across different labels.
 
@@ -716,7 +726,11 @@ def calculate_gaussian_correlation(
         When `top_n` > 0, a candidate feature is dropped -- with a warning -- if
         its absolute Pearson correlation with an already-selected feature is >=
         this threshold; the next-best feature is then pulled in to fill the slot.
+        The result is shorter than `top_n` only when no uncorrelated candidates remain.
         Set to a value <= 0.0 or >= 1.0 to disable this check.
+    redundant_out : list or None
+        If given, receives one dict per dropped feature:
+        ``{"feature", "partner", "correlation"}``.
 
     Returns
     -------
@@ -732,7 +746,9 @@ def calculate_gaussian_correlation(
         raise ValueError(f"method must be one of {_VALID_SCORING_METHODS}, got {method!r}")
 
     if method in _PAIRWISE_METHODS:
-        return _finalise_ranking(X, _interaction_feature_scores(X, y), top_n, correlation_threshold)
+        return _finalise_ranking(
+            X, _interaction_feature_scores(X, y), top_n, correlation_threshold, redundant_out
+        )
 
     # Taken from the ORIGINAL y, before the conversion below, so the label
     # enumeration order -- which decides the order the pairwise scores are
@@ -766,7 +782,7 @@ def calculate_gaussian_correlation(
     with ThreadPoolExecutor(max_workers=1) as executor:
         feature_differentiators = list(executor.map(process_column, X.columns))
 
-    return _finalise_ranking(X, feature_differentiators, top_n, correlation_threshold)
+    return _finalise_ranking(X, feature_differentiators, top_n, correlation_threshold, redundant_out)
 
 
 def calculate_interaction_scores(
@@ -1596,7 +1612,10 @@ def take_top_features(
         Number of features kept and list of feature names.
     """
     if top_n > 0:
-        return top_n, [s for s, v in feature_differentiators[:top_n]]
+        # Report what was actually kept: the ranking can hold fewer than top_n features
+        # after the redundancy filter (see `_select_uncorrelated_top_n`).
+        kept = [s for s, v in feature_differentiators[:top_n]]
+        return len(kept), kept
 
     top_n = sum(v >= (1 - top_p) for _, v in feature_differentiators)
     top_n_vars = feature_differentiators[:top_n]
