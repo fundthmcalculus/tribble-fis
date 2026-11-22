@@ -222,9 +222,11 @@ is what `predict()`'s alpha-combined estimate staying inside
 - Gaussian, trapezoidal, or triangular memberships (#144 -- the alpha-plane
   kernel (`gt2_kernel.py`) is fully type-agnostic; only each type's own
   `alpha_cut` (`gauss_data.py`) needed type-specific math)
-- Triangular secondary membership grade only (the simplest closed-form
-  alpha-cut; other shapes, e.g. Gaussian-on-Gaussian, are a possible
-  follow-up if a real workload needs the extra expressiveness)
+- Triangular secondary membership grade only. Gaussian-on-Gaussian was
+  evaluated and rejected (#145, `docs/gt2-secondary-family-evaluation.md`):
+  under alpha-planes it is only a reshaped width schedule, no effect on
+  accuracy, none on conformal intervals, and none on classification
+  intervals (alpha=0 plane by construction)
 - Reuses every IT2 kernel function verbatim, once per alpha-plane
 
 **Extensibility**: mirrors IT2's own list -- other norm families, GPU
