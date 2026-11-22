@@ -45,7 +45,11 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         correlation_threshold : float
             When top_n > 0, drop a candidate feature whose absolute correlation
             with an already-selected feature is >= this value, pulling in the
-            next-best feature instead. Set to <= 0.0 or >= 1.0 to disable.
+            next-best feature instead. The fit keeps fewer than top_n features
+            only when no uncorrelated candidates remain; `top_n_actual_` reports
+            the count kept. Dropped features are listed in `redundant_features_`.
+            Set to <= 0.0 or >= 1.0 to disable (the default 0.85 is active).
+            `fit_growing` uses `growth_skipped_` for the same information.
         n_gaussians : int or dict
             Gaussians per feature per label (0=auto, dict for per-label override).
             No effect when member_function="trap" and trapz_method="fast": that
@@ -97,6 +101,9 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         self.model_ = None
         self.top_features_ = None
         self.top_n_actual_ = None
+        #: Features the redundancy filter dropped in the last `fit`, each as
+        #: ``{"feature", "partner", "correlation"}`` (partner = the kept feature it correlates with).
+        self.redundant_features_: list[dict] = []
         self.feature_differentiators_: list[tuple[Any, Any]] = []
         self.classes_ = None
         self.feature_names_in_: list[str] = []
@@ -183,10 +190,12 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
 
         # 1. Calculate feature differentiators
         # Pass top_n to avoid computing scores for features we won't use
+        self.redundant_features_ = []
         self.feature_differentiators_, self.pareto_candidates_ = rank_features(
             X_df, y_series, method=self.scoring_method, top_n=self.top_n,
             correlation_threshold=self.correlation_threshold,
             user_ranking=self.user_ranking, pareto_choice=self.pareto_choice,
+            redundant_out=self.redundant_features_,
         )
 
         # 2. Select top features
@@ -341,6 +350,7 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
         self.growth_history_ = result["history"]
         self.growth_order_ = order
         self.growth_skipped_ = skipped
+        self.redundant_features_ = []  # fit_growing reports redundancy via growth_skipped_
         self.n_features_selected_ = n_selected
         self.target_reached_ = result["target_reached"]
         self.growth_seconds_ = float(result["history"]["cumulative_seconds"].iloc[-1])

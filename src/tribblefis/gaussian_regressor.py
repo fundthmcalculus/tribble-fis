@@ -83,8 +83,12 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                    >= (1 - top_p). Ignored if top_n > 0.
             correlation_threshold: When top_n > 0, drop a candidate feature whose
                    absolute correlation with an already-selected feature is >=
-                   this value, pulling in the next-best feature instead. Set to
-                   <= 0.0 or >= 1.0 to disable.
+                   this value, pulling in the next-best feature instead. The fit
+                   keeps fewer than top_n features only when no uncorrelated
+                   candidates remain; `top_n_actual_` reports the count kept.
+                   Dropped features are listed in `redundant_features_`. Set to
+                   <= 0.0 or >= 1.0 to disable (the default 0.85 is active).
+                   `fit_growing` uses `growth_skipped_` for the same information.
             scoring_method: Feature scorer: "wasserstein" (default), "bhattacharyya",
                    "composite", "higher_order" or "interaction" (pairwise: sees
                    features that matter only jointly).
@@ -205,6 +209,9 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self.model_ = None
         self.top_features_ = None
         self.top_n_actual_ = None
+        #: Features the redundancy filter dropped in the last `fit`, each as
+        #: ``{"feature", "partner", "correlation"}`` (partner = the kept feature it correlates with).
+        self.redundant_features_: list[dict] = []
         self.feature_differentiators_ = None
         self.feature_names_in_ = []
         self.y_bucket_mean_ = None
@@ -303,10 +310,12 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         top_n_for_correlation = -1 if self.detect_interactions else self.top_n
         if self.user_ranking is not None and self.detect_interactions:
             raise ValueError("user_ranking cannot be combined with detect_interactions=True")
+        self.redundant_features_ = []
         self.feature_differentiators_, self.pareto_candidates_ = rank_features(
             X_df, y_partitioned["y_bucket"], method=self.scoring_method,
             top_n=top_n_for_correlation, correlation_threshold=self.correlation_threshold,
             user_ranking=self.user_ranking, pareto_choice=self.pareto_choice,
+            redundant_out=self.redundant_features_,
         )
 
         # Select top features
@@ -506,6 +515,7 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
         self.growth_history_ = result["history"]
         self.growth_order_ = order
         self.growth_skipped_ = skipped
+        self.redundant_features_ = []  # fit_growing reports redundancy via growth_skipped_
         self.n_features_selected_ = n_selected
         self.target_reached_ = result["target_reached"]
         self.growth_seconds_ = float(result["history"]["cumulative_seconds"].iloc[-1])

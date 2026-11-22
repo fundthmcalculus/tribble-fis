@@ -177,6 +177,7 @@ def rank_features(
     correlation_threshold: float = 0.85,
     user_ranking=None,
     pareto_choice: int = 0,
+    redundant_out: list | None = None,
 ):
     """Feature ranking for the estimators: plain scoring, or Pareto against a user ranking.
 
@@ -187,12 +188,16 @@ def rank_features(
     `pareto_choice` (0 = data-led ... last = user-led) becomes the result.
     The redundancy filter (`correlation_threshold`) is not applied on that path:
     the subset is chosen by the two objectives alone.
+
+    `redundant_out`, if given, receives one dict per feature the redundancy
+    filter dropped (see `gauss_math._select_uncorrelated_top_n`).
     """
     from .gauss_math import calculate_gaussian_correlation
 
     if user_ranking is None:
         return calculate_gaussian_correlation(
-            X, y, method=method, top_n=top_n, correlation_threshold=correlation_threshold
+            X, y, method=method, top_n=top_n, correlation_threshold=correlation_threshold,
+            redundant_out=redundant_out,
         ), None
     if top_n <= 0:
         raise ValueError("user_ranking requires top_n > 0 (the size of the subset to choose)")
