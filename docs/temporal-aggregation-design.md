@@ -170,7 +170,33 @@ Benchmark protocol (`benchmarks/temporal_aggregation.py`, not in CI):
 
 ## 7. Measured results
 
-_Pending: filled in from `benchmarks/temporal_aggregation.py` runs in a follow-up commit on this branch._
+`uv run python -m benchmarks.temporal_aggregation --seeds 8` (raw numbers:
+`benchmarks/results/temporal-aggregation.json`). 240 cycles, phase τ\*=0.68,
+8 paired seeds, mean ± SEM.
+
+| arm | feats | ridge R² | Δ vs crisp-thirds | wins | FIS R² |
+|---|---|---|---|---|---|
+| whole-cycle | 20 | 0.825 ± 0.015 | −0.038 ± 0.010 | 0/8 | 0.112 ± 0.122 |
+| crisp-thirds | 60 | 0.863 ± 0.011 | — | — | −5.465 ± 0.291 |
+| soft-thirds | 12 | 0.218 ± 0.073 | −0.645 ± 0.068 | 0/8 | −0.018 ± 0.088 |
+| **learned** | 12 | **0.905 ± 0.010** | **+0.042 ± 0.009** | **7/8** | **0.687 ± 0.069** |
+
+Reading it:
+
+- **Learning, not fuzziness, does the work.** The un-learned soft partition is
+  the worst arm; the learned one the best. Fuzziness alone blurs the signal.
+- **It finds the mechanism.** Every seed placed a segment centre within ~0.01
+  of the planted phase 0.68, and the spike sensor `s1` got orness ≈ 1.0
+  (max-like) in at least one segment — both found from data, neither given.
+- **Five times fewer features** than crisp thirds for a better fit.
+- **FIS head**: crisp thirds' −5.5 is `TribbleRegressor` failing on 60
+  features / 180 rows, not a statement about the representation; that is why
+  the ridge head is reported. With 12 learned features the FIS is usable
+  (0.69), but still well below ridge on this linear-in-features target.
+- **Cost**: ~72 s per learned feature-map fit (180 cycles, 3 starts × 300
+  evaluations) vs ~0.1 s for hand features.
+
+DIAL_PLACEHOLDER
 
 ## References
 
