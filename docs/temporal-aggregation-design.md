@@ -196,7 +196,56 @@ Reading it:
 - **Cost**: ~72 s per learned feature-map fit (180 cycles, 3 starts × 300
   evaluations) vs ~0.1 s for hand features.
 
-DIAL_PLACEHOLDER
+### 7.1 Mechanism check: the dial came back flat
+
+`--dial --seeds 5` (raw: `benchmarks/results/temporal-aggregation-dial.json`):
+
+| phase τ\* | crisp-thirds (ridge) | learned (ridge) | Δ |
+|---|---|---|---|
+| 0.500 | 0.851 | 0.900 | +0.049 ± 0.014 |
+| 0.580 | 0.842 | 0.890 | +0.048 ± 0.012 |
+| 0.620 | 0.846 | 0.884 | +0.038 ± 0.010 |
+| 0.667 | 0.856 | 0.902 | +0.046 ± 0.007 |
+| 0.720 | 0.863 | 0.910 | +0.048 ± 0.011 |
+
+(FIS head: crisp −5.6 throughout, learned 0.63–0.71.)
+
+**The prediction in §5 failed.** The gap does not open toward the tercile
+boundary; it is flat at ≈ +0.045. By the criterion stated before running it,
+segment *relocation* is not what separates the learned arm from the
+five-statistic hand arm.
+
+### 7.2 Why: redundant statistics cover the boundary
+
+`--stat-ablation --seeds 8` (raw: `benchmarks/results/temporal-aggregation-stat-ablation.json`),
+crisp thirds, ridge head:
+
+| statistics per third | feats | phase 0.5 | phase 0.68 |
+|---|---|---|---|
+| mean | 12 | 0.687 ± 0.027 | **0.198 ± 0.073** |
+| max | 12 | 0.632 ± 0.031 | 0.564 ± 0.018 |
+| mean + max | 24 | 0.847 ± 0.015 | 0.770 ± 0.019 |
+| all 5 | 60 | 0.853 ± 0.017 | 0.863 ± 0.011 |
+
+The boundary effect is real and large for #127's literal "mean of a third"
+(0.69 → 0.20 when the signal straddles a boundary). The five-statistic arm hides
+it: std/min/max/last per third recover what the mean loses, at 5× the features.
+
+### 7.3 What the evidence supports
+
+| Claim | Status |
+|---|---|
+| A crisp boundary through the signal breaks the mean-per-third summary | **supported** (0.69 → 0.20) |
+| Learning relocates segments onto the signal | **supported** (centre within ~0.01 of τ\*=0.68 on 8/8 seeds) |
+| Learning finds max-like aggregation for spike signals | **supported** (orness ≈ 1.0 on `s1`) |
+| Learned beats the *best* hand arm *because of* relocation | **not supported**: lead is flat across phase |
+| Learned matches/exceeds the best hand arm with 5× fewer features | **supported** (+0.04 ± 0.01, 7/8 seeds) |
+
+Net: on this generator the method's demonstrated value is *compactness with a
+readable result* — 12 features whose centres and orness say where and what —
+against a brute-force hand set that needs 60 features to be robust. Whether
+that translates to the FIS head on real data (where 60 hand features broke
+`TribbleRegressor` here) needs the N-CMAPSS run downstream.
 
 ## References
 

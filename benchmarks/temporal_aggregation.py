@@ -44,6 +44,7 @@ Usage::
 
     uv run python -m benchmarks.temporal_aggregation              # main table
     uv run python -m benchmarks.temporal_aggregation --dial       # move the phase
+    uv run python -m benchmarks.temporal_aggregation --stat-ablation  # which stats matter
     uv run python -m benchmarks.temporal_aggregation --json out.json
 
 Nothing here runs in CI; numbers belong in a PR body or the design doc.
@@ -242,17 +243,60 @@ def dial(n_cycles: int, seeds: int):
     return out, "\n".join(lines)
 
 
+def stat_ablation(n_cycles: int, seeds: int):
+    """Which crisp-thirds statistics carry the score, at two phases.
+
+    Added after the dial came back flat against the full five-statistic arm.
+    The hypothesis -- a crisp boundary through the signal hurts -- predicts the
+    *mean*-per-third arm (#127's literal "mean of the first third") collapses
+    when the phase moves onto the boundary, while redundant statistics
+    (max/std/min/last) can cover for it. Ridge head only; nothing learned, so
+    this runs in seconds.
+    """
+    subsets = {
+        "mean": ("mean",),
+        "max": ("max",),
+        "mean+max": ("mean", "max"),
+        "all 5": _STATS,
+    }
+    out = []
+    lines = [f"{'statistics':<10}  {'feats':>5}" + "".join(f"  {'phase ' + str(p):>12}" for p in (0.5, 0.68)),
+             "-" * 44]
+    for name, stats in subsets.items():
+        row = {"stats": name, "n_features": 3 * len(stats) * len(SENSORS)}
+        for phase in (0.5, 0.68):
+            scores = []
+            for seed in range(seeds):
+                cycles, y = make_cycles(n_cycles, seed, phase=phase)
+                tr, te = train_test_split(np.arange(len(y)), test_size=0.25, random_state=seed)
+                feats = hand_features(cycles, 3)
+                feats = feats[[c for c in feats.columns if c.rsplit("_", 1)[-1] in stats]]
+                pred = _fit_head("ridge", feats.iloc[tr], y[tr], feats.iloc[te], seed)
+                scores.append(float(r2_score(y[te], pred)))
+            row[f"phase_{phase}"] = float(np.mean(scores))
+            row[f"phase_{phase}_sem"] = _sem(scores)
+        out.append(row)
+        lines.append(f"{name:<10}  {row['n_features']:>5}" + "".join(
+            f"  {row[f'phase_{p}']:6.3f}+/-{row[f'phase_{p}_sem']:.3f}" for p in (0.5, 0.68)))
+    return out, "\n".join(lines)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cycles", type=int, default=240)
     parser.add_argument("--seeds", type=int, default=8)
     parser.add_argument("--phase", type=float, default=0.68)
     parser.add_argument("--dial", action="store_true", help="sweep the planted phase")
+    parser.add_argument("--stat-ablation", action="store_true",
+                        help="which crisp-thirds statistics carry the score (fast)")
     parser.add_argument("--json", metavar="PATH", help="also write the raw numbers")
     args = parser.parse_args(argv)
 
     if args.dial:
         payload, text = dial(args.cycles, args.seeds)
+        print(text)
+    elif args.stat_ablation:
+        payload, text = stat_ablation(args.cycles, args.seeds)
         print(text)
     else:
         rows, details = run(args.cycles, args.seeds, args.phase)
