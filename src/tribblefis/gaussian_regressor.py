@@ -90,7 +90,8 @@ class TribbleRegressor(BaseEstimator, RegressorMixin):
                    <= 0.0 or >= 1.0 to disable (the default 0.85 is active).
                    `fit_growing` uses `growth_skipped_` for the same information.
             scoring_method: Feature scorer: "wasserstein" (default), "bhattacharyya",
-                   "composite", "higher_order" or "interaction" (pairwise: sees
+                   "composite", "higher_order", "hellinger", "jensen_shannon", "ks",
+                   "mutual_info" (rank/bin-based, #253) or "interaction" (pairwise: sees
                    features that matter only jointly).
             user_ranking: Optional user feature importance (mapping, (feature, score)
                    pairs, or ordered names, best first). With it, `top_n` features

@@ -73,7 +73,8 @@ class TribbleClassifier(BaseEstimator, ClassifierMixin):
             Max rows per (feature, label) for membership fitting. None=all.
         scoring_method : str
             Feature scorer: "wasserstein" (default), "bhattacharyya", "composite"
-            "higher_order" or "interaction" (a feature scores as its own separation plus its best
+            "higher_order", "hellinger", "jensen_shannon", "ks", "mutual_info" (rank/bin-based,
+            see `gauss_math.calculate_gaussian_correlation`) or "interaction" (a feature scores as its own separation plus its best
             partner's excess joint separation, so an XOR-like pair ranks near the top).
         user_ranking : mapping, list or None
             Optional user feature importance (mapping, (feature, score) pairs, or
