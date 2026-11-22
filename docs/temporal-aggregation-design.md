@@ -97,6 +97,7 @@ from tribblefis.temporal_aggregation import FuzzyTemporalAggregator, TribbleTime
 agg = FuzzyTemporalAggregator(n_segments=3).fit(cycles, y)   # cycles: list of (T_i, F)
 Z = agg.transform(cycles)          # DataFrame, columns "{sensor}__seg{k}"
 agg.segment_report()               # centre, width, lambda, orness per segment x sensor
+agg.placement_report(X)            # #127 uniformity diagnostic: sample mass per segment, entropy
 
 model = TribbleTimeSeriesRegressor(n_segments=3).fit(cycles, y)   # MimoGaussianPredictor head
 model.predict(test_cycles)         # ndarray for 1-D y, DataFrame for multi-output
@@ -126,6 +127,8 @@ they live in the benchmark (§7), per the repo's benchmark convention.
 | B. Special cases | Q is a RIM quantifier for λ∈[−200,200]; dQ/dx, dQ/dλ vs finite differences; λ=0 → weighted mean; λ→±∞ → max/min within the exact bound `span·e^{−|λ|·p_extreme}` (200 draws); uniform importance → Yager OWA weights; orness formula; **leak regression vs power quantifier**; crisp limit = hand tercile means; crisp limit + λ=±200 = per-third max/min | 9 |
 | C. Partition | Ruspini (sums to 1, non-negative); crisp limit = nearest centre; underflowing segment stays finite | 3 |
 | D. Inputs | padding cannot leak across lengths; array/list/DataFrame agree, names propagate; length-1 sequence; validation (6 cases); transform feature mismatch; misaligned/non-finite y | 6 |
+| G. Downstream head | unknown head rejected; objective never worsens; forward-difference gradient matches loss change; end-to-end regressor predicts | 4 |
+| E2. Placement diagnostic | mass sums to 1; even partition on uniform marginal is exactly uniform; bunched centres flagged (entropy, max deviation); K=1 trivially uniform; unfitted and empty input rejected | 5 |
 | E. Learning | full-objective analytic gradient vs finite differences; surrogate = sklearn `Ridge` on same folds; objective never worsens; learned segment lands within 0.08 of a planted phase with loss halved; spike target → orness > 0.8; ablation switches freeze params; unsupervised fit = soft even partition; segments sorted, report consistent | 8 |
 | F. Contract | deterministic under seed; end-to-end single- and multi-output with default MIMO head; custom base estimator cloned not mutated; `get_params`/`clone` round-trip | 5 |
 | Solver | quadratic minimum; Rosenbrock (beats steepest descent at equal budget); active box constraints; never worse than start; exact budget | 4 |
@@ -154,9 +157,42 @@ Benchmark protocol (`benchmarks/temporal_aggregation.py`, not in CI):
   where a fourth basin reached 0.078 (scipy L-BFGS-B found the same spread from
   the same starts, so this is the landscape, not the solver). `n_restarts`
   trades fit time for this.
-- **Surrogate ≠ downstream model.** Segments are chosen for a linear head, then
-  frozen for the FIS. End-to-end learning through `TribbleRegressor` would
-  need its gradient and is out of scope.
+- **Derivative-free backward search (`search="backward"`).** TRIBBLE-style:
+  the target is cut into `n_buckets` first, then candidate Gaussian windows
+  (centre x width x quantifier, 171 candidates) are scored by how well their
+  aggregate separates those buckets (the #253 pair scorers). No gradient and
+  no head fit in the loop; about 1 s per fit. Measured on the planted
+  generator, 8 seeds, 3 segments, MIMO head, held-out R²:
+
+  | arm | mean R² | wins vs even | time/fit |
+  |---|---|---|---|
+  | even partition | −2.22 | — | 0.9 s |
+  | backward (derivative-free) | −1.51 | 6/8 | 1.1 s |
+  | ridge (gradient) | −1.05 | ridge beats backward 5/8 | 8 s |
+
+  The derivative-free search beats the even partition but not the gradient
+  ridge arm here. The base MIMO head is weak on this generator (most R² is
+  negative), so treat this as a limited test.
+- **Surrogate ≠ downstream model (#127 item 3: implemented as an option).**
+  `head="ridge"` (default) fits segments against a ridge head with an exact
+  gradient. `head="downstream"` fits them against the real `base_estimator`
+  (default `MimoGaussianPredictor`): the CV error of the actual model on the
+  aggregated rows, with a forward-difference gradient, because the downstream
+  fit ranks features, partitions outputs and selects `top_n` (discrete steps),
+  so it has no analytic gradient. Cost: each gradient costs `1 + dim` full CV
+  fits of the base estimator, so the downstream head is far slower than the
+  ridge head (over 15 minutes for one 90-sequence fit at `max_evals=8`, not
+  finished). **Measured, no benefit shown.** On the planted generator (90 train /
+  30 test, 2 segments, max_evals=10, 1 seed): ridge head R² −0.217; the
+  downstream head did not finish. Diagnosis: the base head's loss is stepwise
+  in the segment parameters (its ranking and output partition are discrete),
+  so the 1e-5 forward-difference gradient is exactly zero and the solver stalls.
+  A 0.02 step did not finish within ~25 min. The base head also scores a scaled
+  loss above 2.5 here (worse than predicting the mean), so no arm on this
+  generator is a meaningful accuracy test. Its benefit is still **not shown**;
+  the ridge head's own FIS-head gap (R² 0.905 ridge vs 0.687 FIS, section 7)
+  is the motivation. Use `head="downstream"` only on small data until its
+  benefit is shown.
 - **Fit cost.** Seconds to tens of seconds for hundreds of cycles; O(N·K·F·L)
   memory per evaluation. Not tuned for full-rate N-CMAPSS (subsample first).
 - **Shared segments across sensors.** Centres/widths are shared; only the

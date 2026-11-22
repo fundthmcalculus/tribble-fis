@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from sklearn.base import clone
+from sklearn.exceptions import NotFittedError
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import KFold
 
@@ -411,6 +412,60 @@ def test_segments_reported_in_centre_order():
     np.testing.assert_allclose(report["orness"], quantifier_orness(report["lambda"]))
 
 
+# ------------------------------------------- E2. placement uniformity (#127 #2)
+
+def _uniform_grid_sequences(n_seq=4, length=30):
+    """Every sequence samples tau on the same symmetric grid (uniform marginal)."""
+    return [np.zeros((length, 1)) for _ in range(n_seq)]
+
+
+def test_placement_mass_is_a_distribution_over_segments():
+    seqs, y = _planted(seed=8)
+    agg = FuzzyTemporalAggregator(**FAST).fit(seqs, y)
+    rep = agg.placement_report(seqs)
+    seg = rep["segments"]
+    assert len(seg) == 3
+    np.testing.assert_allclose(seg["mass"].sum(), 1.0, atol=1e-12)
+    assert np.all(seg["mass"] >= 0)
+    np.testing.assert_allclose(seg["deviation"], seg["mass"] - seg["even_mass"])
+    assert 0.0 <= rep["normalized_entropy"] <= 1.0
+    assert rep["max_deviation"] == pytest.approx(np.max(np.abs(seg["deviation"])))
+
+
+def test_even_partition_on_uniform_marginal_is_perfectly_uniform():
+    agg = FuzzyTemporalAggregator(n_segments=3).fit(_uniform_grid_sequences())
+    rep = agg.placement_report(_uniform_grid_sequences())
+    np.testing.assert_allclose(rep["segments"]["mass"], 1 / 3, atol=1e-6)
+    assert rep["normalized_entropy"] == pytest.approx(1.0, abs=1e-6)
+    assert rep["max_deviation"] < 1e-6
+
+
+def test_bunched_centres_are_flagged_as_starved_segments():
+    agg = FuzzyTemporalAggregator(n_segments=3).fit(_uniform_grid_sequences())
+    # Pile every centre into the first 10% of time: two segments see almost
+    # no sampled time, the diagnostic must say so.
+    agg.centers_ = np.array([0.02, 0.05, 0.08])
+    agg.widths_ = np.array([0.02, 0.02, 0.02])
+    rep = agg.placement_report(_uniform_grid_sequences())
+    assert rep["normalized_entropy"] < 0.5
+    assert rep["max_deviation"] > 0.4
+
+
+def test_single_segment_placement_is_trivially_uniform():
+    agg = FuzzyTemporalAggregator(n_segments=1).fit(_uniform_grid_sequences())
+    rep = agg.placement_report(_uniform_grid_sequences())
+    assert rep["normalized_entropy"] == 1.0
+    assert rep["max_deviation"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_placement_report_requires_fit_and_samples():
+    with pytest.raises(NotFittedError):
+        FuzzyTemporalAggregator().placement_report(_uniform_grid_sequences())
+    agg = FuzzyTemporalAggregator(n_segments=2).fit(_uniform_grid_sequences())
+    with pytest.raises(ValueError):
+        agg.placement_report([np.zeros((0, 1))])
+
+
 # ------------------------------------------------- F. estimator contract
 
 def test_fit_is_deterministic():
@@ -453,3 +508,116 @@ def test_sklearn_params_roundtrip():
     cloned = clone(model)
     assert cloned.get_params()["n_segments"] == 5
     assert cloned.get_params()["ridge"] == 0.3
+
+
+# ------------------------------------- G. end-to-end downstream head (#127 #3)
+
+DOWN = dict(head="downstream", max_evals=30, n_restarts=0, cv=3, n_segments=2)
+
+
+def test_downstream_head_rejects_unknown_head():
+    seqs, y = _planted(n_seq=12, seed=20)
+    with pytest.raises(ValueError, match="head must be"):
+        FuzzyTemporalAggregator(head="nope").fit(seqs, y)
+
+
+def test_downstream_learning_never_worsens_its_own_objective():
+    seqs, y = _planted(n_seq=30, seed=21)
+    agg = FuzzyTemporalAggregator(**DOWN).fit(seqs, y)
+    assert agg.objective_ is not None
+    assert agg.objective_ <= agg.objective_init_ + 1e-12
+
+
+def test_downstream_gradient_matches_loss_differences():
+    seqs, y = _planted(n_seq=24, seed=22)
+    agg = FuzzyTemporalAggregator(**DOWN)
+    agg.fit(seqs, y)  # sets _base / _y_1d; learned params are irrelevant here
+    from tribblefis.temporal_aggregation import pad_sequences
+    sq = pad_sequences(seqs)
+    Y = y[:, None]
+    folds = list(KFold(3, shuffle=True, random_state=0).split(Y))
+    agg._y_1d = True
+    theta, _ = agg._pack(agg._c0, agg._w0, sq.n_features)
+    loss, grad = agg._downstream_objective(theta, sq, Y, folds, True)
+    assert grad.shape == theta.shape
+    # Forward-difference gradient along each coordinate must reproduce the loss
+    # change of a step of the same size (the definition it is built from).
+    i = int(np.argmax(np.abs(grad)))
+    h = 1e-4
+    bumped = theta.copy()
+    bumped[i] += h
+    fd = (agg._downstream_objective(bumped, sq, Y, folds, True, with_grad=False) - loss) / h
+    assert fd == pytest.approx(grad[i], rel=1e-3, abs=1e-6)
+
+
+def test_downstream_regressor_predicts_end_to_end():
+    seqs, y = _planted(n_seq=30, seed=23)
+    model = TribbleTimeSeriesRegressor(**DOWN).fit(seqs[:24], y[:24])
+    pred = model.predict(seqs[24:])
+    assert pred.shape == (6,)
+    assert np.all(np.isfinite(pred))
+    assert model.aggregator_.head == "downstream"
+
+
+# ------------------------------------- H. backward (derivative-free) search (#127)
+
+BW = dict(search="backward", n_segments=3)
+
+
+def test_backward_search_rejects_unknown_options():
+    seqs, y = _planted(n_seq=12, seed=30)
+    with pytest.raises(ValueError, match="search must be"):
+        FuzzyTemporalAggregator(search="newton").fit(seqs, y)
+    with pytest.raises(ValueError, match="score_method"):
+        FuzzyTemporalAggregator(search="backward", score_method="bhattacharyya").fit(seqs, y)
+    with pytest.raises(ValueError, match="n_buckets"):
+        FuzzyTemporalAggregator(search="backward", n_buckets=1).fit(seqs, y)
+
+
+def test_backward_search_uses_no_solver(monkeypatch):
+    """The point of the backward search: no gradient, no projected L-BFGS."""
+    import tribblefis.temporal_aggregation as ta
+
+    def _fail(*a, **k):
+        raise AssertionError("backward search must not call the gradient solver")
+
+    monkeypatch.setattr(ta, "projected_lbfgs_solve", _fail)
+    seqs, y = _planted(n_seq=40, seed=31)
+    agg = FuzzyTemporalAggregator(**BW).fit(seqs, y)
+    assert agg.objective_ is None and agg.objective_init_ is None
+
+
+def test_backward_search_is_deterministic():
+    seqs, y = _planted(n_seq=40, seed=32)
+    a = FuzzyTemporalAggregator(**BW).fit(seqs, y)
+    b = FuzzyTemporalAggregator(**BW).fit(seqs, y)
+    np.testing.assert_array_equal(a.centers_, b.centers_)
+    np.testing.assert_array_equal(a.lambdas_, b.lambdas_)
+
+
+def test_backward_search_shapes_order_and_separation():
+    seqs, y = _planted(n_seq=40, seed=33)
+    agg = FuzzyTemporalAggregator(**BW).fit(seqs, y)
+    assert agg.centers_.shape == (3,) and agg.widths_.shape == (3,)
+    assert agg.lambdas_.shape == (3, 2)
+    assert np.all(np.diff(agg.centers_) >= 0)
+    assert np.min(np.diff(agg.centers_)) >= 0.5 / 3 - 1e-12  # grid allows it here
+
+
+def test_backward_search_places_a_centre_on_the_planted_phase():
+    seqs, y = _planted(n_seq=120, phase=0.72, seed=34)
+    agg = FuzzyTemporalAggregator(**BW).fit(seqs, y)
+    assert np.min(np.abs(agg.centers_ - 0.72)) < 0.08
+
+
+def test_backward_search_unsupervised_is_even_partition():
+    agg = FuzzyTemporalAggregator(**BW).fit([np.zeros((5, 1))])
+    np.testing.assert_allclose(agg.centers_, (np.arange(3) + 0.5) / 3)
+
+
+def test_backward_regressor_end_to_end():
+    seqs, y = _planted(n_seq=40, seed=35)
+    model = TribbleTimeSeriesRegressor(search="backward", n_segments=3).fit(seqs[:32], y[:32])
+    pred = model.predict(seqs[32:])
+    assert pred.shape == (8,) and np.all(np.isfinite(pred))
+    assert model.aggregator_.search == "backward"
