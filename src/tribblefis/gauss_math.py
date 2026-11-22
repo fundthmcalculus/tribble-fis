@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.exceptions import ConvergenceWarning
+from sklearn.feature_selection import mutual_info_classif
 from sklearn.preprocessing import LabelEncoder
 
 from . import kernel
@@ -303,7 +304,109 @@ def fit_gaussians(
     return gaussians
 
 
-_VALID_DIFFERENTIATION_METHODS = {"bhattacharyya", "wasserstein", "composite", "higher_order"}
+#: Rank/bin-based distances between two 1-D samples (issue #253). They look only at the
+#: ordering of the values (KS) or at quantile-binned histograms (Hellinger, JS), so a long
+#: tail cannot inflate the score and a class-proportion imbalance alone scores 0.
+_RANK_PAIR_METHODS = {"hellinger", "jensen_shannon", "ks"}
+#: kNN mutual information. It scores every feature in one sklearn call rather than per label pair.
+_MI_METHOD = "mutual_info"
+_RANK_BINS = 20
+_MI_NEIGHBORS = 3
+_MI_RANDOM_STATE = 0
+
+_VALID_DIFFERENTIATION_METHODS = {
+    "bhattacharyya",
+    "wasserstein",
+    "composite",
+    "higher_order",
+    *_RANK_PAIR_METHODS,
+    _MI_METHOD,
+}
+
+
+def _quantile_bin_histograms(a: np.ndarray, b: np.ndarray, n_bins: int = _RANK_BINS):
+    """Normalised histograms of `a` and `b` over shared quantile bins of the pooled sample.
+
+    Bin edges are actual pooled data values (inverted-CDF quantiles) and membership is
+    decided by `searchsorted`, so the histograms depend only on the ordering of the values:
+    they are unchanged by any strictly increasing transform of the feature. Duplicate edges
+    collapse, so a feature with few distinct values gets few bins. A binary feature gets
+    one bin and therefore scores 0.
+    """
+    pooled = np.concatenate([a, b])
+    edges = np.unique(np.quantile(pooled, np.linspace(0.0, 1.0, n_bins + 1), method="inverted_cdf"))
+    inner = edges[1:-1]
+    n_out = len(inner) + 1
+    counts_a = np.bincount(np.searchsorted(inner, a, side="right"), minlength=n_out)
+    counts_b = np.bincount(np.searchsorted(inner, b, side="right"), minlength=n_out)
+    return counts_a / len(a), counts_b / len(b)
+
+
+def _hellinger_distance(a: np.ndarray, b: np.ndarray) -> float:
+    """Hellinger distance between the quantile-binned histograms of `a` and `b`, in [0, 1]."""
+    p, q = _quantile_bin_histograms(a, b)
+    return float(np.sqrt(0.5 * np.sum((np.sqrt(p) - np.sqrt(q)) ** 2)))
+
+
+def _jensen_shannon_distance_binned(a: np.ndarray, b: np.ndarray) -> float:
+    """Jensen-Shannon divergence (base 2, so in [0, 1]) of the binned histograms.
+
+    Empty bins contribute 0 by construction (terms with p = 0 are masked out), which is the
+    limit of adding an epsilon to every bin and is exact.
+    """
+    p, q = _quantile_bin_histograms(a, b)
+    m = 0.5 * (p + q)
+
+    def kl_bits(x: np.ndarray) -> float:
+        nz = x > 0
+        return float(np.sum(x[nz] * np.log2(x[nz] / m[nz])))
+
+    return max(0.0, 0.5 * (kl_bits(p) + kl_bits(q)))
+
+
+def _ks_statistic(a: np.ndarray, b: np.ndarray) -> float:
+    """Two-sample Kolmogorov-Smirnov statistic sup|F_a - F_b| (no p-value), in [0, 1].
+
+    The supremum of the empirical-CDF gap is attained at a pooled data point, so it is
+    evaluated there. Cost is one sort per sample plus two searchsorted passes.
+    """
+    a = np.sort(a)
+    b = np.sort(b)
+    grid = np.concatenate([a, b])
+    cdf_a = np.searchsorted(a, grid, side="right") / len(a)
+    cdf_b = np.searchsorted(b, grid, side="right") / len(b)
+    return float(np.max(np.abs(cdf_a - cdf_b)))
+
+
+def _rank_pair_distance(a: np.ndarray, b: np.ndarray, method: str) -> float:
+    """Dispatch one of `_RANK_PAIR_METHODS` on two 1-D samples. Empty sample -> 0."""
+    if len(a) == 0 or len(b) == 0:
+        return 0.0
+    if method == "ks":
+        return _ks_statistic(a, b)
+    if method == "hellinger":
+        return _hellinger_distance(a, b)
+    if method == "jensen_shannon":
+        return _jensen_shannon_distance_binned(a, b)
+    raise ValueError(f"not a rank/bin pair method: {method!r}")
+
+
+def _one_vs_rest_rank_score(data: pd.Series, y: pd.Series, unique_labels, method: str) -> float:
+    """Mean over classes k of distance(rows with label k, all other rows).
+
+    This is the reduction the rank/bin scorers use for multi-class targets. For a binary
+    target both one-vs-rest terms are the same symmetric distance, so the score equals it.
+    Classes with no rows on one side are skipped.
+    """
+    values = data.to_numpy(dtype=float)
+    labels = y.loc[data.index].to_numpy()
+    dists = []
+    for lab in unique_labels:
+        inside = values[labels == lab]
+        outside = values[labels != lab]
+        if len(inside) and len(outside):
+            dists.append(_rank_pair_distance(inside, outside, method))
+    return float(np.mean(dists)) if dists else 0.0
 
 _STD_FLOOR = 1e-10
 
@@ -361,6 +464,9 @@ def _pairwise_label_distance(
     """
     if method == "higher_order":
         return _higher_order_distance(data_label_ij, data_label_jk)
+
+    if method in _RANK_PAIR_METHODS:
+        return _rank_pair_distance(data_label_ij, data_label_jk, method)
 
     if method in ("bhattacharyya", "composite"):
         # Fit Gaussian distributions
@@ -695,6 +801,22 @@ def _interaction_feature_scores(X: pd.DataFrame, y: pd.Series) -> list[tuple[Any
     return list(zip(X.columns, (sep1 + best).tolist()))
 
 
+def _mutual_info_feature_scores(X: pd.DataFrame, y: pd.Series) -> list[tuple[Any, float]]:
+    """kNN mutual information between each feature and the label, one sklearn call (seeded).
+
+    Runs on the standardised, mean-imputed matrix; MI is invariant to that scaling, so the
+    only effect is the NaN imputation. Constant or all-NaN columns score 0.
+    """
+    A, usable = _standardised_matrix(X)
+    scores = np.zeros(X.shape[1])
+    if usable.any():
+        codes = pd.factorize(y.reindex(X.index))[0]
+        scores[usable] = mutual_info_classif(
+            A[:, usable], codes, n_neighbors=_MI_NEIGHBORS, random_state=_MI_RANDOM_STATE
+        )
+    return list(zip(X.columns, scores.tolist()))
+
+
 def calculate_gaussian_correlation(
     X,
     y,
@@ -711,7 +833,12 @@ def calculate_gaussian_correlation(
         Feature data.
     y : pd.Series
         Labels.
-    method : {'wasserstein', 'bhattacharyya', 'composite', 'higher_order', 'interaction'}, default='wasserstein'
+    method : {'wasserstein', 'bhattacharyya', 'composite', 'higher_order', 'interaction', 'hellinger', 'jensen_shannon', 'ks', 'mutual_info'}, default='wasserstein'
+        hellinger, jensen_shannon and ks are rank/bin-based (issue #253): each feature is
+        compared class-vs-rest on quantile bins of the pooled values (20 bins) or on the
+        empirical CDFs. They are invariant to monotone transforms of the feature, so a long
+        tail cannot inflate them, and binary features score 0. mutual_info is kNN mutual
+        information (sklearn, seeded). Multi-class targets use the mean one-vs-rest score.
         Distance metric. Wasserstein is non-parametric; bhattacharyya is parametric
         (cheaper, works for approximately Gaussian data); composite blends both;
         higher_order compares mean, spread, skewness and kurtosis (sees shape
@@ -750,6 +877,11 @@ def calculate_gaussian_correlation(
             X, _interaction_feature_scores(X, y), top_n, correlation_threshold, redundant_out
         )
 
+    if method == _MI_METHOD:
+        return _finalise_ranking(
+            X, _mutual_info_feature_scores(X, y), top_n, correlation_threshold, redundant_out
+        )
+
     # Taken from the ORIGINAL y, before the conversion below, so the label
     # enumeration order -- which decides the order the pairwise scores are
     # accumulated in -- is exactly what it was.
@@ -776,6 +908,8 @@ def calculate_gaussian_correlation(
         """Process a single column and return its differentiation score"""
         series = X[column].dropna()
         data = _encode_if_categorical(series, X[column])
+        if method in _RANK_PAIR_METHODS:
+            return column, _one_vs_rest_rank_score(data, y, unique_labels, method)
         return column, _differentiation_score(data, y, unique_labels, method)
 
     # Use ThreadPoolExecutor to process columns in parallel
@@ -849,6 +983,11 @@ def calculate_interaction_scores(
             raise ValueError(
                 f"{method!r} is a pairwise scorer, not a 1-D metric: pass engine='gaussian' for the "
                 "vectorised pair lift, or calculate_gaussian_correlation(method=...) for per-feature scores"
+            )
+        if method == _MI_METHOD:
+            raise ValueError(
+                "'mutual_info' scores all features jointly and has no per-label-pair distance; use "
+                "calculate_gaussian_correlation(method='mutual_info') for per-feature scores"
             )
         if method not in _VALID_DIFFERENTIATION_METHODS:
             raise ValueError(f"method must be one of {_VALID_DIFFERENTIATION_METHODS}, got {method!r}")
