@@ -54,6 +54,26 @@ so this is the right tool for a handful of features with a few terms each --
 past that, `fit` raises `RuleExplosionError` and points at the mixture
 regressor, whose implicit rule base doesn't grow that way.
 
+## Sequences: learned fuzzy aggregation over time
+
+`tribblefis.temporal_aggregation` collapses each sequence (e.g. one flight
+cycle per RUL label; lengths may differ) to a row with a *learned* operator
+instead of hand-picked windows and statistics: a fuzzy partition of normalised
+time into segments, each aggregated by a weighted OWA (a Choquet integral)
+whose orness -- from mean towards max or min -- is learned per segment and
+sensor. The crisp "mean of each third" baseline is a special case of the
+family. Design, test protocol and measurements: `docs/temporal-aggregation-design.md`
+(issue #127).
+
+```python
+from tribblefis.temporal_aggregation import TribbleTimeSeriesRegressor
+
+model = TribbleTimeSeriesRegressor(n_segments=3)   # MimoGaussianPredictor head
+model.fit(train_cycles, y_train)                    # list of (T_i, F) arrays/DataFrames
+y_pred = model.predict(test_cycles)
+print(model.aggregator_.segment_report())           # where each segment sits, its orness
+```
+
 ## Optional compiled kernel
 
 The forward pass (`tsk_firing_strengths`, and therefore every prediction and

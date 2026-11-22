@@ -8,7 +8,11 @@ from pathlib import Path
 
 import numpy as np
 
-from tribblefis.optimizer_utils import optimizers_sub_solve, projected_gradient_solve
+from tribblefis.optimizer_utils import (
+    optimizers_sub_solve,
+    projected_gradient_solve,
+    projected_lbfgs_solve,
+)
 
 SRC_DIR = Path(__file__).resolve().parents[1] / "src" / "tribblefis"
 
@@ -98,3 +102,53 @@ def test_projected_gradient_solve_respects_evaluation_budget():
     max_evals = 7
     projected_gradient_solve(quadratic_with_grad, np.array([0.0]), [(-1.0, 1.0)], max_evals=max_evals)
     assert calls["n"] <= max_evals
+
+
+# --- projected_lbfgs_solve (issue #127) -------------------------------------
+
+
+def _rosenbrock(v):
+    x, y = v
+    f = float((1 - x) ** 2 + 100 * (y - x * x) ** 2)
+    g = np.array([-2 * (1 - x) - 400 * x * (y - x * x), 200 * (y - x * x)])
+    return f, g
+
+
+def test_projected_lbfgs_solve_finds_quadratic_minimum():
+    def quadratic_with_grad(v):
+        return float((v[0] - 0.3) ** 2 + (v[1] + 0.4) ** 2), np.array([2 * (v[0] - 0.3), 2 * (v[1] + 0.4)])
+
+    res = projected_lbfgs_solve(quadratic_with_grad, np.zeros(2), [(-1.0, 1.0)] * 2, max_evals=50)
+    np.testing.assert_allclose(res.x, [0.3, -0.4], atol=1e-6)
+
+
+def test_projected_lbfgs_solve_handles_ill_conditioning_better_than_steepest_descent():
+    """The reason it exists: on a curved valley steepest descent stalls."""
+    bounds = [(-2.0, 2.0)] * 2
+    x0 = np.array([-1.2, 1.0])
+    lbfgs = projected_lbfgs_solve(_rosenbrock, x0, bounds, max_evals=200)
+    steepest = projected_gradient_solve(_rosenbrock, x0, bounds, max_evals=200)
+    np.testing.assert_allclose(lbfgs.x, [1.0, 1.0], atol=1e-3)
+    assert lbfgs.fun < 1e-6 < steepest.fun
+
+
+def test_projected_lbfgs_solve_respects_box_bounds_with_active_constraint():
+    """Unconstrained optimum (2, -3) is outside the box; answer is the corner."""
+    def f(v):
+        return float((v[0] - 2) ** 2 + 10 * (v[1] + 3) ** 2), np.array([2 * (v[0] - 2), 20 * (v[1] + 3)])
+
+    res = projected_lbfgs_solve(f, np.zeros(2), [(-1.0, 1.0), (-1.0, 1.0)], max_evals=50)
+    np.testing.assert_allclose(res.x, [1.0, -1.0], atol=1e-9)
+
+
+def test_projected_lbfgs_solve_never_worse_than_start_and_respects_budget():
+    calls = {"n": 0}
+
+    def objective(v):
+        calls["n"] += 1
+        f = 0.0 if np.allclose(v, [0.5, 0.5]) else 1e6
+        return f, np.array([1.0, 1.0])
+
+    res = projected_lbfgs_solve(objective, np.array([0.5, 0.5]), [(-1.0, 1.0)] * 2, max_evals=9)
+    assert res.fun == 0.0
+    assert calls["n"] <= 9
