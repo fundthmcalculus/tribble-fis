@@ -1,7 +1,10 @@
 # How should IT2/GT2 be accelerated: GPU forward pass, or something else?
 
-> **Status: design decided, implementation not started.** Issue #146.
-> Backed by `benchmarks/it2_incremental_probe.py`.
+> **Status: implemented** (steps 1-4 below; step 5, GPU, deferred). Issue
+> #146. `src/tribblefis/type2_incremental.py`, wired into `it2_refine` and
+> `gt2_refine`; equivalence-tested against the old path in
+> `tests/test_type2_incremental_refine.py`. Backed by
+> `benchmarks/it2_incremental_probe.py`.
 
 **Answer: not a GPU forward pass first.** Port IT2/GT2 *refinement* onto the
 existing `kernel.IncrementalFIS`, the same CPU path Type-1 coordinate
@@ -52,9 +55,31 @@ Notes:
   also pay a closed-form consequent re-solve and a Karnik-Mendel search;
   those become the new floor and should be profiled after the port.
 
+## Result (end-to-end, after the port)
+
+Whole refinement runs, 2 sweeps, as shipped vs. with the incremental path
+disabled (`python -m benchmarks.it2_incremental_probe --refine`). The
+refined models are identical to floating-point tolerance on both paths:
+
+| case | Cython | before | after | speedup |
+|---|---|--:|--:|--:|
+| IT2 classifier (wine) | no | 3.40 s | 0.44 s | **7.7x** |
+| GT2 classifier (wine, K=5) | no | 25.41 s | 1.70 s | **15.0x** |
+| IT2 regressor (friedman1) | no | 20.71 s | 4.66 s | **4.4x** |
+| GT2 regressor (friedman1, K=5) | no | 160.16 s | 22.51 s | **7.1x** |
+| IT2 classifier (wine) | yes | 2.24 s | 0.34 s | **6.5x** |
+| GT2 classifier (wine, K=5) | yes | 14.68 s | 1.10 s | **13.3x** |
+| IT2 regressor (friedman1) | yes | 17.33 s | 3.98 s | **4.4x** |
+| GT2 regressor (friedman1, K=5) | yes | 143.03 s | 13.64 s | **10.5x** |
+
+End-to-end is below the per-candidate 16-56x because each candidate still
+pays for type reduction and, for regression, a ridge consequent re-solve per
+fold plus a Karnik-Mendel search. Those are now the floor on the regressor
+path and are the next thing to profile.
+
 ## Design
 
-1. **`IT2IncrementalFIS`** (new, small, in `it2_kernel.py` or `kernel.py`):
+1. **`IT2IncrementalFiring`** (`type2_incremental.py`):
    holds two `IncrementalFIS` -- upper and lower -- compiled from
    `_extract_upper_model` / `_extract_lower_model` with one shared
    `feature_matrix`. An IT2 slot `(mu, sigma_lower, sigma_upper)` maps to the
@@ -66,13 +91,13 @@ Notes:
    regressor fitness closures with `IT2IncrementalFIS.evaluate_slot`. The
    coordinate-descent loop, L2 anchor, never-worse guard and CV folds stay
    as they are (one `IT2IncrementalFIS` per fold).
-3. **GT2**: `GT2IncrementalFIS` = `n_alpha_planes` `IT2IncrementalFIS`, one
+3. **GT2**: `GT2IncrementalFiring` = `n_alpha_planes` `IT2IncrementalFiring`, one
    per plane. A GT2 slot's 4 parameters map to each plane's
    `alpha_cut` interval, so one candidate = `2K` `evaluate_slot` calls.
    No change to `gt2_kernel`'s combination math.
-4. **Bit-exactness test**: `IT2IncrementalFIS.evaluate_slot` must equal the
-   rebuild path to the same tolerance `test_incremental_kernel.py` already
-   uses for Type-1, for every norm family.
+4. **Equivalence test**: refinement through the incremental path must match
+   the rebuild path -- same losses, same refined model -- for the IT2/GT2
+   classifier and regressor (`tests/test_type2_incremental_refine.py`).
 5. **GPU, later and opt-in**: add a `kernel_backend="auto"` estimator
    parameter to T1/IT2/GT2 together (not IT2 alone), passed down to
    `kernel.firing_strengths`. GT2's `2K` same-layout planes are a natural
@@ -83,8 +108,7 @@ Notes:
 
 ## Recommendation
 
-- Retitle/re-scope #146 to "IT2/GT2 refinement on `IncrementalFIS`" and do
-  steps 1-4; that is the measured win.
+- Steps 1-4 are done; that closes #146 as re-scoped.
 - Track step 5 (GPU) separately and keep it deprioritised until a workload
   shows the forward pass, not refinement, dominating.
 
@@ -93,6 +117,7 @@ Notes:
 ```bash
 python -m benchmarks.it2_incremental_probe
 python -m benchmarks.it2_incremental_probe --n 20000 --features 20 --labels 8
+python -m benchmarks.it2_incremental_probe --refine
 ```
 
 The Cython rows need the optional kernel (`python setup_cython.py build_ext

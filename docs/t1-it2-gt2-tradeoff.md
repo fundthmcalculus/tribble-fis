@@ -241,8 +241,8 @@ Tracked as GitHub issues, in priority order:
    shape, and calibration gets *worse* for non-Gaussian shapes (see above).
 4. ~~Resolve the secondary-membership-family question~~ -- decided, #145:
    no `secondary_family` parameter (`docs/gt2-secondary-family-evaluation.md`).
-5. Acceleration (#146) -- re-scoped: the forward pass already uses the
-   compiled kernel; the win is IT2/GT2 refinement on `IncrementalFIS`
+5. ~~Acceleration~~ -- done, #146 (re-scoped): IT2/GT2 refinement now runs
+   on `IncrementalFIS`, 4-15x end to end
    (`docs/it2-gt2-acceleration-design.md`). GPU stays deferred.
 6. Hierarchical IT2/GT2 via `tribble-tree` (#147) -- attachment point
    decided (`docs/hierarchical-it2-design.md`); conformal tree intervals

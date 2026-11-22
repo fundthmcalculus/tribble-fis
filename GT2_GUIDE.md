@@ -134,6 +134,14 @@ re-solves the TSK consequents in closed form, weighted by the
 alpha-weighted average of each plane's own midpoint firing strength, before
 scoring held-out MSE through the full alpha-combined Karnik-Mendel path.
 
+**Cost.** For Gaussian models both refiners score candidates through
+`type2_incremental.GT2IncrementalFiring` -- one cached upper/lower
+`kernel.IncrementalFIS` pair per alpha-plane, re-folding only the moved
+membership's cell -- instead of rebuilding every plane and running `2K` full
+forward passes (#146; 7-15x end to end,
+`docs/it2-gt2-acceleration-design.md`). Trapezoid/triangular models keep the
+rebuild path; results are the same either way.
+
 ### `refine_gt2_n_sweeps` (default: 3) / `refine_gt2_l2_shrink` (default: 0.05)
 
 Sweep count and L2 anchor strength, same role as IT2's own

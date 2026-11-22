@@ -432,9 +432,9 @@ print(f"Average interval width: {interval_width.mean():.3f}")
 1. **Acceleration**: IT2/GT2 forward passes already use the compiled
    `kernel.firing_strengths` path whenever the Cython kernel is built (via
    `tsk_firing_strengths`), same as Type-1; no estimator exposes the Torch
-   backend yet. The measured win is porting `refine_it2`/`refine_gt2` onto
-   `kernel.IncrementalFIS` (16-56x per candidate) -- see
-   `docs/it2-gt2-acceleration-design.md` (#146).
+   backend yet. `refine_it2`/`refine_gt2` now run on `kernel.IncrementalFIS`
+   for Gaussian models (4-15x end to end) -- see
+   `docs/it2-gt2-acceleration-design.md` (#146). GPU remains deferred.
 2. **Hierarchical IT2**: IT2 fuzzy trees (leverage `tribble-tree`).
    Attachment point decided in `docs/hierarchical-it2-design.md` (#147):
    leaf footprints on `DeconstructedHierarchicalRegressor` first, recursive

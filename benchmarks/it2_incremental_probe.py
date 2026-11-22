@@ -19,6 +19,11 @@ all sharing one layout), so the ratios carry over unchanged.
 
     python -m benchmarks.it2_incremental_probe
     python -m benchmarks.it2_incremental_probe --n 20000 --features 20 --labels 8
+    python -m benchmarks.it2_incremental_probe --refine   # end-to-end, after the #146 port
+
+``--refine`` times whole ``refine_it2*``/``refine_gt2*`` runs on wine
+(classifier) and friedman1 (regressor), as shipped versus with the
+incremental path disabled (the pre-#146 rebuild path).
 """
 
 from __future__ import annotations
@@ -69,6 +74,68 @@ def _time(fn, repeats: int) -> float:
     return best
 
 
+def _refine_end_to_end(repeats: int) -> None:
+    from contextlib import contextmanager
+    from unittest import mock
+
+    from sklearn.datasets import load_wine, make_friedman1
+
+    from tribblefis import gt2_refine, it2_refine
+    from tribblefis.gt2_classifier import GT2TribbleClassifier
+    from tribblefis.gt2_regressor import GT2TribbleRegressor
+    from tribblefis.it2_classifier import IT2TribbleClassifier
+    from tribblefis.it2_regressor import IT2TribbleRegressor
+
+    @contextmanager
+    def rebuild_only(module):
+        with mock.patch.object(module, "_try_incremental", lambda build: None):
+            yield
+
+    Xw, yw = load_wine(return_X_y=True)
+    Xw = pd.DataFrame(Xw, columns=[f"x{i}" for i in range(Xw.shape[1])])
+    Xf, yf = make_friedman1(n_samples=500, n_features=10, noise=1.0, random_state=42)
+    Xf = pd.DataFrame(Xf, columns=[f"x{i}" for i in range(Xf.shape[1])])
+
+    cases = []
+    for family, module, cls, kw in (
+        ("IT2", it2_refine, IT2TribbleClassifier, {}),
+        ("GT2", gt2_refine, GT2TribbleClassifier, {"n_alpha_planes": 5}),
+    ):
+        clf = cls(top_n=8, n_gaussians=3, random_state=42, **kw).fit(Xw, yw)
+        y_idx = np.searchsorted(clf.classes_, yw)
+        if family == "IT2":
+            fn = lambda clf=clf, y_idx=y_idx: it2_refine.refine_it2_antecedents(
+                Xw, y_idx, clf.model_, clf.norms_, n_sweeps=2, verbose=False)
+        else:
+            fn = lambda clf=clf, y_idx=y_idx: gt2_refine.refine_gt2_antecedents(
+                Xw, y_idx, clf.model_, clf.norms_, n_alpha_planes=5, n_sweeps=2, verbose=False)
+        cases.append((f"{family} classifier (wine)", module, fn))
+    for family, module, cls, kw in (
+        ("IT2", it2_refine, IT2TribbleRegressor, {}),
+        ("GT2", gt2_refine, GT2TribbleRegressor, {"n_alpha_planes": 5}),
+    ):
+        reg = cls(top_n=5, n_gaussians=3, random_state=42, **kw).fit(Xf, yf)
+        b = reg._base_regressor
+        common = dict(order=b.tsk_order, l2_reg=b.l2_reg, basis=b.consequent_basis,
+                      cross_pairs=b.cross_pairs_, n_sweeps=2, verbose=False)
+        if family == "IT2":
+            fn = lambda reg=reg, b=b, common=common: it2_refine.refine_it2_regressor_antecedents(
+                Xf, yf, reg.model_, reg.norms_, b.top_features_, **common)
+        else:
+            fn = lambda reg=reg, b=b, common=common: gt2_refine.refine_gt2_regressor_antecedents(
+                Xf, yf, reg.model_, reg.norms_, b.top_features_, n_alpha_planes=5, **common)
+        cases.append((f"{family} regressor (friedman1)", module, fn))
+
+    print(f"end-to-end refinement, 2 sweeps, cython={kernel.HAVE_CYTHON_KERNEL}")
+    print("| case | rebuild (pre-#146) | incremental | speedup |")
+    print("|---|--:|--:|--:|")
+    for name, module, fn in cases:
+        t_new = _time(fn, repeats)
+        with rebuild_only(module):
+            t_old = _time(fn, repeats)
+        print(f"| {name} | {t_old:.2f} s | {t_new:.2f} s | {t_old / t_new:.1f}x |")
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--n", type=int, default=5000)
@@ -77,7 +144,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--mf", type=int, default=3)
     p.add_argument("--candidates", type=int, default=20)
     p.add_argument("--repeats", type=int, default=3)
+    p.add_argument("--refine", action="store_true",
+                   help="time whole refinement runs, incremental vs rebuild")
     args = p.parse_args(argv)
+    if args.refine:
+        _refine_end_to_end(max(1, min(args.repeats, 2)))
+        return 0
 
     rng = np.random.default_rng(0)
     model = _build(args.features, args.labels, args.mf, rng)

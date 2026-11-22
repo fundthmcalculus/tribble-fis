@@ -86,14 +86,22 @@ def it2_firing_strengths(
     firing_upper = tsk_firing_strengths(X, upper_model, norms=norms)[0]
     firing_lower = tsk_firing_strengths(X, lower_model, norms=norms)[0]
 
-    if km_iterations is None or km_iterations == 0:
-        firing_crisp = 0.5 * (firing_upper + firing_lower)
-    else:
-        firing_crisp = karnik_mendel_type_reduction(
-            firing_upper, firing_lower, max_iterations=km_iterations
-        )
+    firing_crisp = it2_crisp_firing(firing_upper, firing_lower, km_iterations)
 
     return firing_upper, firing_lower, firing_crisp, labels
+
+
+def it2_crisp_firing(
+    firing_upper: np.ndarray, firing_lower: np.ndarray, km_iterations: int | None
+) -> np.ndarray:
+    """`it2_firing_strengths`'s per-rule type reduction, on bounds the caller
+    already holds (e.g. from `type2_incremental`, which never builds the
+    upper/lower models this function's caller would otherwise rebuild)."""
+    if km_iterations is None or km_iterations == 0:
+        return 0.5 * (firing_upper + firing_lower)
+    return karnik_mendel_type_reduction(
+        firing_upper, firing_lower, max_iterations=km_iterations
+    )
 
 
 def _extract_upper_model(model: IT2GaussianMixtureModel) -> GaussianMixtureModel:
