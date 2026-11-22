@@ -166,7 +166,14 @@ Benchmark protocol (`benchmarks/temporal_aggregation.py`, not in CI):
   so it has no analytic gradient. Cost: each gradient costs `1 + dim` full CV
   fits of the base estimator, so the downstream head is far slower than the
   ridge head (over 15 minutes for one 90-sequence fit at `max_evals=8`, not
-  finished). Its accuracy effect vs the ridge head is **not yet measured**;
+  finished). **Measured, no benefit shown.** On the planted generator (90 train /
+  30 test, 2 segments, max_evals=10, 1 seed): ridge head R² −0.217; the
+  downstream head did not finish. Diagnosis: the base head's loss is stepwise
+  in the segment parameters (its ranking and output partition are discrete),
+  so the 1e-5 forward-difference gradient is exactly zero and the solver stalls.
+  A 0.02 step did not finish within ~25 min. The base head also scores a scaled
+  loss above 2.5 here (worse than predicting the mean), so no arm on this
+  generator is a meaningful accuracy test. Its benefit is still **not shown**;
   the ridge head's own FIS-head gap (R² 0.905 ridge vs 0.687 FIS, section 7)
   is the motivation. Use `head="downstream"` only on small data until its
   benefit is shown.
