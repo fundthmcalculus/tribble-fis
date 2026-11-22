@@ -704,7 +704,7 @@ wheels = [
 [[package]]
 name = "optimizers"
 version = "0.2.0"
-source = { git = "https://github.com/fundthmcalculus/optimizers.git?rev=81da272912c7181ac91d91b83bf6c1b8b8f4d0f6#81da272912c7181ac91d91b83bf6c1b8b8f4d0f6" }
+source = { git = "https://github.com/fundthmcalculus/optimizers.git?rev=01118417d87c1eb804f981fcd78fb7522a912882#01118417d87c1eb804f981fcd78fb7522a912882" }
 dependencies = [
     { name = "cloudpickle" },
     { name = "joblib" },
@@ -1216,7 +1216,7 @@ requires-dist = [
     { name = "matplotlib" },
     { name = "numba" },
     { name = "numpy", specifier = ">=2.4.6" },
-    { name = "optimizers", git = "https://github.com/fundthmcalculus/optimizers.git?rev=81da272912c7181ac91d91b83bf6c1b8b8f4d0f6" },
+    { name = "optimizers", git = "https://github.com/fundthmcalculus/optimizers.git?rev=01118417d87c1eb804f981fcd78fb7522a912882" },
     { name = "pandas" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
