@@ -73,6 +73,8 @@ from sklearn.utils.validation import check_is_fitted
 
 from .gaussian_regressor import MimoGaussianPredictor
 from .optimizer_utils import projected_lbfgs_solve
+from .regression import partition_output
+from .gauss_math import _RANK_PAIR_METHODS, _one_vs_rest_rank_score
 
 __all__ = [
     "FuzzyTemporalAggregator",
@@ -96,6 +98,12 @@ _WIDTH_BOUNDS = (0.005, 1.0)
 _LOG_WIDTH_SCALE = float(np.log(_WIDTH_BOUNDS[1] / _WIDTH_BOUNDS[0]))
 _LAMBDA_SCALE = 2.0 * _LAMBDA_BOUND
 _FD_STEP = 1e-5                      # forward-difference step, downstream head
+# Backward (derivative-free) search grid. A candidate is one fuzzy window: centre, width
+# and quantifier. Candidates are scored by how well they separate the output buckets.
+_BACKWARD_CENTERS = np.linspace(0.05, 0.95, 19)
+_BACKWARD_WIDTHS = (0.05, 0.10, 0.20)
+_BACKWARD_LAMBDAS = (-4.0, 0.0, 4.0)
+_BACKWARD_MIN_SEP = 0.5             # chosen centres are at least 0.5 / K apart when possible
 
 
 # --------------------------------------------------------------------------
@@ -360,6 +368,22 @@ def _aggregate(seqs: PaddedSequences, centers, widths, lambdas, with_grad: bool 
     return Z, backward
 
 
+def _window_aggregate(seqs: PaddedSequences, centre: float, width: float, lambdas) -> np.ndarray:
+    """WOWA of each feature over one unnormalised Gaussian window, per quantifier.
+
+    Returns ``(len(lambdas), N, F)``. Importance is the Gaussian weight of each
+    sample, so the window is a soft region of time, not a partition cell. Padding
+    carries zero importance and cannot leak.
+    """
+    g = np.exp(-0.5 * ((seqs.tau - centre) / width) ** 2) * seqs.mask   # (N, F, L)
+    values = np.where(seqs.mask, seqs.values, 0.0)
+    order = np.argsort(-np.where(seqs.mask, seqs.values, -np.inf), axis=-1, kind="stable")
+    v_desc = np.take_along_axis(values, order, axis=-1)
+    p_desc = np.take_along_axis(g, order, axis=-1)
+    out = [wowa(v_desc, p_desc, lam) for lam in lambdas]
+    return np.stack(out, axis=0)
+
+
 # --------------------------------------------------------------------------
 # Learned transformer
 # --------------------------------------------------------------------------
@@ -396,6 +420,14 @@ class FuzzyTemporalAggregator(TransformerMixin, BaseEstimator):
             the loop: the CV error of the actual model, with a
             finite-difference gradient. This is the end-to-end option (#127).
         base_estimator: Head used when ``head="downstream"``; cloned per fold.
+        search: ``"gradient"`` (default) optimises the surrogate in ``head``.
+            ``"backward"`` is derivative-free: the target is partitioned into
+            ``n_buckets`` and candidate windows are scored by how well they
+            separate those buckets (TRIBBLE's consequent-first idea). No
+            gradient and no head fit during the search.
+        n_buckets: Output buckets for ``search="backward"``.
+        score_method: Pair scorer for ``search="backward"``: ``"jensen_shannon"``,
+            ``"hellinger"`` or ``"ks"``.
 
     Attributes:
         centers_, widths_: ``(K,)`` learned segment parameters, sorted by centre.
@@ -419,6 +451,9 @@ class FuzzyTemporalAggregator(TransformerMixin, BaseEstimator):
         random_state: int | None = 42,
         head: str = "ridge",
         base_estimator=None,
+        search: str = "gradient",
+        n_buckets: int = 5,
+        score_method: str = "jensen_shannon",
     ):
         self.n_segments = n_segments
         self.fit_segments = fit_segments
@@ -431,6 +466,9 @@ class FuzzyTemporalAggregator(TransformerMixin, BaseEstimator):
         self.random_state = random_state
         self.head = head
         self.base_estimator = base_estimator
+        self.search = search
+        self.n_buckets = n_buckets
+        self.score_method = score_method
 
     # -- parameter vector <-> arrays ---------------------------------------
 
@@ -560,6 +598,64 @@ class FuzzyTemporalAggregator(TransformerMixin, BaseEstimator):
         grad = np.concatenate(parts) if parts else np.zeros(0)
         return loss, grad
 
+    # -- backward (derivative-free) search ---------------------------------
+
+    def _backward_search(self, seqs, Y):
+        """Choose segments by partitioning the output first, then scoring windows.
+
+        TRIBBLE is consequent-first: the target is cut into buckets and the
+        inputs are read backwards against that partition. Here each candidate
+        fuzzy window (centre, width, quantifier) aggregates every sequence to one
+        value; that value is scored by how well it separates the output buckets
+        (the rank/bin scorers of #253). No gradient and no head fit: each
+        candidate costs one pass over the samples.
+
+        Windows are unnormalised Gaussians, so a candidate scores on its own
+        merit. Chosen centres are kept at least ``_BACKWARD_MIN_SEP / K`` apart
+        when the grid allows.
+        """
+        k = int(self.n_segments)
+        f = seqs.n_features
+        n = seqs.n_sequences
+        method = self.score_method
+        labels = []
+        for j in range(Y.shape[1]):
+            frame, _ = partition_output(int(self.n_buckets), pd.Series(Y[:, j]),
+                                        method="uniform")
+            labels.append(frame["y_bucket"].to_numpy())
+        candidates = []
+        for c in _BACKWARD_CENTERS:
+            for w in _BACKWARD_WIDTHS:
+                values = _window_aggregate(seqs, c, w, _BACKWARD_LAMBDAS)  # (L_lam, N, F)
+                for li, lam in enumerate(_BACKWARD_LAMBDAS):
+                    scores = []
+                    for lab in labels:
+                        uniq = np.unique(lab)
+                        for fi in range(f):
+                            scores.append(_one_vs_rest_rank_score(
+                                pd.Series(values[li, :, fi]), pd.Series(lab), uniq, method))
+                    candidates.append((float(np.mean(scores)), float(c), float(w), float(lam)))
+        # Highest score first; ties keep grid order, so the search is deterministic.
+        candidates.sort(key=lambda t: -t[0])
+        sep = _BACKWARD_MIN_SEP / k
+        chosen = []
+        for cand in candidates:
+            if all(abs(cand[1] - other[1]) >= sep for other in chosen):
+                chosen.append(cand)
+            if len(chosen) == k:
+                break
+        if len(chosen) < k:                       # grid too tight: fill by score alone
+            for cand in candidates:
+                if cand not in chosen:
+                    chosen.append(cand)
+                if len(chosen) == k:
+                    break
+        centers = np.array([c[1] for c in chosen])
+        widths = np.array([c[2] for c in chosen])
+        lambdas = np.array([[c[3]] * f for c in chosen])
+        self.search_scores_ = np.array([c[0] for c in chosen])
+        return centers, widths, lambdas
+
     # -- sklearn API -------------------------------------------------------
 
     def fit(self, X, y=None):
@@ -572,6 +668,12 @@ class FuzzyTemporalAggregator(TransformerMixin, BaseEstimator):
             raise ValueError("n_segments must be >= 1")
         if self.head not in ("ridge", "downstream"):
             raise ValueError(f"head must be 'ridge' or 'downstream', got {self.head!r}")
+        if self.search not in ("gradient", "backward"):
+            raise ValueError(f"search must be 'gradient' or 'backward', got {self.search!r}")
+        if self.score_method not in _RANK_PAIR_METHODS:
+            raise ValueError(f"score_method must be one of {sorted(_RANK_PAIR_METHODS)}")
+        if int(self.n_buckets) < 2:
+            raise ValueError("n_buckets must be >= 2")
         seqs = pad_sequences(X)
         k = int(self.n_segments)
         f = seqs.n_features
@@ -606,25 +708,29 @@ class FuzzyTemporalAggregator(TransformerMixin, BaseEstimator):
                     self._base = MimoGaussianPredictor(random_state=self.random_state)
                 else:
                     self._base = self.base_estimator
-            theta0, bounds = self._pack(self._c0, self._w0, f)
-            self.objective_init_ = self._objective(theta0, seqs, Y, folds, with_grad=False)
-            best_theta, best_loss = theta0, self.objective_init_
+            if self.search == "backward":
+                centers, widths, lambdas = self._backward_search(seqs, Y)
+                self.objective_ = None
+            else:
+                theta0, bounds = self._pack(self._c0, self._w0, f)
+                self.objective_init_ = self._objective(theta0, seqs, Y, folds, with_grad=False)
+                best_theta, best_loss = theta0, self.objective_init_
 
-            if theta0.size:
-                rng = np.random.default_rng(self.random_state)
-                starts = [theta0]
-                for _ in range(int(self.n_restarts) if self.fit_segments else 0):
-                    c = np.sort(rng.uniform(0.02, 0.98, size=k))
-                    starts.append(self._pack(c, self._w0, f)[0])
-                for start in starts:
-                    res = projected_lbfgs_solve(
-                        lambda t: self._objective(t, seqs, Y, folds),
-                        start, bounds, max_evals=int(self.max_evals),
-                    )
-                    if res.fun < best_loss:
-                        best_theta, best_loss = res.x, float(res.fun)
-            centers, widths, lambdas = self._unpack(best_theta, f)
-            self.objective_ = best_loss
+                if theta0.size:
+                    rng = np.random.default_rng(self.random_state)
+                    starts = [theta0]
+                    for _ in range(int(self.n_restarts) if self.fit_segments else 0):
+                        c = np.sort(rng.uniform(0.02, 0.98, size=k))
+                        starts.append(self._pack(c, self._w0, f)[0])
+                    for start in starts:
+                        res = projected_lbfgs_solve(
+                            lambda t: self._objective(t, seqs, Y, folds),
+                            start, bounds, max_evals=int(self.max_evals),
+                        )
+                        if res.fun < best_loss:
+                            best_theta, best_loss = res.x, float(res.fun)
+                centers, widths, lambdas = self._unpack(best_theta, f)
+                self.objective_ = best_loss
 
         order = np.argsort(centers, kind="stable")
         self.centers_ = centers[order]
@@ -741,6 +847,9 @@ class TribbleTimeSeriesRegressor(RegressorMixin, BaseEstimator):
             before fitting. Defaults to ``MimoGaussianPredictor`` with its
             defaults and this ``random_state``.
         random_state: Seed for the aggregator and the default base estimator.
+        head, search, n_buckets, score_method: forwarded to
+            :class:`FuzzyTemporalAggregator`. ``search="backward"`` is the
+            derivative-free option (no head in the search loop).
         head: ``"ridge"`` or ``"downstream"``; see :class:`FuzzyTemporalAggregator`.
             ``"downstream"`` learns the segments against ``base_estimator`` itself.
     """
@@ -758,6 +867,9 @@ class TribbleTimeSeriesRegressor(RegressorMixin, BaseEstimator):
         base_estimator=None,
         random_state: int | None = 42,
         head: str = "ridge",
+        search: str = "gradient",
+        n_buckets: int = 5,
+        score_method: str = "jensen_shannon",
     ):
         self.n_segments = n_segments
         self.fit_segments = fit_segments
@@ -770,6 +882,9 @@ class TribbleTimeSeriesRegressor(RegressorMixin, BaseEstimator):
         self.base_estimator = base_estimator
         self.random_state = random_state
         self.head = head
+        self.search = search
+        self.n_buckets = n_buckets
+        self.score_method = score_method
 
     def fit(self, X, y):
         self.aggregator_ = FuzzyTemporalAggregator(
@@ -784,6 +899,9 @@ class TribbleTimeSeriesRegressor(RegressorMixin, BaseEstimator):
             random_state=self.random_state,
             head=self.head,
             base_estimator=self.base_estimator,
+            search=self.search,
+            n_buckets=self.n_buckets,
+            score_method=self.score_method,
         ).fit(X, y)
         Z = self.aggregator_.transform(X)
         if self.base_estimator is None:

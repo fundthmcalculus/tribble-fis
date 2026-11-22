@@ -557,3 +557,67 @@ def test_downstream_regressor_predicts_end_to_end():
     assert pred.shape == (6,)
     assert np.all(np.isfinite(pred))
     assert model.aggregator_.head == "downstream"
+
+
+# ------------------------------------- H. backward (derivative-free) search (#127)
+
+BW = dict(search="backward", n_segments=3)
+
+
+def test_backward_search_rejects_unknown_options():
+    seqs, y = _planted(n_seq=12, seed=30)
+    with pytest.raises(ValueError, match="search must be"):
+        FuzzyTemporalAggregator(search="newton").fit(seqs, y)
+    with pytest.raises(ValueError, match="score_method"):
+        FuzzyTemporalAggregator(search="backward", score_method="bhattacharyya").fit(seqs, y)
+    with pytest.raises(ValueError, match="n_buckets"):
+        FuzzyTemporalAggregator(search="backward", n_buckets=1).fit(seqs, y)
+
+
+def test_backward_search_uses_no_solver(monkeypatch):
+    """The point of the backward search: no gradient, no projected L-BFGS."""
+    import tribblefis.temporal_aggregation as ta
+
+    def _fail(*a, **k):
+        raise AssertionError("backward search must not call the gradient solver")
+
+    monkeypatch.setattr(ta, "projected_lbfgs_solve", _fail)
+    seqs, y = _planted(n_seq=40, seed=31)
+    agg = FuzzyTemporalAggregator(**BW).fit(seqs, y)
+    assert agg.objective_ is None and agg.objective_init_ is None
+
+
+def test_backward_search_is_deterministic():
+    seqs, y = _planted(n_seq=40, seed=32)
+    a = FuzzyTemporalAggregator(**BW).fit(seqs, y)
+    b = FuzzyTemporalAggregator(**BW).fit(seqs, y)
+    np.testing.assert_array_equal(a.centers_, b.centers_)
+    np.testing.assert_array_equal(a.lambdas_, b.lambdas_)
+
+
+def test_backward_search_shapes_order_and_separation():
+    seqs, y = _planted(n_seq=40, seed=33)
+    agg = FuzzyTemporalAggregator(**BW).fit(seqs, y)
+    assert agg.centers_.shape == (3,) and agg.widths_.shape == (3,)
+    assert agg.lambdas_.shape == (3, 2)
+    assert np.all(np.diff(agg.centers_) >= 0)
+    assert np.min(np.diff(agg.centers_)) >= 0.5 / 3 - 1e-12  # grid allows it here
+
+
+def test_backward_search_places_a_centre_on_the_planted_phase():
+    seqs, y = _planted(n_seq=120, phase=0.72, seed=34)
+    agg = FuzzyTemporalAggregator(**BW).fit(seqs, y)
+    assert np.min(np.abs(agg.centers_ - 0.72)) < 0.08
+
+
+def test_backward_search_unsupervised_is_even_partition():
+    agg = FuzzyTemporalAggregator(**BW).fit([np.zeros((5, 1))])
+    np.testing.assert_allclose(agg.centers_, (np.arange(3) + 0.5) / 3)
+
+
+def test_backward_regressor_end_to_end():
+    seqs, y = _planted(n_seq=40, seed=35)
+    model = TribbleTimeSeriesRegressor(search="backward", n_segments=3).fit(seqs[:32], y[:32])
+    pred = model.predict(seqs[32:])
+    assert pred.shape == (8,) and np.all(np.isfinite(pred))
+    assert model.aggregator_.search == "backward"
