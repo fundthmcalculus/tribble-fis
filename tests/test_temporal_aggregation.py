@@ -15,10 +15,11 @@ accuracy claims live in benchmarks/temporal_aggregation.py, not here.
 
 from __future__ import annotations
 
+import zlib
+
 import numpy as np
 import pandas as pd
 import pytest
-from scipy.optimize import approx_fprime
 from sklearn.base import clone
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import KFold
@@ -35,6 +36,18 @@ from tribblefis.temporal_aggregation import (
 from tribblefis.temporal_aggregation import _aggregate
 
 RNG = np.random.default_rng(127)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rng(request):
+    """Give every test its own RNG, seeded from its name.
+
+    A single module-level generator made each test's random inputs depend on
+    which tests ran before it in the same xdist worker, so CI and local runs
+    drew different cases (and CI found ones local never saw).
+    """
+    global RNG
+    RNG = np.random.default_rng(zlib.crc32(request.node.name.encode()))
 
 
 def _desc(x):
@@ -313,10 +326,18 @@ def test_analytic_gradient_matches_finite_differences():
     agg._c0, agg._w0 = np.array([0.2, 0.5, 0.8]), np.full(3, 0.1)
     padded = pad_sequences(seqs)
     folds = list(KFold(5, shuffle=True, random_state=0).split(y))
-    theta = RNG.normal(scale=0.5, size=3 + 3 + 9)
+    # Inside the optimiser's box: lam = 400 * theta, so an unbounded draw puts
+    # |lam| past 200 where exp(|lam|) overflows -- a point fitting never visits.
+    _, bounds = agg._pack(agg._c0, agg._w0, 3)
+    bounds = np.array(bounds)
+    theta = RNG.uniform(bounds[:, 0], bounds[:, 1])
     _, analytic = agg._objective(theta, padded, y, folds)
-    numeric = approx_fprime(theta, lambda t: agg._objective(t, padded, y, folds, with_grad=False),
-                            1e-6)
+    # Central differences: forward differences carry O(h) truncation error,
+    # which the x400 scaling of the lambda coordinates turns into ~1e-4.
+    f = lambda t: agg._objective(t, padded, y, folds, with_grad=False)  # noqa: E731
+    h = 1e-6
+    numeric = np.array([(f(theta + h * e) - f(theta - h * e)) / (2 * h)
+                        for e in np.eye(theta.size)])
     np.testing.assert_allclose(analytic, numeric, rtol=1e-4, atol=1e-6)
 
 
