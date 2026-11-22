@@ -508,3 +508,52 @@ def test_sklearn_params_roundtrip():
     cloned = clone(model)
     assert cloned.get_params()["n_segments"] == 5
     assert cloned.get_params()["ridge"] == 0.3
+
+
+# ------------------------------------- G. end-to-end downstream head (#127 #3)
+
+DOWN = dict(head="downstream", max_evals=30, n_restarts=0, cv=3, n_segments=2)
+
+
+def test_downstream_head_rejects_unknown_head():
+    seqs, y = _planted(n_seq=12, seed=20)
+    with pytest.raises(ValueError, match="head must be"):
+        FuzzyTemporalAggregator(head="nope").fit(seqs, y)
+
+
+def test_downstream_learning_never_worsens_its_own_objective():
+    seqs, y = _planted(n_seq=30, seed=21)
+    agg = FuzzyTemporalAggregator(**DOWN).fit(seqs, y)
+    assert agg.objective_ is not None
+    assert agg.objective_ <= agg.objective_init_ + 1e-12
+
+
+def test_downstream_gradient_matches_loss_differences():
+    seqs, y = _planted(n_seq=24, seed=22)
+    agg = FuzzyTemporalAggregator(**DOWN)
+    agg.fit(seqs, y)  # sets _base / _y_1d; learned params are irrelevant here
+    from tribblefis.temporal_aggregation import pad_sequences
+    sq = pad_sequences(seqs)
+    Y = y[:, None]
+    folds = list(KFold(3, shuffle=True, random_state=0).split(Y))
+    agg._y_1d = True
+    theta, _ = agg._pack(agg._c0, agg._w0, sq.n_features)
+    loss, grad = agg._downstream_objective(theta, sq, Y, folds, True)
+    assert grad.shape == theta.shape
+    # Forward-difference gradient along each coordinate must reproduce the loss
+    # change of a step of the same size (the definition it is built from).
+    i = int(np.argmax(np.abs(grad)))
+    h = 1e-4
+    bumped = theta.copy()
+    bumped[i] += h
+    fd = (agg._downstream_objective(bumped, sq, Y, folds, True, with_grad=False) - loss) / h
+    assert fd == pytest.approx(grad[i], rel=1e-3, abs=1e-6)
+
+
+def test_downstream_regressor_predicts_end_to_end():
+    seqs, y = _planted(n_seq=30, seed=23)
+    model = TribbleTimeSeriesRegressor(**DOWN).fit(seqs[:24], y[:24])
+    pred = model.predict(seqs[24:])
+    assert pred.shape == (6,)
+    assert np.all(np.isfinite(pred))
+    assert model.aggregator_.head == "downstream"

@@ -127,6 +127,7 @@ they live in the benchmark (§7), per the repo's benchmark convention.
 | B. Special cases | Q is a RIM quantifier for λ∈[−200,200]; dQ/dx, dQ/dλ vs finite differences; λ=0 → weighted mean; λ→±∞ → max/min within the exact bound `span·e^{−|λ|·p_extreme}` (200 draws); uniform importance → Yager OWA weights; orness formula; **leak regression vs power quantifier**; crisp limit = hand tercile means; crisp limit + λ=±200 = per-third max/min | 9 |
 | C. Partition | Ruspini (sums to 1, non-negative); crisp limit = nearest centre; underflowing segment stays finite | 3 |
 | D. Inputs | padding cannot leak across lengths; array/list/DataFrame agree, names propagate; length-1 sequence; validation (6 cases); transform feature mismatch; misaligned/non-finite y | 6 |
+| G. Downstream head | unknown head rejected; objective never worsens; forward-difference gradient matches loss change; end-to-end regressor predicts | 4 |
 | E2. Placement diagnostic | mass sums to 1; even partition on uniform marginal is exactly uniform; bunched centres flagged (entropy, max deviation); K=1 trivially uniform; unfitted and empty input rejected | 5 |
 | E. Learning | full-objective analytic gradient vs finite differences; surrogate = sklearn `Ridge` on same folds; objective never worsens; learned segment lands within 0.08 of a planted phase with loss halved; spike target → orness > 0.8; ablation switches freeze params; unsupervised fit = soft even partition; segments sorted, report consistent | 8 |
 | F. Contract | deterministic under seed; end-to-end single- and multi-output with default MIMO head; custom base estimator cloned not mutated; `get_params`/`clone` round-trip | 5 |
@@ -156,16 +157,19 @@ Benchmark protocol (`benchmarks/temporal_aggregation.py`, not in CI):
   where a fourth basin reached 0.078 (scipy L-BFGS-B found the same spread from
   the same starts, so this is the landscape, not the solver). `n_restarts`
   trades fit time for this.
-- **Surrogate ≠ downstream model. Decision: stays linear (#127 item 3).**
-  Segments are chosen for a ridge head, then frozen for `MimoGaussianPredictor`.
-  End-to-end learning was not implemented because the downstream fit is not
-  differentiable in the aggregator's parameters: it ranks features, partitions
-  outputs and selects `top_n` (discrete), then solves consequents in closed
-  form. Making it end-to-end would need a new learner or a derivative-free
-  outer loop, not a change to this module. The gap is measured in the table
-  section 7: the ridge head reaches R² 0.905 on the learned features, while the
-  FIS head reaches 0.687 ± 0.069 on the same features. Reopen this if that gap
-  matters for a workload.
+- **Surrogate ≠ downstream model (#127 item 3: implemented as an option).**
+  `head="ridge"` (default) fits segments against a ridge head with an exact
+  gradient. `head="downstream"` fits them against the real `base_estimator`
+  (default `MimoGaussianPredictor`): the CV error of the actual model on the
+  aggregated rows, with a forward-difference gradient, because the downstream
+  fit ranks features, partitions outputs and selects `top_n` (discrete steps),
+  so it has no analytic gradient. Cost: each gradient costs `1 + dim` full CV
+  fits of the base estimator, so the downstream head is far slower than the
+  ridge head (over 15 minutes for one 90-sequence fit at `max_evals=8`, not
+  finished). Its accuracy effect vs the ridge head is **not yet measured**;
+  the ridge head's own FIS-head gap (R² 0.905 ridge vs 0.687 FIS, section 7)
+  is the motivation. Use `head="downstream"` only on small data until its
+  benefit is shown.
 - **Fit cost.** Seconds to tens of seconds for hundreds of cycles; O(N·K·F·L)
   memory per evaluation. Not tuned for full-rate N-CMAPSS (subsample first).
 - **Shared segments across sensors.** Centres/widths are shared; only the

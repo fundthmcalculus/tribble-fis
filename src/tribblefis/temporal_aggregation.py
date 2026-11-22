@@ -95,6 +95,7 @@ _WIDTH_BOUNDS = (0.005, 1.0)
 # log-widths divided by log(1/0.005), lam divided by 2 * _LAMBDA_BOUND.
 _LOG_WIDTH_SCALE = float(np.log(_WIDTH_BOUNDS[1] / _WIDTH_BOUNDS[0]))
 _LAMBDA_SCALE = 2.0 * _LAMBDA_BOUND
+_FD_STEP = 1e-5                      # forward-difference step, downstream head
 
 
 # --------------------------------------------------------------------------
@@ -389,6 +390,12 @@ class FuzzyTemporalAggregator(TransformerMixin, BaseEstimator):
         n_restarts: Extra starts from random segment centres, on top of the
             always-first even-partition start. The best CV objective wins.
         random_state: Seed for folds and restarts.
+        head: Surrogate the segments are fitted against. ``"ridge"`` (default,
+            fast, analytic gradient) uses a ridge head. ``"downstream"`` uses
+            the real ``base_estimator`` (default ``MimoGaussianPredictor``) in
+            the loop: the CV error of the actual model, with a
+            finite-difference gradient. This is the end-to-end option (#127).
+        base_estimator: Head used when ``head="downstream"``; cloned per fold.
 
     Attributes:
         centers_, widths_: ``(K,)`` learned segment parameters, sorted by centre.
@@ -410,6 +417,8 @@ class FuzzyTemporalAggregator(TransformerMixin, BaseEstimator):
         max_evals: int = 300,
         n_restarts: int = 2,
         random_state: int | None = 42,
+        head: str = "ridge",
+        base_estimator=None,
     ):
         self.n_segments = n_segments
         self.fit_segments = fit_segments
@@ -420,6 +429,8 @@ class FuzzyTemporalAggregator(TransformerMixin, BaseEstimator):
         self.max_evals = max_evals
         self.n_restarts = n_restarts
         self.random_state = random_state
+        self.head = head
+        self.base_estimator = base_estimator
 
     # -- parameter vector <-> arrays ---------------------------------------
 
@@ -497,7 +508,42 @@ class FuzzyTemporalAggregator(TransformerMixin, BaseEstimator):
         loss = float(np.mean(losses))
         return (loss, gZ) if with_grad else loss
 
+    def _downstream_loss(self, theta, seqs, Y, folds, y_1d):
+        """Held-out error of the real base estimator on the aggregated rows.
+
+        Each fold clones the base estimator, fits it on the aggregated training
+        rows and scores the held-out rows. Targets are scaled by the training
+        fold's spread, so multi-output losses are comparable across outputs.
+        """
+        centers, widths, lambdas = self._unpack(theta, seqs.n_features)
+        Z = _aggregate(seqs, centers, widths, lambdas).reshape(seqs.n_sequences, -1)
+        losses = []
+        for tr, va in folds:
+            model = clone(self._base)
+            y_tr = Y[tr][:, 0] if y_1d else Y[tr]
+            model.fit(Z[tr], y_tr)
+            pred = np.asarray(model.predict(Z[va]), dtype=float).reshape(len(va), -1)
+            scale = Y[tr].std(0)
+            scale = np.where(scale > 1e-12, scale, 1.0)
+            losses.append(np.mean(((pred - Y[va]) / scale) ** 2))
+        return float(np.mean(losses))
+
+    def _downstream_objective(self, theta, seqs, Y, folds, y_1d, with_grad: bool = True):
+        loss = self._downstream_loss(theta, seqs, Y, folds, y_1d)
+        if not with_grad:
+            return loss
+        # Forward differences: the downstream head has no analytic gradient.
+        grad = np.zeros_like(theta)
+        for i in range(theta.size):
+            step = _FD_STEP * max(1.0, abs(theta[i]))
+            bumped = theta.copy()
+            bumped[i] += step
+            grad[i] = (self._downstream_loss(bumped, seqs, Y, folds, y_1d) - loss) / step
+        return loss, grad
+
     def _objective(self, theta, seqs, Y, folds, with_grad: bool = True):
+        if self.head == "downstream":
+            return self._downstream_objective(theta, seqs, Y, folds, self._y_1d, with_grad)
         n_feat = seqs.n_features
         centers, widths, lambdas = self._unpack(theta, n_feat)
         Z3, backward = _aggregate(seqs, centers, widths, lambdas, with_grad=True)
@@ -524,6 +570,8 @@ class FuzzyTemporalAggregator(TransformerMixin, BaseEstimator):
         """
         if int(self.n_segments) < 1:
             raise ValueError("n_segments must be >= 1")
+        if self.head not in ("ridge", "downstream"):
+            raise ValueError(f"head must be 'ridge' or 'downstream', got {self.head!r}")
         seqs = pad_sequences(X)
         k = int(self.n_segments)
         f = seqs.n_features
@@ -538,6 +586,7 @@ class FuzzyTemporalAggregator(TransformerMixin, BaseEstimator):
 
         if y is not None:
             Y = np.asarray(y, dtype=float)
+            self._y_1d = Y.ndim == 1
             if Y.ndim == 1:
                 Y = Y[:, None]
             if Y.shape[0] != seqs.n_sequences:
@@ -552,6 +601,11 @@ class FuzzyTemporalAggregator(TransformerMixin, BaseEstimator):
             folds = list(KFold(n_splits, shuffle=True,
                                random_state=self.random_state).split(Y))
 
+            if self.head == "downstream":
+                if self.base_estimator is None:
+                    self._base = MimoGaussianPredictor(random_state=self.random_state)
+                else:
+                    self._base = self.base_estimator
             theta0, bounds = self._pack(self._c0, self._w0, f)
             self.objective_init_ = self._objective(theta0, seqs, Y, folds, with_grad=False)
             best_theta, best_loss = theta0, self.objective_init_
@@ -687,6 +741,8 @@ class TribbleTimeSeriesRegressor(RegressorMixin, BaseEstimator):
             before fitting. Defaults to ``MimoGaussianPredictor`` with its
             defaults and this ``random_state``.
         random_state: Seed for the aggregator and the default base estimator.
+        head: ``"ridge"`` or ``"downstream"``; see :class:`FuzzyTemporalAggregator`.
+            ``"downstream"`` learns the segments against ``base_estimator`` itself.
     """
 
     def __init__(
@@ -701,6 +757,7 @@ class TribbleTimeSeriesRegressor(RegressorMixin, BaseEstimator):
         n_restarts: int = 2,
         base_estimator=None,
         random_state: int | None = 42,
+        head: str = "ridge",
     ):
         self.n_segments = n_segments
         self.fit_segments = fit_segments
@@ -712,6 +769,7 @@ class TribbleTimeSeriesRegressor(RegressorMixin, BaseEstimator):
         self.n_restarts = n_restarts
         self.base_estimator = base_estimator
         self.random_state = random_state
+        self.head = head
 
     def fit(self, X, y):
         self.aggregator_ = FuzzyTemporalAggregator(
@@ -724,6 +782,8 @@ class TribbleTimeSeriesRegressor(RegressorMixin, BaseEstimator):
             max_evals=self.max_evals,
             n_restarts=self.n_restarts,
             random_state=self.random_state,
+            head=self.head,
+            base_estimator=self.base_estimator,
         ).fit(X, y)
         Z = self.aggregator_.transform(X)
         if self.base_estimator is None:
