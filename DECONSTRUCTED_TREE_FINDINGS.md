@@ -4,7 +4,8 @@
 > known physical/domain topology** — see "Disposition" below. Implementation:
 > `tribble-tree/fuzzytree/topology.py`, `tribble-tree/fuzzytree/deconstruct.py`
 > (`DeconstructedHierarchicalRegressor`), `tribble-tree/tests/test_deconstruct.py`,
-> `tribble-tree/demo_deconstruct_synthetic.py`, `tribble-tree/cmapss_deconstruct_eval.py`.
+> `tribble-tree/demo_deconstruct_synthetic.py`, `tribble-tree/cmapss_deconstruct_eval.py`,
+> `tribble-tree/fuzzytree/conformal.py` / `tribble-tree/demo_conformal_intervals.py` (intervals, #268).
 
 ## Motivation
 
@@ -225,6 +226,82 @@ available from this repository. Until it is, the conservative reading stands:
 `fit` records which was used in `topology_source_` (`"supplied"` / `"auto"`) so
 a downstream table can never report one as the other.
 
+## Stage D — calibrated prediction intervals (#268)
+
+Phase 0 of `docs/hierarchical-it2-design.md` (#147). Both tree regressors
+take `conformal_calibration=True`: `fit` holds out
+`conformal_calibration_frac` (default 0.2) of the rows *before* topology
+selection, gate building or any expert fit, and sizes a split-conformal
+margin on them (`fuzzytree/conformal.py`, reusing
+`tribblefis.regression.conformal_calibration_margin`). `predict_intervals`
+returns `predict ∓ conformal_margin_`. HME's `refine_em()` in that mode runs
+on the stored fit split only and re-sizes the margin afterward.
+
+`demo_conformal_intervals.py`: Stage A generator and split, 5 seeds.
+
+| estimator | alpha | target | coverage (mean, min–max) | width | width / range | R² |
+|---|--:|--:|--:|--:|--:|--:|
+| Deconstructed (true topology) | 0.1 | 0.90 | 0.905 (0.875–0.914) | 4.232 | 0.118 | 0.974 |
+| Deconstructed (true topology) | 0.2 | 0.80 | 0.813 (0.789–0.838) | 3.308 | 0.092 | 0.974 |
+| Deconstructed (`topology="auto"`) | 0.1 | 0.90 | 0.902 (0.888–0.922) | 3.452 | 0.096 | 0.983 |
+| Deconstructed (`topology="auto"`) | 0.2 | 0.80 | 0.797 (0.763–0.847) | 2.684 | 0.075 | 0.983 |
+| HME (gaussian gates) | 0.1 | 0.90 | 0.899 (0.876–0.928) | 4.230 | 0.118 | 0.974 |
+| HME (gaussian gates) | 0.2 | 0.80 | 0.791 (0.758–0.818) | 3.181 | 0.088 | 0.974 |
+
+- **Coverage is on target**: every mean is within 0.013 of `1 - alpha`
+  (#268's acceptance bound is ±0.03), for both estimators and both topology
+  sources.
+- **Width tracks model accuracy**: the more accurate `"auto"` topology
+  (R² 0.983) gets an interval ~18% narrower than the hand-authored one
+  (0.974) at the same coverage -- a better model is rewarded with a tighter
+  interval, which a fixed-footprint interval cannot do.
+- **Cost**: holding out 20% costs no visible R² (0.974 mean over 5 seeds vs.
+  Stage A's single-seed full-data 0.971).
+- **Limitation**: width is constant per model, not per sample. It says how
+  wrong the model tends to be, not where. See the adaptive variant below.
+
+### Adaptive (per-sample) width for HME
+
+`HierarchicalFuzzyExpertsRegressor(conformal_mode="adaptive")` uses
+normalized split conformal: scores are `|y - ŷ| / s(x)` and intervals are
+`ŷ ∓ q·s(x)`, where `s(x)` (`predict_scale`) is the gated mixture's
+predictive std (law of total variance over leaves: within-leaf residual
+variance plus between-expert disagreement). Leaf variances come from EM's
+`sigma2_` after `refine_em`, else `leaf_sigma2_`, estimated on the fit split
+at `fit`. Same marginal guarantee as `"constant"`.
+
+`demo_conformal_intervals.py --adaptive`: Stage A signal, noise sd rising
+linearly 0.05 → 2.55 along one feature, 5 seeds, target 0.90.
+
+| noise along | mode | coverage | cov. low-noise ⅓ | cov. high-noise ⅓ | width low ⅓ | width high ⅓ | mean width | ρ(width, \|resid\|) |
+|---|---|--:|--:|--:|--:|--:|--:|--:|
+| `e` (gate split var) | constant | 0.897 | 0.991 | 0.772 | 6.23 | 6.23 | 6.23 | +0.039 |
+| `e` (gate split var) | adaptive | 0.900 | 0.968 | 0.802 | 4.82 | 6.66 | 5.89 | +0.286 |
+| `a` (rarely split) | constant | 0.903 | 0.969 | 0.831 | 6.44 | 6.44 | 6.44 | +0.007 |
+| `a` (rarely split) | adaptive | 0.905 | 0.970 | 0.825 | 6.60 | 6.58 | 6.57 | +0.136 |
+
+- **It works only along the gate partition.** When noise varies with the
+  variable the gate tree splits on (`e`), adaptive mode moves width to where
+  the noise is: high-noise coverage 0.772 → 0.802, low-noise over-coverage
+  0.991 → 0.968, mean width −5%, ρ 0.04 → 0.29. When noise varies along a
+  variable the tree barely splits on (`a`), nothing changes.
+- **Why it is modest even when aligned.** `s(x)` has one value per leaf
+  (blended at gate boundaries), so it can only be as fine as the partition
+  (8 leaves here). And per-leaf residual variance mixes expert *bias* with
+  noise: leaf variances here are 5–20 against noise variance 0.003–6.5, so
+  most of the signal `s(x)` carries is "where the experts fit badly", not
+  "where the data is noisy".
+- **Recommendation.** Keep `"constant"` as the default. Use `"adaptive"`
+  when heteroscedasticity is expected along variables the gates route on.
+  Marginal coverage holds either way. A finer scale model, such as a
+  separate regressor on `|resid|`, would adapt along any feature, but it
+  is a different design from per-leaf variance.
+
+**Stage B is not yet measured.** `cmapss_deconstruct_eval.py` now ends with a
+`conformal_coverage` block (HME and the RUL-only deconstructed tree, target
+0.90); it was smoke-tested on a synthetic stand-in frame only, because the
+N-CMAPSS file is not available in CI.
+
 ## Disposition
 
 Kept, unlike the (rejected) adaptive-partitioning experiment this findings
@@ -255,6 +332,8 @@ Not yet done, and the natural next steps if this is picked up again:
 - The leaf-bucket-dedup enhancement sketched in `deconstruct.py`'s design
   (merging buckets that project to identical clauses on a leaf's own
   features) was not needed to get these results and was not built.
+- **Run Stage D's coverage block on N-CMAPSS** (`cmapss_deconstruct_eval.py`
+  now includes it) to confirm the ±0.03 coverage bound on real data.
 - **Re-run Stage B with `topology="auto"`.** Stage C shows a derived topology
   beating a hand-authored one on a generator with no group structure to find,
   which is the easy case. N-CMAPSS is the one with real structure, and until

@@ -159,6 +159,40 @@ def main():
 
     evaluate_model(fold1, X_te, y_te, "Deconstructed tree (leaves supervised on true health params)", regressor_report)
 
+    conformal_coverage(X_tr, y_tr, X_te, y_te)
+
+
+def conformal_coverage(X_tr, y_tr, X_te, y_te, alpha=0.1):
+    """#268: split-conformal `predict_intervals` coverage on real RUL data.
+
+    Same estimators as Fold 2, refit with ``conformal_calibration=True`` (20%
+    of the training rows held out for calibration). Acceptance: coverage
+    within +/-0.03 of ``1 - alpha``.
+    """
+    print("\n" + "=" * 82)
+    print(f"CONFORMAL INTERVALS (#268), target coverage {1 - alpha:.2f}")
+    print("=" * 82)
+    arms = {
+        "HME (auto topology)": lambda: HierarchicalFuzzyExpertsRegressor(
+            criterion="variance", max_depth=2, n_gate_terms=2, top_n=6,
+            min_soft_count=100, min_expert_samples=150,
+            expert_kwargs={"n_output_buckets": 4, "tsk_order": "1st"},
+            conformal_calibration=True, conformal_alpha=alpha,
+        ).fit(X_tr, y_tr),
+        "Deconstructed tree (RUL only)": lambda: DeconstructedHierarchicalRegressor(
+            flat_regressor_kwargs={"n_output_buckets": 4, "top_n": -1, "random_state": SEED},
+            conformal_calibration=True, conformal_alpha=alpha,
+        ).fit(X_tr, y_tr, TOPOLOGY),
+    }
+    y_te = np.asarray(y_te, dtype=float)
+    for name, build in arms.items():
+        model = build()
+        lo, hi = model.predict_intervals(X_te)
+        cov = float(np.mean((y_te >= lo) & (y_te <= hi)))
+        width = float(np.mean(hi - lo))
+        print(f"  {name:<34} coverage={cov:.3f}  width={width:.2f} "
+              f"(margin {model.conformal_margin_:.2f}, RUL range {np.ptp(y_te):.1f})")
+
 
 if __name__ == "__main__":
     main()

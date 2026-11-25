@@ -54,6 +54,7 @@ from tribblefis.regression import (
     solve_tsk_consequents_from_firing,
 )
 
+from . import conformal
 from .hme import _ConstantClassifier, _ConstantRegressor
 from .auto_topology import candidate_topologies, select_topology
 from .topology import TopologyNode, parse_topology
@@ -79,6 +80,25 @@ class DeconstructedHierarchicalRegressor(BaseEstimator, RegressorMixin):
         TSK consequent order ("0th", "1st", "2nd", ...) used for every leaf
         and branch consequent solve. Independent of the flat model's own
         `tsk_order`.
+    conformal_calibration : bool, default=False
+        Hold out `conformal_calibration_frac` of the rows before anything is
+        fit -- including ``topology="auto"`` candidate selection -- and use
+        them to size a split-conformal margin (`conformal_margin_`) for
+        `predict_intervals` (#268). Off by default: with it off, `fit` and
+        `predict` are unchanged.
+    conformal_alpha : float, default=0.1
+        Target miscoverage: intervals aim for ``1 - conformal_alpha`` marginal
+        coverage on unseen exchangeable data.
+    conformal_calibration_frac : float, default=0.2
+        Fraction of rows held out for calibration.
+    conformal_random_state : int | None, default=0
+        Seed for the calibration split.
+
+    Attributes
+    ----------
+    conformal_margin_ : float | None
+        Symmetric margin added around `predict`, or ``None`` when fit without
+        calibration.
     """
 
     def __init__(
@@ -89,6 +109,10 @@ class DeconstructedHierarchicalRegressor(BaseEstimator, RegressorMixin):
         auto_n_groups: tuple[int, ...] = (2, 3, 4),
         auto_n_splits: int = 3,
         auto_random_state: int | None = 0,
+        conformal_calibration: bool = False,
+        conformal_alpha: float = 0.1,
+        conformal_calibration_frac: float = 0.2,
+        conformal_random_state: int | None = 0,
     ):
         self.flat_regressor_kwargs = flat_regressor_kwargs
         self.l2_reg = l2_reg
@@ -99,6 +123,10 @@ class DeconstructedHierarchicalRegressor(BaseEstimator, RegressorMixin):
         self.auto_n_groups = auto_n_groups
         self.auto_n_splits = auto_n_splits
         self.auto_random_state = auto_random_state
+        self.conformal_calibration = conformal_calibration
+        self.conformal_alpha = conformal_alpha
+        self.conformal_calibration_frac = conformal_calibration_frac
+        self.conformal_random_state = conformal_random_state
 
     def fit(
         self,
@@ -135,6 +163,25 @@ class DeconstructedHierarchicalRegressor(BaseEstimator, RegressorMixin):
         y = _as_target(y, X.index)
         leaf_targets = leaf_targets or {}
 
+        self.conformal_margin_ = None
+        if self.conformal_calibration:
+            # Split first, before topology selection or any fit sees a row:
+            # the margin's coverage guarantee needs calibration rows that never
+            # influenced the model (#268).
+            conformal.validate(self.conformal_alpha, self.conformal_calibration_frac)
+            fit_idx, calib_idx = conformal.split_indices(
+                len(X), self.conformal_calibration_frac, self.conformal_random_state
+            )
+            X_calib, y_calib = X.iloc[calib_idx].reset_index(drop=True), y.iloc[calib_idx]
+            X = X.iloc[fit_idx].reset_index(drop=True)
+            y = _as_target(y.iloc[fit_idx], X.index)
+            # `_node_target` reads leaf targets positionally, so slice them the
+            # same way.
+            leaf_targets = {
+                name: np.asarray(values, dtype=float).reshape(-1)[fit_idx]
+                for name, values in leaf_targets.items()
+            }
+
         topology = self._resolve_topology(X, y, topology, leaf_targets)
 
         self.flat_ = TribbleRegressor(**(self.flat_regressor_kwargs or {}))
@@ -149,7 +196,24 @@ class DeconstructedHierarchicalRegressor(BaseEstimator, RegressorMixin):
         self.node_state_: dict[str, dict] = {}
         self._fit_node(self.root_, X, y, leaf_targets)
         self.is_fitted_ = True
+        if self.conformal_calibration:
+            self.conformal_margin_ = conformal.margin(
+                y_calib, self.predict(X_calib), self.conformal_alpha
+            )
         return self
+
+    def predict_intervals(self, X) -> tuple[np.ndarray, np.ndarray]:
+        """``(lower, upper)`` = `predict` -/+ `conformal_margin_`.
+
+        Split-conformal: marginal coverage >= ``1 - conformal_alpha`` on
+        exchangeable data. Constant width -- it says how wrong the model
+        tends to be, not where. Raises ``RuntimeError`` unless the estimator
+        was fit with ``conformal_calibration=True``.
+        """
+        check_is_fitted(self)
+        return conformal.intervals(
+            self.predict(X), getattr(self, "conformal_margin_", None), type(self).__name__
+        )
 
     def _resolve_topology(self, X, y, topology, leaf_targets):
         """Return the topology dict to fit, deriving one if asked.
