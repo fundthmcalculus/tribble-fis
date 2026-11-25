@@ -264,6 +264,14 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
     ``1 - conformal_alpha`` marginal coverage. `refine_em` must then be
     called without data: it refines on the stored fit split and re-sizes the
     margin on the stored calibration split, so EM never sees calibration rows.
+
+    ``conformal_mode="adaptive"`` makes the width per-sample: the margin is
+    sized on ``|y - y_hat| / s(x)`` and intervals are ``y_hat -/+ q * s(x)``,
+    where ``s(x)`` (`predict_scale`) is the gate-weighted mixture predictive
+    standard deviation built from per-leaf residual variances -- EM's
+    `sigma2_` once `refine_em` has run, else `leaf_sigma2_`, estimated on the
+    fit split at `fit`. Same marginal coverage guarantee as ``"constant"``;
+    the difference is *where* the width goes.
     """
 
     def __init__(
@@ -286,6 +294,7 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
         conformal_calibration=False,
         conformal_alpha=0.1,
         conformal_calibration_frac=0.2,
+        conformal_mode="constant",
     ):
         super().__init__(
             variable_plan=variable_plan, criterion=criterion, top_n=top_n, top_p=top_p,
@@ -298,6 +307,7 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
         self.conformal_calibration = conformal_calibration
         self.conformal_alpha = conformal_alpha
         self.conformal_calibration_frac = conformal_calibration_frac
+        self.conformal_mode = conformal_mode
 
     def fit(self, X, y):
         X_df, y_value = self._prepare(X, y, y_numeric=True)
@@ -310,6 +320,10 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
             # sees a row -- the margin's guarantee needs calibration rows that
             # never influenced the model (#268).
             conformal.validate(self.conformal_alpha, self.conformal_calibration_frac)
+            if self.conformal_mode not in ("constant", "adaptive"):
+                raise ValueError(
+                    f'conformal_mode must be "constant" or "adaptive", got {self.conformal_mode!r}'
+                )
             fit_idx, calib_idx = conformal.split_indices(
                 len(X_df), self.conformal_calibration_frac, self.random_state
             )
@@ -349,14 +363,62 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
             self.leaf_info_[leaf.leaf_id] = {"n_train": int(len(idx)), "features": feats, "kind": kind}
 
         self.is_fitted_ = True
+        self.leaf_sigma2_ = None
+        if self._conformal_calib_split is not None and self.conformal_mode == "adaptive":
+            self.leaf_sigma2_ = self._leaf_residual_variance(X_df, y_value, R)
         self._update_conformal_margin()
         return self
+
+    def _leaf_residual_variance(self, X_df, y_value, R, var_floor=1e-6) -> dict:
+        """Gate-weighted residual variance per leaf on the fit split -- the
+        same estimate `em.refine_em_regressor` initialises `sigma2_` with."""
+        out = {}
+        for leaf_id, expert in self.experts_.items():
+            resid = y_value - np.asarray(expert.predict(X_df), dtype=float)
+            w = R[:, leaf_id]
+            wsum = w.sum()
+            var = float((w * resid**2).sum() / wsum) if wsum > 1e-12 else float(np.var(resid))
+            out[leaf_id] = max(var, var_floor)
+        return out
+
+    def predict_scale(self, X) -> np.ndarray:
+        """Per-sample predictive standard deviation of the gated mixture.
+
+        Law of total variance over the leaves:
+        ``sum_l R_l (sigma2_l + mu_l^2) - (sum_l R_l mu_l)^2`` -- within-leaf
+        noise plus between-expert disagreement. Leaf variances are EM's
+        `sigma2_` when `refine_em` has run, else `leaf_sigma2_`. Only
+        available with ``conformal_mode="adaptive"``.
+        """
+        check_is_fitted(self)
+        sigma2 = getattr(self, "sigma2_", None) or getattr(self, "leaf_sigma2_", None)
+        if not sigma2:
+            raise RuntimeError(
+                "predict_scale() needs per-leaf variances: fit with "
+                'conformal_calibration=True, conformal_mode="adaptive" (or run refine_em).'
+            )
+        if not isinstance(X, pd.DataFrame):
+            X = pd.DataFrame(X, columns=self.feature_names_in_)
+        R = compute_responsibilities(self.tree_, X[self.gate_features_], self.n_leaves_)
+        first = np.zeros(len(X))
+        second = np.zeros(len(X))
+        for leaf_id, expert in self.experts_.items():
+            mu = np.asarray(expert.predict(X), dtype=float)
+            first += R[:, leaf_id] * mu
+            second += R[:, leaf_id] * (sigma2.get(leaf_id, 0.0) + mu**2)
+        return np.sqrt(np.clip(second - first**2, 0.0, None))
 
     def _update_conformal_margin(self) -> None:
         if self._conformal_calib_split is None:
             return
         X_calib, y_calib = self._conformal_calib_split
-        self.conformal_margin_ = conformal.margin(y_calib, self.predict(X_calib), self.conformal_alpha)
+        pred = self.predict(X_calib)
+        if self.conformal_mode == "adaptive":
+            self.conformal_margin_ = conformal.normalized_margin(
+                y_calib, pred, self.predict_scale(X_calib), self.conformal_alpha
+            )
+        else:
+            self.conformal_margin_ = conformal.margin(y_calib, pred, self.conformal_alpha)
 
     def predict(self, X):
         check_is_fitted(self)
@@ -369,13 +431,19 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
         return y_pred
 
     def predict_intervals(self, X):
-        """``(lower, upper)`` = `predict` -/+ `conformal_margin_`.
+        """``(lower, upper)`` = `predict` -/+ `conformal_margin_` (times
+        `predict_scale` with ``conformal_mode="adaptive"``).
 
         Split-conformal: marginal coverage >= ``1 - conformal_alpha`` on
-        exchangeable data. Constant width. Raises ``RuntimeError`` unless the
+        exchangeable data, in either mode. Raises ``RuntimeError`` unless the
         estimator was fit with ``conformal_calibration=True``.
         """
         check_is_fitted(self)
+        margin_ = getattr(self, "conformal_margin_", None)
+        if margin_ is not None and self.conformal_mode == "adaptive":
+            return conformal.scaled_intervals(
+                self.predict(X), self.predict_scale(X), margin_, type(self).__name__
+            )
         return conformal.intervals(
             self.predict(X), getattr(self, "conformal_margin_", None), type(self).__name__
         )

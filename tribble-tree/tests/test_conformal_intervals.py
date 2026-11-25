@@ -176,3 +176,55 @@ def test_warns_when_calibration_split_too_small(data):
         _deconstructed(conformal_calibration=True, conformal_alpha=0.01,
                        conformal_calibration_frac=0.05).fit(X.iloc[:400], y[:400], TOPOLOGY)
     assert any("too few" in str(w.message) for w in caught)
+
+
+# -- adaptive (normalized) mode ------------------------------------------------
+
+def _hetero(n, seed):
+    """Noise sd grows along `e`, the variable the HME gate tree splits on."""
+    X, y = make_data(n, seed)
+    rng = np.random.default_rng(seed + 99)
+    return X, y + rng.normal(0, 0.05 + 0.25 * X["e"].to_numpy())
+
+
+def test_adaptive_coverage_and_width_varies():
+    covs = []
+    for seed in (0, 1, 2):
+        X, y = _hetero(3000, seed)
+        model = _hme(conformal_calibration=True, conformal_mode="adaptive", random_state=seed)
+        model.fit(X.iloc[:1500], y[:1500])
+        X_te, y_te = X.iloc[1500:].reset_index(drop=True), y[1500:]
+        scale = model.predict_scale(X_te)
+        assert np.all(scale > 0)
+        lo, hi = model.predict_intervals(X_te)
+        np.testing.assert_allclose(hi - lo, 2 * model.conformal_margin_ * scale)
+        assert np.ptp(hi - lo) > 0.1 * np.mean(hi - lo), "adaptive width did not vary"
+        covs.append(_coverage(lo, hi, y_te))
+    assert abs(np.mean(covs) - 0.9) <= 0.04, covs
+
+
+def test_adaptive_uses_em_sigma2_after_refine(data):
+    X, y, X_te, _ = data
+    model = _hme(conformal_calibration=True, conformal_mode="adaptive").fit(X, y)
+    assert model.leaf_sigma2_ and set(model.leaf_sigma2_) == set(model.experts_)
+    model.refine_em(max_iter=3)
+    assert model.sigma2_
+    # predict_scale now reads EM's variances; the margin was re-sized for them.
+    lo, hi = model.predict_intervals(X_te)
+    np.testing.assert_allclose(hi - lo, 2 * model.conformal_margin_ * model.predict_scale(X_te))
+
+
+def test_constant_mode_does_not_estimate_leaf_variance(data):
+    X, y, X_te, _ = data
+    model = _hme(conformal_calibration=True).fit(X, y)
+    assert model.leaf_sigma2_ is None
+    with pytest.raises(RuntimeError, match="adaptive"):
+        model.predict_scale(X_te)
+    lo, hi = model.predict_intervals(X_te)
+    np.testing.assert_allclose(hi - lo, 2 * model.conformal_margin_)
+
+
+def test_rejects_unknown_conformal_mode(data):
+    X, y, _, _ = data
+    with pytest.raises(ValueError, match="conformal_mode"):
+        _hme(conformal_calibration=True, conformal_mode="local").fit(X, y)

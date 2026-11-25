@@ -8,8 +8,16 @@ target's range) and test R^2 of `predict`.
 
 Acceptance for #268: mean coverage within +/-0.03 of ``1 - alpha``.
 
+``--adaptive`` instead compares HME's ``conformal_mode="constant"`` and
+``"adaptive"`` on the Stage A signal with heteroscedastic noise (sd grows
+linearly with feature ``a``, 0.05 -> 2.55), reporting marginal coverage plus
+coverage and width in the lowest/highest-noise thirds and the Spearman
+correlation of width with |residual| -- the conditional behaviour a constant
+margin cannot have.
+
 Run:
     uv run python tribble-tree/demo_conformal_intervals.py
+    uv run python tribble-tree/demo_conformal_intervals.py --adaptive
 """
 
 import os
@@ -17,6 +25,7 @@ import sys
 import warnings
 
 import numpy as np
+from scipy.stats import spearmanr
 from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
 
@@ -72,5 +81,46 @@ def main():
                   f"{np.mean(rel):.3f} | {np.mean(r2):.3f} |", flush=True)
 
 
+def make_heteroscedastic(n=4000, seed=0, noise_feature="a"):
+    X, _, groups = make_data(n=n, seed=seed)
+    rng = np.random.default_rng(seed + 1000)
+    signal = 1.0 * groups["G1"] + 0.7 * groups["G2"] + 1.4 * groups["G3"]
+    noise_sd = 0.05 + 0.25 * X[noise_feature].to_numpy()
+    return X, signal.to_numpy() + rng.normal(0, noise_sd), noise_sd
+
+
+def adaptive_main(alpha=0.1):
+    print(f"HME, heteroscedastic Stage A (noise sd 0.05 -> 2.55 along one feature), "
+          f"target {1 - alpha:.2f}, {len(SEEDS)} seeds\n")
+    print("| noise along | mode | coverage | cov. low-noise third | cov. high-noise third | width low | width high "
+          "| mean width | rho(width, abs resid) | R^2 |")
+    print("|---|---|--:|--:|--:|--:|--:|--:|--:|--:|")
+    for noise_feature, mode in [(f, m) for f in ("a", "e") for m in ("constant", "adaptive")]:
+        rows = []
+        for seed in SEEDS:
+            X, y, sd = make_heteroscedastic(seed=seed, noise_feature=noise_feature)
+            i_tr, i_te = train_test_split(np.arange(len(X)), test_size=0.25, random_state=seed)
+            X_tr, X_te = X.iloc[i_tr].reset_index(drop=True), X.iloc[i_te].reset_index(drop=True)
+            y_tr, y_te, sd_te = y[i_tr], y[i_te], sd[i_te]
+            model = HierarchicalFuzzyExpertsRegressor(
+                gate_style="gaussian", conformal_calibration=True, conformal_alpha=alpha,
+                conformal_mode=mode, random_state=seed,
+            ).fit(X_tr, y_tr)
+            pred = model.predict(X_te)
+            lo, hi = model.predict_intervals(X_te)
+            inside, width = (y_te >= lo) & (y_te <= hi), hi - lo
+            low, high = sd_te <= np.quantile(sd_te, 1 / 3), sd_te >= np.quantile(sd_te, 2 / 3)
+            rho = spearmanr(width, np.abs(y_te - pred)).statistic
+            rows.append([inside.mean(), inside[low].mean(), inside[high].mean(),
+                         width[low].mean(), width[high].mean(), width.mean(),
+                         0.0 if np.isnan(rho) else rho, r2_score(y_te, pred)])
+        m = np.mean(rows, axis=0)
+        print(f"| `{noise_feature}` | {mode} | {m[0]:.3f} | {m[1]:.3f} | {m[2]:.3f} | {m[3]:.2f} | {m[4]:.2f} | "
+              f"{m[5]:.2f} | {m[6]:+.3f} | {m[7]:.3f} |", flush=True)
+
+
 if __name__ == "__main__":
-    main()
+    if "--adaptive" in sys.argv:
+        adaptive_main()
+    else:
+        main()

@@ -258,8 +258,44 @@ on the stored fit split only and re-sizes the margin afterward.
 - **Cost**: holding out 20% costs no visible R² (0.974 mean over 5 seeds vs.
   Stage A's single-seed full-data 0.971).
 - **Limitation**: width is constant per model, not per sample. It says how
-  wrong the model tends to be, not where. A locally adaptive variant using
-  HME's per-leaf `sigma2_` is the natural follow-up.
+  wrong the model tends to be, not where. See the adaptive variant below.
+
+### Adaptive (per-sample) width for HME
+
+`HierarchicalFuzzyExpertsRegressor(conformal_mode="adaptive")` uses
+normalized split conformal: scores are `|y - ŷ| / s(x)` and intervals are
+`ŷ ∓ q·s(x)`, where `s(x)` (`predict_scale`) is the gated mixture's
+predictive std (law of total variance over leaves: within-leaf residual
+variance plus between-expert disagreement). Leaf variances come from EM's
+`sigma2_` after `refine_em`, else `leaf_sigma2_`, estimated on the fit split
+at `fit`. Same marginal guarantee as `"constant"`.
+
+`demo_conformal_intervals.py --adaptive`: Stage A signal, noise sd rising
+linearly 0.05 → 2.55 along one feature, 5 seeds, target 0.90.
+
+| noise along | mode | coverage | cov. low-noise ⅓ | cov. high-noise ⅓ | width low ⅓ | width high ⅓ | mean width | ρ(width, \|resid\|) |
+|---|---|--:|--:|--:|--:|--:|--:|--:|
+| `e` (gate split var) | constant | 0.897 | 0.991 | 0.772 | 6.23 | 6.23 | 6.23 | +0.039 |
+| `e` (gate split var) | adaptive | 0.900 | 0.968 | 0.802 | 4.82 | 6.66 | 5.89 | +0.286 |
+| `a` (rarely split) | constant | 0.903 | 0.969 | 0.831 | 6.44 | 6.44 | 6.44 | +0.007 |
+| `a` (rarely split) | adaptive | 0.905 | 0.970 | 0.825 | 6.60 | 6.58 | 6.57 | +0.136 |
+
+- **It works only along the gate partition.** When noise varies with the
+  variable the gate tree splits on (`e`), adaptive mode moves width to where
+  the noise is: high-noise coverage 0.772 → 0.802, low-noise over-coverage
+  0.991 → 0.968, mean width −5%, ρ 0.04 → 0.29. When noise varies along a
+  variable the tree barely splits on (`a`), nothing changes.
+- **Why it is modest even when aligned.** `s(x)` has one value per leaf
+  (blended at gate boundaries), so it can only be as fine as the partition
+  (8 leaves here). And per-leaf residual variance mixes expert *bias* with
+  noise: leaf variances here are 5–20 against noise variance 0.003–6.5, so
+  most of the signal `s(x)` carries is "where the experts fit badly", not
+  "where the data is noisy".
+- **Recommendation.** Keep `"constant"` as the default. Use `"adaptive"`
+  when heteroscedasticity is expected along variables the gates route on.
+  Marginal coverage holds either way. A finer scale model, such as a
+  separate regressor on `|resid|`, would adapt along any feature, but it
+  is a different design from per-leaf variance.
 
 **Stage B is not yet measured.** `cmapss_deconstruct_eval.py` now ends with a
 `conformal_coverage` block (HME and the RUL-only deconstructed tree, target

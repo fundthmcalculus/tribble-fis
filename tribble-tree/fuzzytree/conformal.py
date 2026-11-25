@@ -79,3 +79,30 @@ def intervals(y_pred, margin_: float | None, estimator_name: str) -> tuple[np.nd
         )
     y_pred = np.asarray(y_pred, dtype=float)
     return y_pred - margin_, y_pred + margin_
+
+
+# --------------------------------------------------------------------------
+# Normalized (locally adaptive) split conformal
+# --------------------------------------------------------------------------
+# Score |y - y_hat| / s(x) instead of |y - y_hat|, for a scale s(x) fit on the
+# fit split only. The quantile q of the calibration scores gives intervals
+# y_hat -/+ q * s(x): the same marginal coverage guarantee (the scores are
+# still exchangeable, since s never saw a calibration row), but the width now
+# follows s(x) -- wide where the model expects to be wrong, narrow where not
+# (Papadopoulos et al. 2002; Lei et al. 2018, sec. 5.2).
+
+_SCALE_FLOOR = 1e-12
+
+
+def normalized_margin(y_calib, y_pred_calib, scale_calib, alpha: float) -> float:
+    """Quantile of ``|y - y_hat| / s`` on the calibration split."""
+    s = np.maximum(np.asarray(scale_calib, dtype=float), _SCALE_FLOOR)
+    return margin(np.asarray(y_calib, dtype=float) / s, np.asarray(y_pred_calib, dtype=float) / s, alpha)
+
+
+def scaled_intervals(y_pred, scale, margin_: float | None, estimator_name: str):
+    if margin_ is None:
+        return intervals(y_pred, None, estimator_name)  # raises
+    half = margin_ * np.maximum(np.asarray(scale, dtype=float), _SCALE_FLOOR)
+    y_pred = np.asarray(y_pred, dtype=float)
+    return y_pred - half, y_pred + half
