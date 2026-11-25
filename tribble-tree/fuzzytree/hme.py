@@ -45,6 +45,7 @@ from tribblefis.gaussian_classifier import TribbleClassifier
 from tribblefis.gaussian_regressor import TribbleRegressor
 from tribblefis.regression import partition_output
 
+from . import conformal
 from .builder import build_tree
 from .firing import DEFAULT_T_NORM
 from .plan import VariablePlan
@@ -255,10 +256,68 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
     can shrink to sharpen a soft boundary, whereas the default
     ``"trapezoid"`` gates' ramp width is a fixed function of the split knots
     and cannot sharpen the same way (EM still refines their knot *locations*).
+
+    Conformal intervals (#268): with ``conformal_calibration=True``, `fit`
+    holds out ``conformal_calibration_frac`` of the rows *before* the gate
+    tree or any expert sees them, and sizes a split-conformal margin
+    (`conformal_margin_`) on them for `predict_intervals`, targeting
+    ``1 - conformal_alpha`` marginal coverage. `refine_em` must then be
+    called without data: it refines on the stored fit split and re-sizes the
+    margin on the stored calibration split, so EM never sees calibration rows.
     """
+
+    def __init__(
+        self,
+        variable_plan=None,
+        criterion="variance",
+        top_n=-1,
+        top_p=0.95,
+        max_depth=3,
+        n_gate_terms=2,
+        min_soft_count=20.0,
+        min_gain=1e-3,
+        max_leaves=32,
+        n_score_buckets=3,
+        min_expert_samples=30,
+        responsibility_threshold=0.2,
+        gate_style="trapezoid",
+        expert_kwargs=None,
+        random_state=42,
+        conformal_calibration=False,
+        conformal_alpha=0.1,
+        conformal_calibration_frac=0.2,
+    ):
+        super().__init__(
+            variable_plan=variable_plan, criterion=criterion, top_n=top_n, top_p=top_p,
+            max_depth=max_depth, n_gate_terms=n_gate_terms, min_soft_count=min_soft_count,
+            min_gain=min_gain, max_leaves=max_leaves, n_score_buckets=n_score_buckets,
+            min_expert_samples=min_expert_samples,
+            responsibility_threshold=responsibility_threshold, gate_style=gate_style,
+            expert_kwargs=expert_kwargs, random_state=random_state,
+        )
+        self.conformal_calibration = conformal_calibration
+        self.conformal_alpha = conformal_alpha
+        self.conformal_calibration_frac = conformal_calibration_frac
 
     def fit(self, X, y):
         X_df, y_value = self._prepare(X, y, y_numeric=True)
+
+        self.conformal_margin_ = None
+        self._conformal_fit_split = None
+        self._conformal_calib_split = None
+        if self.conformal_calibration:
+            # Split before the gate tree, expert selection or anything else
+            # sees a row -- the margin's guarantee needs calibration rows that
+            # never influenced the model (#268).
+            conformal.validate(self.conformal_alpha, self.conformal_calibration_frac)
+            fit_idx, calib_idx = conformal.split_indices(
+                len(X_df), self.conformal_calibration_frac, self.random_state
+            )
+            self._conformal_calib_split = (
+                X_df.iloc[calib_idx].reset_index(drop=True), y_value[calib_idx]
+            )
+            X_df, y_value = X_df.iloc[fit_idx].reset_index(drop=True), y_value[fit_idx]
+            self._conformal_fit_split = (X_df, y_value)
 
         y_part, _ = partition_output(self.n_score_buckets, pd.Series(y_value, name="y_value"))
         y_bucket = y_part["y_bucket"].to_numpy()
@@ -290,7 +349,14 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
             self.leaf_info_[leaf.leaf_id] = {"n_train": int(len(idx)), "features": feats, "kind": kind}
 
         self.is_fitted_ = True
+        self._update_conformal_margin()
         return self
+
+    def _update_conformal_margin(self) -> None:
+        if self._conformal_calib_split is None:
+            return
+        X_calib, y_calib = self._conformal_calib_split
+        self.conformal_margin_ = conformal.margin(y_calib, self.predict(X_calib), self.conformal_alpha)
 
     def predict(self, X):
         check_is_fitted(self)
@@ -302,17 +368,49 @@ class HierarchicalFuzzyExpertsRegressor(_BaseHierarchicalExperts, RegressorMixin
             y_pred += R[:, leaf_id] * expert.predict(X)
         return y_pred
 
-    def refine_em(self, X, y, max_iter=15, tol=1e-4, var_floor=1e-6, min_mass=1.0, verbose=False):
+    def predict_intervals(self, X):
+        """``(lower, upper)`` = `predict` -/+ `conformal_margin_`.
+
+        Split-conformal: marginal coverage >= ``1 - conformal_alpha`` on
+        exchangeable data. Constant width. Raises ``RuntimeError`` unless the
+        estimator was fit with ``conformal_calibration=True``.
+        """
+        check_is_fitted(self)
+        return conformal.intervals(
+            self.predict(X), getattr(self, "conformal_margin_", None), type(self).__name__
+        )
+
+    def refine_em(self, X=None, y=None, max_iter=15, tol=1e-4, var_floor=1e-6, min_mass=1.0, verbose=False):
         """Refine this fitted HME with a true EM loop (see ``fuzzytree.em`` and
         ``EM_REFINEMENT.md``), replacing the one-shot greedy gate-only fit with
         posterior responsibilities that also weigh each expert's fit quality.
         Structure (the gate tree shape) stays fixed; only gate/expert
-        parameters move. Mutates and returns ``self``."""
+        parameters move. Mutates and returns ``self``.
+
+        With ``conformal_calibration=True``, call it with no ``X``/``y``: EM
+        then runs on the fit split stored by `fit`, and `conformal_margin_` is
+        re-sized on the stored calibration split afterward, since the model it
+        was sized for has changed. Passing data in that mode raises, because
+        EM on rows that include calibration rows would void the margin's
+        coverage guarantee."""
         from .em import refine_em_regressor
 
-        return refine_em_regressor(
+        if getattr(self, "_conformal_fit_split", None) is not None:
+            if X is not None or y is not None:
+                raise ValueError(
+                    "this model was fit with conformal_calibration=True; call "
+                    "refine_em() without X/y so EM uses only the fit split and "
+                    "never the calibration rows the margin depends on."
+                )
+            X, y = self._conformal_fit_split
+        elif X is None or y is None:
+            raise TypeError("refine_em() needs X and y unless fit with conformal_calibration=True")
+
+        refine_em_regressor(
             self, X, y, max_iter=max_iter, tol=tol, var_floor=var_floor, min_mass=min_mass, verbose=verbose
         )
+        self._update_conformal_margin()
+        return self
 
 
 # --------------------------------------------------------------------------
