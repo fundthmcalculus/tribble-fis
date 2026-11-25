@@ -4,7 +4,8 @@
 > known physical/domain topology** — see "Disposition" below. Implementation:
 > `tribble-tree/fuzzytree/topology.py`, `tribble-tree/fuzzytree/deconstruct.py`
 > (`DeconstructedHierarchicalRegressor`), `tribble-tree/tests/test_deconstruct.py`,
-> `tribble-tree/demo_deconstruct_synthetic.py`, `tribble-tree/cmapss_deconstruct_eval.py`.
+> `tribble-tree/demo_deconstruct_synthetic.py`, `tribble-tree/cmapss_deconstruct_eval.py`,
+> `tribble-tree/fuzzytree/conformal.py` / `tribble-tree/demo_conformal_intervals.py` (intervals, #268).
 
 ## Motivation
 
@@ -225,6 +226,46 @@ available from this repository. Until it is, the conservative reading stands:
 `fit` records which was used in `topology_source_` (`"supplied"` / `"auto"`) so
 a downstream table can never report one as the other.
 
+## Stage D — calibrated prediction intervals (#268)
+
+Phase 0 of `docs/hierarchical-it2-design.md` (#147). Both tree regressors
+take `conformal_calibration=True`: `fit` holds out
+`conformal_calibration_frac` (default 0.2) of the rows *before* topology
+selection, gate building or any expert fit, and sizes a split-conformal
+margin on them (`fuzzytree/conformal.py`, reusing
+`tribblefis.regression.conformal_calibration_margin`). `predict_intervals`
+returns `predict ∓ conformal_margin_`. HME's `refine_em()` in that mode runs
+on the stored fit split only and re-sizes the margin afterward.
+
+`demo_conformal_intervals.py`: Stage A generator and split, 5 seeds.
+
+| estimator | alpha | target | coverage (mean, min–max) | width | width / range | R² |
+|---|--:|--:|--:|--:|--:|--:|
+| Deconstructed (true topology) | 0.1 | 0.90 | 0.905 (0.875–0.914) | 4.232 | 0.118 | 0.974 |
+| Deconstructed (true topology) | 0.2 | 0.80 | 0.813 (0.789–0.838) | 3.308 | 0.092 | 0.974 |
+| Deconstructed (`topology="auto"`) | 0.1 | 0.90 | 0.902 (0.888–0.922) | 3.452 | 0.096 | 0.983 |
+| Deconstructed (`topology="auto"`) | 0.2 | 0.80 | 0.797 (0.763–0.847) | 2.684 | 0.075 | 0.983 |
+| HME (gaussian gates) | 0.1 | 0.90 | 0.899 (0.876–0.928) | 4.230 | 0.118 | 0.974 |
+| HME (gaussian gates) | 0.2 | 0.80 | 0.791 (0.758–0.818) | 3.181 | 0.088 | 0.974 |
+
+- **Coverage is on target**: every mean is within 0.013 of `1 - alpha`
+  (#268's acceptance bound is ±0.03), for both estimators and both topology
+  sources.
+- **Width tracks accuracy, as it should**: the more accurate `"auto"`
+  topology (R² 0.983) gets an interval ~18% narrower than the hand-authored
+  one (0.974) at the same coverage. That is the property the type-2
+  footprint never delivered (#145: ρ(width, |resid|) ≈ 0).
+- **Cost**: holding out 20% costs no measurable R² here (0.974 matches
+  Stage A's full-data number).
+- **Limitation**: width is constant per model, not per sample. It says how
+  wrong the model tends to be, not where. A locally adaptive variant using
+  HME's per-leaf `sigma2_` is the natural follow-up.
+
+**Stage B is not yet measured.** `cmapss_deconstruct_eval.py` now ends with a
+`conformal_coverage` block (HME and the RUL-only deconstructed tree, target
+0.90); it was smoke-tested on a synthetic stand-in frame only, because the
+N-CMAPSS file is not available in CI.
+
 ## Disposition
 
 Kept, unlike the (rejected) adaptive-partitioning experiment this findings
@@ -255,6 +296,8 @@ Not yet done, and the natural next steps if this is picked up again:
 - The leaf-bucket-dedup enhancement sketched in `deconstruct.py`'s design
   (merging buckets that project to identical clauses on a leaf's own
   features) was not needed to get these results and was not built.
+- **Run Stage D's coverage block on N-CMAPSS** (`cmapss_deconstruct_eval.py`
+  now includes it) to confirm the ±0.03 coverage bound on real data.
 - **Re-run Stage B with `topology="auto"`.** Stage C shows a derived topology
   beating a hand-authored one on a generator with no group structure to find,
   which is the easy case. N-CMAPSS is the one with real structure, and until

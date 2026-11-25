@@ -84,7 +84,9 @@ type-2 code, and works with every topology source.
    on `DeconstructedHierarchicalRegressor` and
    `HierarchicalFuzzyExpertsRegressor`, plus `predict_intervals`. Validate
    coverage on the existing Stage A (synthetic) / Stage B (N-CMAPSS)
-   protocol in `DECONSTRUCTED_TREE_FINDINGS.md`. Separate issue.
+   protocol in `DECONSTRUCTED_TREE_FINDINGS.md`. **Done, #268** (Stage D:
+   coverage within 0.013 of target on Stage A; Stage B pending a run on
+   N-CMAPSS).
 1. **Option A** (`IT2DeconstructedHierarchicalRegressor` or an
    `uncertainty_width` parameter): IT2 flat model -> leaf KM intervals ->
    exact affine propagation; `order` ≤ "1st". Invariant tests: width=0
