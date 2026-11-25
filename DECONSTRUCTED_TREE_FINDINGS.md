@@ -251,12 +251,12 @@ on the stored fit split only and re-sizes the margin afterward.
 - **Coverage is on target**: every mean is within 0.013 of `1 - alpha`
   (#268's acceptance bound is ±0.03), for both estimators and both topology
   sources.
-- **Width tracks accuracy, as it should**: the more accurate `"auto"`
-  topology (R² 0.983) gets an interval ~18% narrower than the hand-authored
-  one (0.974) at the same coverage. That is the property the type-2
-  footprint never delivered (#145: ρ(width, |resid|) ≈ 0).
-- **Cost**: holding out 20% costs no measurable R² here (0.974 matches
-  Stage A's full-data number).
+- **Width tracks model accuracy**: the more accurate `"auto"` topology
+  (R² 0.983) gets an interval ~18% narrower than the hand-authored one
+  (0.974) at the same coverage -- a better model is rewarded with a tighter
+  interval, which a fixed-footprint interval cannot do.
+- **Cost**: holding out 20% costs no visible R² (0.974 mean over 5 seeds vs.
+  Stage A's single-seed full-data 0.971).
 - **Limitation**: width is constant per model, not per sample. It says how
   wrong the model tends to be, not where. A locally adaptive variant using
   HME's per-leaf `sigma2_` is the natural follow-up.
