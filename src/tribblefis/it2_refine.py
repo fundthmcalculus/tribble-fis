@@ -61,10 +61,39 @@ from .gauss_data import (
     GaussianMembership, TrapezoidMembership, TriangularMembership, NormPair,
 )
 from .gauss_math import tsk_firing_strengths
-from .it2_kernel import it2_firing_strengths, karnik_mendel_tsk, _extract_upper_model, _extract_lower_model
+from .it2_kernel import (
+    it2_crisp_firing, it2_firing_strengths, karnik_mendel_tsk,
+    _extract_upper_model, _extract_lower_model,
+)
+from .kernel import NotCompilable
 from .optimizer_utils import optimizers_sub_solve as _optimizers_sub_solve
 from .refine import _make_folds, _prepare_folds, feature_span
 from .regression import solve_tsk_consequents_from_firing, rule_consequent_values, _mse
+from .type2_incremental import IT2IncrementalFiring
+
+
+def _model_feature_arrays(model, X: pd.DataFrame) -> dict[str, np.ndarray]:
+    """``{feature: column}`` for the model's own features present in `X` --
+    what `gauss_math.tsk_firing_strengths` extracts internally."""
+    return {f: np.asarray(X[f].values) for f in model.feature_models if f in X}
+
+
+def _columns(feature_arrays: dict, names: list) -> dict[str, np.ndarray]:
+    """`feature_arrays` restricted to `names` -- the regressor evaluates
+    firing on ``X[top_n_todo]``, so the incremental path must see the same
+    columns (a model feature outside them then fails to compile and falls
+    back, exactly as the reference path would skip it)."""
+    return {c: feature_arrays[c] for c in names if c in feature_arrays}
+
+
+def _try_incremental(build):
+    """`build()` or ``None`` when the model can't take the incremental path
+    (`type2_incremental` raises `NotCompilable`; the caller then keeps the
+    rebuild-per-candidate path)."""
+    try:
+        return build()
+    except NotCompilable:
+        return None
 
 
 def _iter_it2_slots(model: IT2GaussianMixtureModel):
@@ -287,7 +316,12 @@ def _cross_entropy_loss(
     label list -- callers map original class labels to this before calling).
     """
     _, _, firing_crisp, _ = it2_firing_strengths(X, it2_model, norms, km_iterations=km_iterations)
-    proba = _normalize_proba(firing_crisp, it2_model.n_classes)
+    return _cross_entropy_from_crisp(firing_crisp, it2_model.n_classes, y_idx)
+
+
+def _cross_entropy_from_crisp(firing_crisp: np.ndarray, n_classes: int, y_idx: np.ndarray) -> float:
+    """`_cross_entropy_loss`'s scoring step, on crisp firing already in hand."""
+    proba = _normalize_proba(firing_crisp, n_classes)
     p = np.clip(proba[np.arange(len(y_idx)), y_idx], 1e-12, 1.0)
     return float(np.mean(-np.log(p)))
 
@@ -382,9 +416,22 @@ def refine_it2_antecedents(
     for fname in {s[0] for s in slots}:
         feature_bounds[fname] = feature_span(X[fname].to_numpy(dtype=float))
 
+    # Gaussian models move one slot per candidate through a cached
+    # upper/lower `IncrementalFIS` pair instead of rebuilding both models and
+    # running two full forward passes (#146, docs/it2-gt2-acceleration-design.md).
+    inc = _try_incremental(
+        lambda: IT2IncrementalFiring(it2_model, _model_feature_arrays(it2_model, X), norms)
+    )
+
+    def loss_from_firing(fu, fl):
+        return _cross_entropy_from_crisp(it2_crisp_firing(fu, fl, km_iterations), n_classes, y_idx)
+
     current = it2_model
     best_model = it2_model
-    best_loss = _cross_entropy_loss(it2_model, X, y_idx, norms, km_iterations)
+    if inc is not None:
+        best_loss = loss_from_firing(*inc.base())
+    else:
+        best_loss = _cross_entropy_loss(it2_model, X, y_idx, norms, km_iterations)
     init_loss = best_loss
 
     if verbose:
@@ -397,21 +444,32 @@ def refine_it2_antecedents(
             lo, hi, rng = feature_bounds[fname]
             x0, bounds = _slot_x0_and_bounds(it2_mf, lo, hi, rng, sigma_min_frac)
 
-            def fitness(v, fname=fname, label=label, idx=idx, it2_mf=it2_mf, x0=x0):
+            key = (fname, label, idx)
+
+            def fitness(v, fname=fname, label=label, idx=idx, it2_mf=it2_mf, x0=x0, key=key):
                 new_it2_mf = _apply_slot_params(it2_mf, v)
-                trial = _replace_slot(current, fname, label, idx, new_it2_mf)
-                loss = _cross_entropy_loss(trial, X, y_idx, norms, km_iterations)
+                if inc is not None:
+                    loss = loss_from_firing(*inc.evaluate(key, new_it2_mf))
+                else:
+                    trial = _replace_slot(current, fname, label, idx, new_it2_mf)
+                    loss = _cross_entropy_loss(trial, X, y_idx, norms, km_iterations)
                 penalty = l2_shrink * float(np.sum((v - x0) ** 2))
                 return loss + penalty
 
             res = _optimizers_sub_solve(fitness, x0, bounds)
 
-            candidate = _replace_slot(current, fname, label, idx, _apply_slot_params(it2_mf, res.x))
-            candidate_loss = _cross_entropy_loss(candidate, X, y_idx, norms, km_iterations)
+            new_it2_mf = _apply_slot_params(it2_mf, res.x)
+            candidate = _replace_slot(current, fname, label, idx, new_it2_mf)
+            if inc is not None:
+                candidate_loss = loss_from_firing(*inc.evaluate(key, new_it2_mf))
+            else:
+                candidate_loss = _cross_entropy_loss(candidate, X, y_idx, norms, km_iterations)
             if candidate_loss < best_loss - 1e-12:
                 current = candidate
                 best_model = candidate
                 best_loss = candidate_loss
+                if inc is not None:
+                    inc.commit()
 
         if verbose:
             print(f"  sweep {sweep + 1}/{n_sweeps}: loss={best_loss:.4f}")
@@ -473,13 +531,24 @@ def _solve_it2_consequents(
     firing_upper, firing_lower, labels = _it2_rule_firing(
         it2_model, X, top_n_todo, norms, feature_arrays=feature_arrays
     )
+    corr_terms, y_bucket_mean = _consequents_from_firing(
+        firing_upper, firing_lower, labels, X, y_df, top_n_todo,
+        order, l2_reg, basis, cross_pairs, feature_arrays,
+    )
+    return corr_terms, y_bucket_mean, labels
+
+
+def _consequents_from_firing(
+    firing_upper, firing_lower, labels, X, y_df, top_n_todo,
+    order, l2_reg, basis, cross_pairs, feature_arrays,
+):
+    """`_solve_it2_consequents`'s ridge solve, on firing bounds already in hand."""
     midpoint = 0.5 * (firing_upper + firing_lower)
-    corr_terms, y_bucket_mean = solve_tsk_consequents_from_firing(
+    return solve_tsk_consequents_from_firing(
         midpoint, labels, X, top_n_todo, None, y_df,
         order=order, l2_reg=l2_reg, basis=basis, cross_pairs=cross_pairs,
         pin_extremes=False, verbose=False, feature_arrays=feature_arrays,
     )
-    return corr_terms, y_bucket_mean, labels
 
 
 def _it2_regressor_fold_mse(
@@ -493,12 +562,25 @@ def _it2_regressor_fold_mse(
     """Held-out MSE for one fold: re-solve consequents on the training split,
     then predict the validation split through the full Karnik-Mendel path.
     """
-    corr_terms, y_bucket_mean, labels = _solve_it2_consequents(
-        it2_model, X_tr, y_tr_df, top_n_todo, norms, order, l2_reg, basis, cross_pairs,
-        feature_arrays=fa_tr,
+    fu_tr, fl_tr, labels = _it2_rule_firing(it2_model, X_tr, top_n_todo, norms, feature_arrays=fa_tr)
+    fu_val, fl_val, _ = _it2_rule_firing(it2_model, X_val, top_n_todo, norms, feature_arrays=fa_val)
+    return _fold_mse_from_firing(
+        fu_tr, fl_tr, fu_val, fl_val, labels,
+        X_tr, y_tr_df, fa_tr, X_val, y_val_true, fa_val,
+        top_n_todo, order, l2_reg, basis, cross_pairs, km_iterations,
     )
-    firing_upper_val, firing_lower_val, _ = _it2_rule_firing(
-        it2_model, X_val, top_n_todo, norms, feature_arrays=fa_val
+
+
+def _fold_mse_from_firing(
+    fu_tr, fl_tr, firing_upper_val, firing_lower_val, labels,
+    X_tr, y_tr_df, fa_tr, X_val, y_val_true, fa_val,
+    top_n_todo, order, l2_reg, basis, cross_pairs, km_iterations,
+) -> float:
+    """`_it2_regressor_fold_mse` on firing bounds already in hand, for both
+    the rebuild path and `IT2IncrementalFiring`."""
+    corr_terms, y_bucket_mean = _consequents_from_firing(
+        fu_tr, fl_tr, labels, X_tr, y_tr_df, top_n_todo,
+        order, l2_reg, basis, cross_pairs, fa_tr,
     )
     rule_values_val = rule_consequent_values(
         X_val, top_n_todo, labels, y_bucket_mean, corr_terms,
@@ -635,9 +717,39 @@ def refine_it2_regressor_antecedents(
             model, prepared, top_n_todo, norms, order, l2_reg, basis, cross_pairs, km_iterations
         )
 
+    # One upper/lower `IncrementalFIS` pair per fold split (train, val), so a
+    # candidate re-folds one cell per split instead of rebuilding the model
+    # and running four full forward passes per fold (#146).
+    fold_sources = _try_incremental(lambda: [
+        (IT2IncrementalFiring(it2_model, _columns(fa_tr, top_n_todo), norms),
+         IT2IncrementalFiring(it2_model, _columns(fa_val, top_n_todo), norms))
+        for _X_tr, _y_tr, fa_tr, _X_val, _y_val, fa_val in prepared
+    ])
+
+    def inc_cv_fitness(key=None, it2_mf=None):
+        total = 0.0
+        for (src_tr, src_val), (X_tr, y_tr_df, fa_tr, X_val, y_val_true, fa_val) in zip(
+            fold_sources, prepared
+        ):
+            try:
+                if key is None:
+                    fu_tr, fl_tr = src_tr.base()
+                    fu_val, fl_val = src_val.base()
+                else:
+                    fu_tr, fl_tr = src_tr.evaluate(key, it2_mf)
+                    fu_val, fl_val = src_val.evaluate(key, it2_mf)
+                total += _fold_mse_from_firing(
+                    fu_tr, fl_tr, fu_val, fl_val, src_tr.labels,
+                    X_tr, y_tr_df, fa_tr, X_val, y_val_true, fa_val,
+                    top_n_todo, order, l2_reg, basis, cross_pairs, km_iterations,
+                )
+            except (np.linalg.LinAlgError, ValueError, FloatingPointError, ZeroDivisionError):
+                return 1e6
+        return total / max(len(prepared), 1)
+
     current = it2_model
     best_model = it2_model
-    best_loss = cv_fitness(it2_model)
+    best_loss = inc_cv_fitness() if fold_sources is not None else cv_fitness(it2_model)
     init_loss = best_loss
 
     if verbose:
@@ -650,23 +762,35 @@ def refine_it2_regressor_antecedents(
             lo, hi, rng = feature_bounds[fname]
             x0, bounds = _slot_x0_and_bounds(it2_mf, lo, hi, rng, sigma_min_frac)
 
-            def fitness(v, fname=fname, label=label, idx=idx, it2_mf=it2_mf, x0=x0):
+            key = (fname, label, idx)
+
+            def fitness(v, fname=fname, label=label, idx=idx, it2_mf=it2_mf, x0=x0, key=key):
                 new_it2_mf = _apply_slot_params(it2_mf, v)
-                trial = _replace_slot(current, fname, label, idx, new_it2_mf)
                 # L2 pull-back toward the heuristic start, mirroring the classifier
                 # path so a flat CV direction cannot take a large, barely-helping
                 # step. Defaults to 0.0 (no change) and is opt-in for the regressor.
                 penalty = l2_shrink * float(np.sum((v - x0) ** 2))
+                if fold_sources is not None:
+                    return inc_cv_fitness(key, new_it2_mf) + penalty
+                trial = _replace_slot(current, fname, label, idx, new_it2_mf)
                 return cv_fitness(trial) + penalty
 
             res = _optimizers_sub_solve(fitness, x0, bounds)
 
-            candidate = _replace_slot(current, fname, label, idx, _apply_slot_params(it2_mf, res.x))
-            candidate_loss = cv_fitness(candidate)
+            new_it2_mf = _apply_slot_params(it2_mf, res.x)
+            candidate = _replace_slot(current, fname, label, idx, new_it2_mf)
+            if fold_sources is not None:
+                candidate_loss = inc_cv_fitness(key, new_it2_mf)
+            else:
+                candidate_loss = cv_fitness(candidate)
             if candidate_loss < best_loss - 1e-12:
                 current = candidate
                 best_model = candidate
                 best_loss = candidate_loss
+                if fold_sources is not None:
+                    for src_tr, src_val in fold_sources:
+                        src_tr.commit()
+                        src_val.commit()
 
         if verbose:
             print(f"  sweep {sweep + 1}/{n_sweeps}: val MSE={best_loss:.5f}")

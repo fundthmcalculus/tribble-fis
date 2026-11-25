@@ -239,15 +239,14 @@ Tracked as GitHub issues, in priority order:
    trapezoid/triangular now work end-to-end for both classification and
    regression, IT2 and GT2, including refinement. No accuracy win from any
    shape, and calibration gets *worse* for non-Gaussian shapes (see above).
-4. Resolve the secondary-membership-family question (#145) -- still gated,
-   and now doubly so: if the footprint's own calibration doesn't hold up
-   for any antecedent shape tested, changing its secondary shape isn't the
-   next lever to pull.
-5. GPU acceleration (#146) -- no evidence yet of a construction-time
-   bottleneck at any scale tested here, though `triangular`'s EM-only fit
-   path is now a known, unrelated cost outlier worth a look on its own.
-6. Hierarchical GT2 via `tribble-tree` (#147) -- largest, most open item;
-   unchanged by this update.
+4. ~~Resolve the secondary-membership-family question~~ -- decided, #145:
+   no `secondary_family` parameter (`docs/gt2-secondary-family-evaluation.md`).
+5. ~~Acceleration~~ -- done, #146 (re-scoped): IT2/GT2 refinement now runs
+   on `IncrementalFIS`, 4-15x end to end
+   (`docs/it2-gt2-acceleration-design.md`). GPU stays deferred.
+6. Hierarchical IT2/GT2 via `tribble-tree` (#147) -- attachment point
+   decided (`docs/hierarchical-it2-design.md`); conformal tree intervals
+   first, type-2 trees deprioritised.
 
 ## Reproducing
 

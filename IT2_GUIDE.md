@@ -287,8 +287,11 @@ ramp. Depending on where a dataset's typical points land on that hump,
 "correct" and "incorrect" predictions can end up on either side of it, so
 interval width should not be read as a proxy for "how likely is this
 prediction to be right." There is no `conformal_calibration` fix for this --
-fixing the *sign* would require a different secondary-membership
-representation (see #145), not a recalibration of this one.
+fixing the *sign* would require a different *primary* footprint (e.g. an
+uncertain mean, so width is non-zero at the centre) or a different interval
+definition (e.g. conformal prediction sets) -- not a different
+secondary-membership family, since every alpha-plane inherits the shared `μ`
+(see `docs/gt2-secondary-family-evaluation.md`, #145).
 
 **Regression**: the interval's width is bounded by how much the *rules*
 disagree about which one should fire, weighted by their firing-strength
@@ -426,14 +429,17 @@ print(f"Average interval width: {interval_width.mean():.3f}")
 
 ### 🔮 Future Extensions
 
-1. **GPU Acceleration**: PyTorch backend for large-scale models. Not just an
-   IT2 gap -- IT2/GT2 call the plain-numpy `tsk_firing_strengths`, not the
-   GPU-capable `kernel.firing_strengths` path `TribbleClassifier`/
-   `TribbleRegressor` already use. See issue #146.
+1. **Acceleration**: IT2/GT2 forward passes already use the compiled
+   `kernel.firing_strengths` path whenever the Cython kernel is built (via
+   `tsk_firing_strengths`), same as Type-1; no estimator exposes the Torch
+   backend yet. `refine_it2`/`refine_gt2` now run on `kernel.IncrementalFIS`
+   for Gaussian models (4-15x end to end) -- see
+   `docs/it2-gt2-acceleration-design.md` (#146). GPU remains deferred.
 2. **Hierarchical IT2**: IT2 fuzzy trees (leverage `tribble-tree`).
-   `tribble-tree` is Type-1 only today; this needs a design pass on how an
-   IT2 footprint attaches to a tree leaf/gate before any implementation.
-   See issue #147.
+   Attachment point decided in `docs/hierarchical-it2-design.md` (#147):
+   leaf footprints on `DeconstructedHierarchicalRegressor` first, recursive
+   per-node Karnik-Mendel on HME gates second; calibrated tree intervals via
+   a root-level conformal margin come before either.
 3. **Large-Scale Optimization**: Evolutionary algorithms for IT2 learning
 4. **EIASC and other KM variants**: `karnik_mendel_tsk` implements the classic
    Karnik-Mendel switch-point search; faster variants (EIASC, Wu-Mendel closed forms)

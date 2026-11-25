@@ -47,7 +47,12 @@ from .gauss_data import (
 from .gt2_kernel import (
     gt2_firing_strengths, gt2_rule_firing, gt2_karnik_mendel_tsk, alpha_weighted_average,
 )
-from .it2_refine import _normalize_proba, _side_widths
+from .it2_kernel import it2_crisp_firing
+from .it2_refine import (
+    _columns, _cross_entropy_from_crisp, _model_feature_arrays, _normalize_proba,
+    _side_widths, _try_incremental,
+)
+from .type2_incremental import GT2IncrementalFiring
 from .optimizer_utils import optimizers_sub_solve as _optimizers_sub_solve
 from .refine import _make_folds, _prepare_folds, feature_span
 from .regression import solve_tsk_consequents_from_firing, rule_consequent_values, _mse
@@ -331,9 +336,25 @@ def refine_gt2_antecedents(
     for fname in {s[0] for s in slots}:
         feature_bounds[fname] = feature_span(X[fname].to_numpy(dtype=float))
 
+    # Gaussian models move one slot per candidate through one cached
+    # upper/lower `IncrementalFIS` pair per alpha-plane, instead of rebuilding
+    # every plane's models and running 2K full forward passes (#146).
+    inc = _try_incremental(lambda: GT2IncrementalFiring(
+        gt2_model, _model_feature_arrays(gt2_model, X), norms, n_alpha_planes
+    ))
+
+    def loss_from_firing(fus, fls):
+        crisp = alpha_weighted_average(
+            inc.alphas, [it2_crisp_firing(fu, fl, km_iterations) for fu, fl in zip(fus, fls)]
+        )
+        return _cross_entropy_from_crisp(crisp, gt2_model.n_classes, y_idx)
+
     current = gt2_model
     best_model = gt2_model
-    best_loss = _cross_entropy_loss(gt2_model, X, y_idx, norms, n_alpha_planes, km_iterations)
+    if inc is not None:
+        best_loss = loss_from_firing(*inc.base())
+    else:
+        best_loss = _cross_entropy_loss(gt2_model, X, y_idx, norms, n_alpha_planes, km_iterations)
     init_loss = best_loss
 
     if verbose:
@@ -346,21 +367,32 @@ def refine_gt2_antecedents(
             lo, hi, rng = feature_bounds[fname]
             x0, bounds = _slot_x0_and_bounds(gt2_mf, lo, hi, rng, sigma_min_frac)
 
-            def fitness(v, fname=fname, label=label, idx=idx, gt2_mf=gt2_mf, x0=x0):
+            key = (fname, label, idx)
+
+            def fitness(v, fname=fname, label=label, idx=idx, gt2_mf=gt2_mf, x0=x0, key=key):
                 new_gt2_mf = _apply_slot_params(gt2_mf, v)
-                trial = _replace_slot(current, fname, label, idx, new_gt2_mf)
-                loss = _cross_entropy_loss(trial, X, y_idx, norms, n_alpha_planes, km_iterations)
+                if inc is not None:
+                    loss = loss_from_firing(*inc.evaluate(key, new_gt2_mf))
+                else:
+                    trial = _replace_slot(current, fname, label, idx, new_gt2_mf)
+                    loss = _cross_entropy_loss(trial, X, y_idx, norms, n_alpha_planes, km_iterations)
                 penalty = l2_shrink * float(np.sum((v - x0) ** 2))
                 return loss + penalty
 
             res = _optimizers_sub_solve(fitness, x0, bounds)
 
-            candidate = _replace_slot(current, fname, label, idx, _apply_slot_params(gt2_mf, res.x))
-            candidate_loss = _cross_entropy_loss(candidate, X, y_idx, norms, n_alpha_planes, km_iterations)
+            new_gt2_mf = _apply_slot_params(gt2_mf, res.x)
+            candidate = _replace_slot(current, fname, label, idx, new_gt2_mf)
+            if inc is not None:
+                candidate_loss = loss_from_firing(*inc.evaluate(key, new_gt2_mf))
+            else:
+                candidate_loss = _cross_entropy_loss(candidate, X, y_idx, norms, n_alpha_planes, km_iterations)
             if candidate_loss < best_loss - 1e-12:
                 current = candidate
                 best_model = candidate
                 best_loss = candidate_loss
+                if inc is not None:
+                    inc.commit()
 
         if verbose:
             print(f"  sweep {sweep + 1}/{n_sweeps}: loss={best_loss:.4f}")
@@ -399,14 +431,25 @@ def _solve_gt2_consequents(
     firing_uppers, firing_lowers, alphas, labels = gt2_rule_firing(
         gt2_model, X, top_n_todo, norms, n_alpha_planes=n_alpha_planes, feature_arrays=feature_arrays
     )
+    corr_terms, y_bucket_mean = _consequents_from_firing(
+        firing_uppers, firing_lowers, alphas, labels, X, y_df, top_n_todo,
+        order, l2_reg, basis, cross_pairs, feature_arrays,
+    )
+    return corr_terms, y_bucket_mean, labels
+
+
+def _consequents_from_firing(
+    firing_uppers, firing_lowers, alphas, labels, X, y_df, top_n_todo,
+    order, l2_reg, basis, cross_pairs, feature_arrays,
+):
+    """`_solve_gt2_consequents`'s ridge solve, on per-plane bounds already in hand."""
     midpoints = [0.5 * (fu + fl) for fu, fl in zip(firing_uppers, firing_lowers)]
     combined_midpoint = alpha_weighted_average(alphas, midpoints)
-    corr_terms, y_bucket_mean = solve_tsk_consequents_from_firing(
+    return solve_tsk_consequents_from_firing(
         combined_midpoint, labels, X, top_n_todo, None, y_df,
         order=order, l2_reg=l2_reg, basis=basis, cross_pairs=cross_pairs,
         pin_extremes=False, verbose=False, feature_arrays=feature_arrays,
     )
-    return corr_terms, y_bucket_mean, labels
 
 
 def _gt2_regressor_fold_mse(
@@ -420,12 +463,29 @@ def _gt2_regressor_fold_mse(
     """Held-out MSE for one fold: re-solve consequents on the training split,
     then predict the validation split through the full alpha-combined
     Karnik-Mendel path."""
-    corr_terms, y_bucket_mean, labels = _solve_gt2_consequents(
-        gt2_model, X_tr, y_tr_df, top_n_todo, norms, order, l2_reg, basis, cross_pairs,
-        n_alpha_planes, feature_arrays=fa_tr,
+    fus_tr, fls_tr, alphas, labels = gt2_rule_firing(
+        gt2_model, X_tr, top_n_todo, norms, n_alpha_planes=n_alpha_planes, feature_arrays=fa_tr
     )
-    firing_uppers_val, firing_lowers_val, alphas, _ = gt2_rule_firing(
+    fus_val, fls_val, _, _ = gt2_rule_firing(
         gt2_model, X_val, top_n_todo, norms, n_alpha_planes=n_alpha_planes, feature_arrays=fa_val
+    )
+    return _fold_mse_from_firing(
+        fus_tr, fls_tr, fus_val, fls_val, alphas, labels,
+        X_tr, y_tr_df, fa_tr, X_val, y_val_true, fa_val,
+        top_n_todo, order, l2_reg, basis, cross_pairs, km_iterations,
+    )
+
+
+def _fold_mse_from_firing(
+    fus_tr, fls_tr, firing_uppers_val, firing_lowers_val, alphas, labels,
+    X_tr, y_tr_df, fa_tr, X_val, y_val_true, fa_val,
+    top_n_todo, order, l2_reg, basis, cross_pairs, km_iterations,
+) -> float:
+    """`_gt2_regressor_fold_mse` on per-plane bounds already in hand, for
+    both the rebuild path and `GT2IncrementalFiring`."""
+    corr_terms, y_bucket_mean = _consequents_from_firing(
+        fus_tr, fls_tr, alphas, labels, X_tr, y_tr_df, top_n_todo,
+        order, l2_reg, basis, cross_pairs, fa_tr,
     )
     rule_values_val = rule_consequent_values(
         X_val, top_n_todo, labels, y_bucket_mean, corr_terms,
@@ -533,9 +593,37 @@ def refine_gt2_regressor_antecedents(
             n_alpha_planes, km_iterations,
         )
 
+    # One `GT2IncrementalFiring` (K upper/lower pairs) per fold split (#146).
+    fold_sources = _try_incremental(lambda: [
+        (GT2IncrementalFiring(gt2_model, _columns(fa_tr, top_n_todo), norms, n_alpha_planes),
+         GT2IncrementalFiring(gt2_model, _columns(fa_val, top_n_todo), norms, n_alpha_planes))
+        for _X_tr, _y_tr, fa_tr, _X_val, _y_val, fa_val in prepared
+    ])
+
+    def inc_cv_fitness(key=None, gt2_mf=None):
+        total = 0.0
+        for (src_tr, src_val), (X_tr, y_tr_df, fa_tr, X_val, y_val_true, fa_val) in zip(
+            fold_sources, prepared
+        ):
+            try:
+                if key is None:
+                    fus_tr, fls_tr = src_tr.base()
+                    fus_val, fls_val = src_val.base()
+                else:
+                    fus_tr, fls_tr = src_tr.evaluate(key, gt2_mf)
+                    fus_val, fls_val = src_val.evaluate(key, gt2_mf)
+                total += _fold_mse_from_firing(
+                    fus_tr, fls_tr, fus_val, fls_val, src_tr.alphas, src_tr.labels,
+                    X_tr, y_tr_df, fa_tr, X_val, y_val_true, fa_val,
+                    top_n_todo, order, l2_reg, basis, cross_pairs, km_iterations,
+                )
+            except (np.linalg.LinAlgError, ValueError, FloatingPointError, ZeroDivisionError):
+                return 1e6
+        return total / max(len(prepared), 1)
+
     current = gt2_model
     best_model = gt2_model
-    best_loss = cv_fitness(gt2_model)
+    best_loss = inc_cv_fitness() if fold_sources is not None else cv_fitness(gt2_model)
     init_loss = best_loss
 
     if verbose:
@@ -549,19 +637,31 @@ def refine_gt2_regressor_antecedents(
             lo, hi, rng = feature_bounds[fname]
             x0, bounds = _slot_x0_and_bounds(gt2_mf, lo, hi, rng, sigma_min_frac)
 
-            def fitness(v, fname=fname, label=label, idx=idx, gt2_mf=gt2_mf):
+            key = (fname, label, idx)
+
+            def fitness(v, fname=fname, label=label, idx=idx, gt2_mf=gt2_mf, key=key):
                 new_gt2_mf = _apply_slot_params(gt2_mf, v)
+                if fold_sources is not None:
+                    return inc_cv_fitness(key, new_gt2_mf)
                 trial = _replace_slot(current, fname, label, idx, new_gt2_mf)
                 return cv_fitness(trial)
 
             res = _optimizers_sub_solve(fitness, x0, bounds)
 
-            candidate = _replace_slot(current, fname, label, idx, _apply_slot_params(gt2_mf, res.x))
-            candidate_loss = cv_fitness(candidate)
+            new_gt2_mf = _apply_slot_params(gt2_mf, res.x)
+            candidate = _replace_slot(current, fname, label, idx, new_gt2_mf)
+            if fold_sources is not None:
+                candidate_loss = inc_cv_fitness(key, new_gt2_mf)
+            else:
+                candidate_loss = cv_fitness(candidate)
             if candidate_loss < best_loss - 1e-12:
                 current = candidate
                 best_model = candidate
                 best_loss = candidate_loss
+                if fold_sources is not None:
+                    for src_tr, src_val in fold_sources:
+                        src_tr.commit()
+                        src_val.commit()
 
         if verbose:
             print(f"  sweep {sweep + 1}/{n_sweeps}: val MSE={best_loss:.5f}")
